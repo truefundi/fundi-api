@@ -1,0 +1,72 @@
+# Fundi Platform — Backend REST & Realtime API
+
+The backend API service for the Fundi platform, built with **NestJS**, **TypeScript**, **PostgreSQL + PostGIS**, **Prisma ORM**, **Redis**, **BullMQ**, and **Socket.IO**.
+
+---
+
+## 1. Quick Start Guide
+
+### Step 1: Install Dependencies
+```bash
+npm install
+```
+
+### Step 2: Configure Environment
+```bash
+cp .env.example .env
+```
+
+### Step 3: Generate Prisma Client
+```bash
+npm run prisma:generate
+```
+
+### Step 4: Run Development Server
+```bash
+npm run start:dev
+```
+
+* **API Base URL:** `http://localhost:3000`
+* **Swagger OpenAPI Documentation:** `http://localhost:3000/api/docs`
+* **Health Check Endpoint:** `http://localhost:3000/api/v1/health`
+
+---
+
+## 2. API Scripts & Commands
+
+```bash
+npm run start:dev     # Start NestJS development server with watch mode
+npm run build         # Build production TypeScript output into dist/
+npm run start:prod    # Start compiled production server
+npm run test          # Run unit test suite (Jest)
+npm run test:e2e      # Run end-to-end integration test suite
+npm run lint          # Run ESLint code quality checks
+npm run format        # Format code using Prettier
+```
+
+---
+
+## 3. Project Architecture
+
+```
+backend/
+├── prisma/
+│   └── schema.prisma         # PostgreSQL + PostGIS Prisma ORM schema
+├── src/
+│   ├── auth/                 # JWT Authentication & Passport strategy
+│   ├── common/               # Global filters & interceptors
+│   ├── config/               # Environment configuration loader
+│   ├── database/             # Prisma database service & module
+│   ├── health/               # API, Database, and Redis health checks
+│   ├── jobs/                 # BullMQ background job queues
+│   ├── redis/                # ioredis service & module
+│   ├── users/                # User profile management
+│   ├── websockets/           # Socket.IO event gateway
+│   ├── app.controller.ts     # Root controller (Redirect to Swagger docs)
+│   ├── app.module.ts         # Main NestJS module
+│   └── main.ts               # Application entry point
+├── test/                     # End-to-end (E2E) integration tests
+├── .env.example              # Environment variables template
+├── eslint.config.mjs         # ESLint configuration
+└── tsconfig.json             # TypeScript strict configuration
+```

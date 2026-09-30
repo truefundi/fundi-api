@@ -31,7 +31,10 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('ping')
-  handlePing(@ConnectedSocket() client: Socket, @MessageBody() data: any): string {
+  handlePing(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: any,
+  ): string {
     this.logger.log(`Ping received from ${client.id}: ${JSON.stringify(data)}`);
     return 'pong';
   }

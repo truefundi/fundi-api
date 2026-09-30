@@ -20,12 +20,11 @@ enum UserRole {
 enum UserStatus {
   ACTIVE
   INACTIVE
-  SUSPENDED
 }
 
 model User {
   id            String         @id @default(uuid())
-  email         String         @unique
+  email         String?        @unique
   phoneNumber   String         @unique
   fullName      String
   role          UserRole       @default(CUSTOMER)
@@ -33,6 +32,7 @@ model User {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   refreshTokens RefreshToken[]
+  loginOtp      LoginOtp?
 
   @@map("users")
 }
@@ -40,10 +40,26 @@ model User {
 model RefreshToken {
   id        String   @id @default(uuid())
   token     String   @unique
+  sessionId String   @unique @default(uuid())
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
   createdAt DateTime @default(now())
 
   @@map("refresh_tokens")
+}
+
+// Stores only a hash of the short-lived OTP and the resend/verification limits.
+model LoginOtp {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash           String
+  expiresAt          DateTime
+  resendCount        Int      @default(0)
+  verificationTries  Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("login_otps")
 }

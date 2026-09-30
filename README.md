@@ -65,8 +65,46 @@ backend/
 │   ├── app.controller.ts     # Root controller (Redirect to Swagger docs)
 │   ├── app.module.ts         # Main NestJS module
 │   └── main.ts               # Application entry point
+├── docs/
+│   ├── authentication.md     # Phone OTP authentication endpoint guide
+│   └── users.md              # User management endpoint guide
 ├── test/                     # End-to-end (E2E) integration tests
 ├── .env.example              # Environment variables template
 ├── eslint.config.mjs         # ESLint configuration
 └── tsconfig.json             # TypeScript strict configuration
 ```
+
+## 4. Health Check and API Documentation
+
+### `GET /api/v1/health`
+
+No request body or authentication is required. It checks the API, PostgreSQL, and Redis availability.
+
+Example success response (`200`):
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-09-30T10:00:00.000Z",
+  "services": {
+    "api": "up",
+    "database": "up",
+    "redis": "up"
+  }
+}
+```
+
+If PostgreSQL or Redis is unavailable, that service reports `down` and the overall status is `degraded`.
+
+### Swagger UI
+
+Open `http://localhost:3000/api/docs` in a browser to explore the generated OpenAPI documentation and available API routes.
+
+## 5. Feature API Guides
+
+Detailed request formats and expected responses are documented separately:
+
+- [Phone authentication and OTP endpoints](docs/authentication.md)
+- [User management endpoints](docs/users.md)
+
+These guides include required authentication, request examples, successful response structures, and common errors.

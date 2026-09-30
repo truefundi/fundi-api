@@ -140,6 +140,6 @@ Errors use this response structure; `message` may be an array for validation fai
 }
 ```
 
-Common status codes: `400` invalid request or missing pending OTP; `401` incorrect, expired, or invalid token; `403` inactive account or too many OTP attempts; `404` unknown phone number; `409` duplicate phone number or email.
+Common status codes: `400` invalid request or missing pending OTP; `401` incorrect, expired, or invalid token; `403` inactive account or too many OTP attempts; `404` unknown phone number; `409` duplicate phone number or email; `503` Redis unavailable while handling an OTP.
 
 Only active accounts can request login OTPs. Contact the administrator through the Contact Us page if an account is inactive. Console OTP output is development-only; configure a real SMS provider before using authentication in production.

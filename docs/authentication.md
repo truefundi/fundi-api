@@ -2,7 +2,7 @@
 
 Phone numbers are the login identifier. Public registration accepts `CUSTOMER` or `TECHNICIAN` (case-insensitive) and defaults to `CUSTOMER`; it cannot create an administrator. New accounts default to `ACTIVE`.
 
-Send `Content-Type: application/json` for requests with a body. During development, `SMS_MODE=console` prints OTP codes in the backend terminal, not in the HTTP response. OTPs expire after 60 seconds, can be resent at most three times, and are rejected after five incorrect attempts.
+Send `Content-Type: application/json` for requests with a body. OTP hashes and resend/verification counters are stored temporarily in Redis, where the OTP key expires automatically after 60 seconds; PostgreSQL stores user and refresh-token data, not OTPs. During development, `SMS_MODE=console` prints OTP codes in the backend terminal, not in the HTTP response. OTPs can be resent at most three times and are rejected after five incorrect attempts.
 
 ## `POST /api/v1/auth/register`
 
@@ -118,7 +118,7 @@ Request:
   "refreshToken": "<jwt-refresh-token>"
 }
 ```
-
+git push -u origin feature/user-management
 Success response (`200`):
 
 ```json

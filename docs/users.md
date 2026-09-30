@@ -7,9 +7,9 @@ A full user record has this structure:
 ```json
 {
   "id": "generated-user-id",
-  "email": "amina@example.com",
+  "email": "prince@example.com",
   "phoneNumber": "+250788123456",
-  "fullName": "Amina Example",
+  "fullName": "Prince Example",
   "role": "CUSTOMER",
   "status": "ACTIVE",
   "createdAt": "2026-09-30T10:00:00.000Z",
@@ -33,9 +33,9 @@ Request:
 
 ```json
 {
-  "fullName": "Amina N. Example",
+  "fullName": "Prince N. Example",
   "phoneNumber": "+250788123457",
-  "email": "amina.new@example.com"
+  "email": "prince.new@example.com"
 }
 ```
 
@@ -61,9 +61,9 @@ Request:
 
 ```json
 {
-  "fullName": "Jean Example",
+  "fullName": "Mugabe Example",
   "phoneNumber": "+250788123456",
-  "email": "jean@example.com",
+  "email": "mugabe@example.com",
   "role": "TECHNICIAN",
   "status": "ACTIVE"
 }

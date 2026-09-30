@@ -12,8 +12,8 @@ Request:
 
 ```json
 {
-  "fullName": "Amina Example",
-  "email": "amina@example.com",
+  "fullName": "Prince Example",
+  "email": "prince@example.com",
   "role": "technician",
   "phoneNumber": "+250788123456"
 }
@@ -26,7 +26,7 @@ Success response (`200`):
   "message": "OTP generated. Verify it to complete registration.",
   "user": {
     "id": "generated-user-id",
-    "fullName": "Amina Example",
+    "fullName": "Prince Example",
     "phoneNumber": "+250788123456",
     "role": "TECHNICIAN"
   }
@@ -96,7 +96,7 @@ Success response (`200`):
 {
   "user": {
     "id": "generated-user-id",
-    "fullName": "Amina Example",
+    "fullName": "Prince Example",
     "phoneNumber": "+250788123456",
     "role": "TECHNICIAN"
   },

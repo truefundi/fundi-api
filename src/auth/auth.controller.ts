@@ -1,5 +1,5 @@
 import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Req } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
@@ -59,6 +59,7 @@ export class AuthController {
   // Revokes the submitted refresh token for the authenticated account.
   @Post('logout')
   @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Revoke a refresh token' })
   async logout(@Req() request: { user: { userId: string } }, @Body() body: LogoutDto) {

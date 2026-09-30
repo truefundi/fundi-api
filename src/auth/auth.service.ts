@@ -158,7 +158,7 @@ export class AuthService {
     }
     const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
     const refreshHash = this.hash(tokens.refreshToken);
-    const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const refreshExpiresAt = this.refreshTokenExpiresAt();
     await this.prisma.refreshToken.create({
       data: { token: refreshHash, sessionId, userId: user.id, expiresAt: refreshExpiresAt },
     });

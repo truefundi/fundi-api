@@ -6,24 +6,62 @@ import {
   UnauthorizedException,
   BadRequestException,
   ForbiddenException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { createHmac, randomInt, randomUUID, timingSafeEqual } from 'crypto';
+import { createHmac, randomInt, randomUUID } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
 import { SmsService } from '../sms/sms.service';
+import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { UserRole } from '@prisma/client';
+
+// Creates the initial OTP hash and applies its one-minute Redis TTL atomically.
+const CREATE_OTP_SCRIPT = `
+redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', ARGV[2], 'verificationTries', ARGV[3])
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
+return 1
+`;
+
+// Atomically enforces resend limits while replacing the code and expiry.
+const RESEND_OTP_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
+local resendCount = tonumber(redis.call('HGET', KEYS[1], 'resendCount') or '0')
+if resendCount >= tonumber(ARGV[2]) then return -2 end
+local verificationTries = redis.call('HGET', KEYS[1], 'verificationTries') or '0'
+local nextResendCount = resendCount + 1
+redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', nextResendCount, 'verificationTries', verificationTries)
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+return nextResendCount
+`;
+
+// Atomically checks and consumes a code or increments its failed-attempt count.
+const VERIFY_OTP_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
+local verificationTries = tonumber(redis.call('HGET', KEYS[1], 'verificationTries') or '0')
+if verificationTries >= tonumber(ARGV[2]) then return -2 end
+if redis.call('HGET', KEYS[1], 'codeHash') == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+redis.call('HINCRBY', KEYS[1], 'verificationTries', 1)
+return 0
+`;
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  private readonly otpTtlSeconds = 60;
+  private readonly maxOtpResends = 3;
+  private readonly maxOtpVerificationTries = 5;
 
   constructor(
     private jwtService: JwtService,
     private configService: ConfigService,
     private prisma: PrismaService,
     private smsService: SmsService,
+    private redisService: RedisService,
   ) {}
 
   // Creates a customer or technician account, defaulting to customer, then starts OTP verification.
@@ -38,7 +76,7 @@ export class AuthService {
         },
         select: { id: true, fullName: true, phoneNumber: true, role: true },
       });
-      await this.issueOtp(user.id, user.phoneNumber, 0);
+      await this.issueOtp(user.id, user.phoneNumber);
       return { message: 'OTP generated. Verify it to complete registration.', user };
     } catch (error) {
       if (this.isPrismaError(error, 'P2002')) {
@@ -53,22 +91,31 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) throw new NotFoundException('No account was found for this phone number.');
     this.ensureActive(user.status);
-    await this.issueOtp(user.id, user.phoneNumber, 0);
+    await this.issueOtp(user.id, user.phoneNumber);
     return { message: 'OTP generated. It expires in one minute.' };
   }
 
-  // Issues a replacement OTP while retaining the pending request's resend count.
+  // Issues a replacement OTP while Redis retains its resend and attempt counters.
   async resendOtp(phoneNumber: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) throw new NotFoundException('No account was found for this phone number.');
     this.ensureActive(user.status);
-    const pending = await this.prisma.loginOtp.findUnique({ where: { userId: user.id } });
-    if (!pending) throw new BadRequestException('There is no pending OTP. Request a login OTP first.');
-    if (pending.resendCount >= 3) {
+    const code = randomInt(100000, 1000000).toString();
+    const resendCount = await this.runOtpScript(
+      RESEND_OTP_SCRIPT,
+      this.otpKey(user.id),
+      this.hash(code),
+      String(this.maxOtpResends),
+      String(this.otpTtlSeconds),
+    );
+    if (resendCount === -1) {
+      throw new BadRequestException('There is no pending OTP or it has expired. Request a new login OTP.');
+    }
+    if (resendCount === -2) {
       throw new BadRequestException('The maximum of three OTP resends has been reached.');
     }
-    await this.issueOtp(user.id, user.phoneNumber, pending.resendCount + 1, pending.verificationTries);
-    return { message: `OTP resent. ${3 - pending.resendCount - 1} resend(s) remain.` };
+    await this.deliverOtp(user.id, user.phoneNumber, code);
+    return { message: `OTP resent. ${this.maxOtpResends - resendCount} resend(s) remain.` };
   }
 
   // Verifies a time-limited OTP and creates persisted refresh-token state.
@@ -76,23 +123,21 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) throw new NotFoundException('No account was found for this phone number.');
     this.ensureActive(user.status);
-    const pending = await this.prisma.loginOtp.findUnique({ where: { userId: user.id } });
-    if (!pending) throw new BadRequestException('No OTP is pending. Request a new login OTP.');
-    if (pending.expiresAt.getTime() <= Date.now()) {
-      await this.prisma.loginOtp.delete({ where: { userId: user.id } });
-      throw new UnauthorizedException('The OTP has expired. Request a new login OTP.');
+    const verificationResult = await this.runOtpScript(
+      VERIFY_OTP_SCRIPT,
+      this.otpKey(user.id),
+      this.hash(otp),
+      String(this.maxOtpVerificationTries),
+    );
+    if (verificationResult === -1) {
+      throw new BadRequestException('No OTP is pending or it has expired. Request a new login OTP.');
     }
-    if (pending.verificationTries >= 5) {
+    if (verificationResult === -2) {
       throw new ForbiddenException('Too many incorrect OTP attempts. Request a new login OTP.');
     }
-    if (!this.matchesOtp(otp, pending.codeHash)) {
-      await this.prisma.loginOtp.update({
-        where: { userId: user.id },
-        data: { verificationTries: { increment: 1 } },
-      });
+    if (verificationResult === 0) {
       throw new UnauthorizedException('The OTP is incorrect.');
     }
-    await this.prisma.loginOtp.delete({ where: { userId: user.id } });
     const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
     const refreshHash = this.hash(tokens.refreshToken);
     const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -143,22 +188,54 @@ export class AuthService {
     };
   }
 
-  // Stores a one-minute OTP hash and dispatches it through the SMS boundary.
-  private async issueOtp(userId: string, phoneNumber: string, resendCount: number, verificationTries = 0) {
+  // Stores OTP state in Redis with a one-minute TTL and dispatches the code.
+  private async issueOtp(userId: string, phoneNumber: string) {
     const code = randomInt(100000, 1000000).toString();
-    const expiresAt = new Date(Date.now() + 60_000);
-    await this.prisma.loginOtp.upsert({
-      where: { userId },
-      create: { userId, codeHash: this.hash(code), expiresAt, resendCount, verificationTries },
-      update: { codeHash: this.hash(code), expiresAt, resendCount, verificationTries },
-    });
+    await this.runOtpScript(
+      CREATE_OTP_SCRIPT,
+      this.otpKey(userId),
+      this.hash(code),
+      '0',
+      '0',
+      String(this.otpTtlSeconds),
+    );
+    await this.deliverOtp(userId, phoneNumber, code);
+  }
+
+  // Sends the code and clears its Redis key if delivery fails.
+  private async deliverOtp(userId: string, phoneNumber: string, code: string) {
     try {
       await this.smsService.sendOtp(phoneNumber, code);
     } catch (error) {
-      await this.prisma.loginOtp.deleteMany({ where: { userId } });
+      try {
+        await this.redisService.getClient().del(this.otpKey(userId));
+      } catch (cleanupError) {
+        this.logger.error(`Could not clear OTP key for user ${userId}: ${this.errorMessage(cleanupError)}`);
+      }
       this.logger.error(`OTP delivery failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
+  }
+
+  // Executes an atomic OTP operation and translates Redis outages to a service error.
+  private async runOtpScript(script: string, key: string, ...args: string[]): Promise<number> {
+    try {
+      const result = await this.redisService.getClient().eval(script, 1, key, ...args);
+      return Number(result);
+    } catch (error) {
+      this.logger.error(`OTP Redis operation failed: ${this.errorMessage(error)}`);
+      throw new ServiceUnavailableException('OTP service is unavailable. Please try again later.');
+    }
+  }
+
+  // Keeps pending OTP records in a namespaced key per account.
+  private otpKey(userId: string) {
+    return `auth:otp:${userId}`;
+  }
+
+  // Formats unknown errors for diagnostic logs without hiding the cause.
+  private errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : String(error);
   }
 
   // Ensures only active accounts can receive login codes or authenticate.
@@ -174,13 +251,6 @@ export class AuthService {
       this.configService.get<string>('jwt.refreshSecret') ||
       'development_token_hash_secret_change_before_production';
     return createHmac('sha256', secret).update(value).digest('hex');
-  }
-
-  // Compares fixed-size hashes without a timing-sensitive string comparison.
-  private matchesOtp(input: string, storedHash: string) {
-    const inputHash = Buffer.from(this.hash(input), 'hex');
-    const expectedHash = Buffer.from(storedHash, 'hex');
-    return inputHash.length === expectedHash.length && timingSafeEqual(inputHash, expectedHash);
   }
 
   // Recognizes expected Prisma constraint errors for readable API responses.

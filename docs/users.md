@@ -130,7 +130,7 @@ Success response (`200`): the updated full user record.
 
 Replace `:id` with the user's database ID. No request body.
 
-Success response (`200`):
+Success response (`200`):git push -u origin feature/user-management
 
 ```json
 {

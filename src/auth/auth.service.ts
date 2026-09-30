@@ -177,6 +177,41 @@ export class AuthService {
     return { message: 'Logged out successfully.' };
   }
 
+  // Exchanges a valid refresh token for a fresh pair and rotates the stored session.
+  async refreshTokens(refreshToken: string) {
+    const currentHash = this.hash(refreshToken);
+    const session = await this.prisma.refreshToken.findUnique({ where: { token: currentHash } });
+    if (!session) {
+      throw new UnauthorizedException('The refresh token is invalid or already revoked.');
+    }
+    if (session.expiresAt.getTime() <= Date.now()) {
+      throw new UnauthorizedException('The refresh token has expired. Log in again.');
+    }
+    const user = await this.prisma.user.findUnique({ where: { id: session.userId } });
+    if (!user) {
+      throw new UnauthorizedException('The account associated with this token no longer exists.');
+    }
+    this.ensureActive(user.status);
+    const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
+    const expiresAt = this.refreshTokenExpiresAt();
+    const rotatedHash = this.hash(tokens.refreshToken);
+    // Deleting and reinserting in one transaction keeps the old token single-use: two
+    // concurrent refreshes race on the same row and only one delete can report a match.
+    await this.prisma.$transaction(async (tx) => {
+      const revoked = await tx.refreshToken.deleteMany({ where: { id: session.id, userId: user.id } });
+      if (revoked.count === 0) {
+        throw new UnauthorizedException('The refresh token is invalid or already revoked.');
+      }
+      await tx.refreshToken.create({
+        data: { token: rotatedHash, sessionId, userId: user.id, expiresAt },
+      });
+    });
+    return {
+      user: { id: user.id, fullName: user.fullName, phoneNumber: user.phoneNumber, role: user.role },
+      ...tokens,
+    };
+  }
+
   // Generates JWTs with the account identity and configured expiration periods.
   async generateTokens(userId: string, phoneNumber: string, role: string) {
     const sessionId = randomUUID();
@@ -273,6 +308,20 @@ export class AuthService {
     if (status !== 'ACTIVE') {
       throw new ForbiddenException('This account is not active. Please contact the administrator through the Contact Us page.');
     }
+  }
+
+  // Converts a JWT duration such as 7d or 15m into seconds so the stored session
+  // expiry can follow the configured token lifetime instead of a fixed constant.
+  private durationToSeconds(value: string): number {
+    const match = /^(\d+)\s*(s|m|h|d|w|y)?$/i.exec(String(value).trim());
+    if (!match) return 7 * 24 * 60 * 60;
+    const units: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 604800, y: 31536000 };
+    return Number(match[1]) * units[(match[2] || 's').toLowerCase()];
+  }
+
+  // Expiry stored on a refresh-token row, kept in step with jwt.refreshExpiresIn.
+  private refreshTokenExpiresAt(): Date {
+    return new Date(Date.now() + this.durationToSeconds(this.configService.get<string>('jwt.refreshExpiresIn', '7d')) * 1000);
   }
 
   // Hashes OTP and refresh-token secrets before storing them in the database.

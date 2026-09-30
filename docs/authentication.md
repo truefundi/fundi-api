@@ -127,6 +127,37 @@ Success response (`200`):
 }
 ```
 
+## `POST /api/v1/auth/refresh`
+
+No authentication header is required, because the access token has usually expired by the time this is called. Send the refresh token from the `verify-otp` response.
+
+The submitted refresh token is revoked and replaced. Tokens are single-use: a refresh token that has already been exchanged returns `401`. Because a new session is created, any access token issued alongside the old refresh token stops working as soon as the refresh succeeds.
+
+Request:
+
+```json
+{
+  "refreshToken": "<jwt-refresh-token>"
+}
+```
+
+Success response (`200`):
+
+```json
+{
+  "user": {
+    "id": "generated-user-id",
+    "fullName": "Prince Example",
+    "phoneNumber": "+250788123456",
+    "role": "CUSTOMER"
+  },
+  "accessToken": "<jwt-access-token>",
+  "refreshToken": "<jwt-refresh-token>"
+}
+```
+
+The stored session lifetime follows the `JWT_REFRESH_EXPIRES_IN` setting, so shortening it also shortens how long a refresh token can be exchanged.
+
 ## Common errors
 
 Errors use this response structure; `message` may be an array for validation failures:

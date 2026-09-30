@@ -6,6 +6,7 @@ import { RegisterDto } from './dto/register.dto';
 import { PhoneDto } from './dto/phone.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { LogoutDto } from './dto/logout.dto';
+import { RefreshDto } from './dto/refresh.dto';
 
 @ApiTags('auth')
 @Controller('api/v1/auth')
@@ -42,6 +43,17 @@ export class AuthController {
   @ApiOperation({ summary: 'Verify an OTP and receive access and refresh tokens' })
   async verifyOtp(@Body() body: VerifyOtpDto) {
     return this.authService.verifyOtp(body.phoneNumber, body.otp);
+  }
+
+  // Exchanges a refresh token for a new pair without needing the expired access token.
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Exchange a refresh token for a new access and refresh pair' })
+  @ApiResponse({ status: 200, description: 'A new token pair; the supplied refresh token is revoked' })
+  @ApiResponse({ status: 401, description: 'The refresh token is invalid, expired, or already used' })
+  @ApiResponse({ status: 403, description: 'The account is no longer active' })
+  async refresh(@Body() body: RefreshDto) {
+    return this.authService.refreshTokens(body.refreshToken);
   }
 
   // Revokes the submitted refresh token for the authenticated account.

@@ -11,7 +11,9 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('port', 3000);
-  const corsOrigins = configService.get<string[]>('cors.origins', ['http://localhost:3000']);
+  const corsOrigins = configService.get<string[]>('cors.origins', [
+    'http://localhost:3000',
+  ]);
 
   // Global Exception Filter
   app.useGlobalFilters(new HttpExceptionFilter());
@@ -45,6 +47,8 @@ async function bootstrap() {
 
   await app.listen(port);
   logger.log(`Fundi Backend running on port ${port}`);
-  logger.log(`Swagger documentation available at http://localhost:${port}/api/docs`);
+  logger.log(
+    `Swagger documentation available at http://localhost:${port}/api/docs`,
+  );
 }
 bootstrap();

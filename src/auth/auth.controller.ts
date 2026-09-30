@@ -1,21 +1,55 @@
-import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Req } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
+import { RegisterDto } from './dto/register.dto';
+import { PhoneDto } from './dto/phone.dto';
+import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { LogoutDto } from './dto/logout.dto';
 
 @ApiTags('auth')
 @Controller('api/v1/auth')
 export class AuthController {
   constructor(private authService: AuthService) {}
 
-  @Post('dummy-token')
+  // Creates a customer account and immediately starts phone verification.
+  @Post('register')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Generate development JWT tokens foundation' })
-  @ApiResponse({ status: 200, description: 'Tokens issued successfully' })
-  async generateDummyToken(@Body() body: { userId?: string; email?: string; role?: string }) {
-    const userId = body.userId || 'dev-user-id';
-    const email = body.email || 'dev@fundi.com';
-    const role = body.role || 'CUSTOMER';
+  @ApiOperation({ summary: 'Register a customer and send a verification OTP' })
+  async register(@Body() body: RegisterDto) {
+    return this.authService.register(body);
+  }
 
-    return this.authService.generateTokens(userId, email, role);
+  // Starts login only for an existing active account.
+  @Post('login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send a login OTP to a registered phone number' })
+  async login(@Body() body: PhoneDto) {
+    return this.authService.requestLoginOtp(body.phoneNumber);
+  }
+
+  // Replaces the current OTP while enforcing the three-resend limit.
+  @Post('resend-otp')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Resend the pending login OTP up to three times' })
+  async resendOtp(@Body() body: PhoneDto) {
+    return this.authService.resendOtp(body.phoneNumber);
+  }
+
+  // Verifies the OTP, consumes it, and issues both JWTs.
+  @Post('verify-otp')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify an OTP and receive access and refresh tokens' })
+  async verifyOtp(@Body() body: VerifyOtpDto) {
+    return this.authService.verifyOtp(body.phoneNumber, body.otp);
+  }
+
+  // Revokes the submitted refresh token for the authenticated account.
+  @Post('logout')
+  @UseGuards(AuthGuard('jwt'))
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Revoke a refresh token' })
+  async logout(@Req() request: { user: { userId: string } }, @Body() body: LogoutDto) {
+    return this.authService.logout(request.user.userId, body.refreshToken);
   }
 }

@@ -17,28 +17,38 @@ import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { UserRole } from '@prisma/client';
 
-// Creates the initial OTP hash and applies its one-minute Redis TTL atomically.
+// Creates the initial OTP hash and applies its Redis TTL atomically. The absolute
+// expiry is stored as a field so an expired code stays distinguishable from one
+// that was never sent, and the key outlives the code to allow that.
 const CREATE_OTP_SCRIPT = `
-redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', ARGV[2], 'verificationTries', ARGV[3])
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
+redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', ARGV[2], 'verificationTries', ARGV[3], 'expiresAt', ARGV[4])
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[5]))
 return 1
 `;
 
-// Atomically enforces resend limits while replacing the code and expiry.
+// Atomically enforces resend limits while replacing the code and expiry. The
+// failed-attempt counter is carried over so resending cannot clear a run of
+// wrong guesses.
 const RESEND_OTP_SCRIPT = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
 local resendCount = tonumber(redis.call('HGET', KEYS[1], 'resendCount') or '0')
 if resendCount >= tonumber(ARGV[2]) then return -2 end
 local verificationTries = redis.call('HGET', KEYS[1], 'verificationTries') or '0'
 local nextResendCount = resendCount + 1
-redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', nextResendCount, 'verificationTries', verificationTries)
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', nextResendCount, 'verificationTries', verificationTries, 'expiresAt', ARGV[3])
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
 return nextResendCount
 `;
 
 // Atomically checks and consumes a code or increments its failed-attempt count.
+// Returns -1 when nothing is pending, -3 when the code has passed its expiry, -2
+// once the attempt limit is reached, 1 on success and 0 on a wrong guess.
 const VERIFY_OTP_SCRIPT = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
+if tonumber(redis.call('HGET', KEYS[1], 'expiresAt') or '0') <= tonumber(ARGV[3]) then
+  redis.call('DEL', KEYS[1])
+  return -3
+end
 local verificationTries = tonumber(redis.call('HGET', KEYS[1], 'verificationTries') or '0')
 if verificationTries >= tonumber(ARGV[2]) then return -2 end
 if redis.call('HGET', KEYS[1], 'codeHash') == ARGV[1] then
@@ -55,6 +65,9 @@ export class AuthService {
   private readonly otpTtlSeconds = 60;
   private readonly maxOtpResends = 3;
   private readonly maxOtpVerificationTries = 5;
+  // Keeps an expired code around briefly so it can be reported as expired rather
+  // than looking like one that was never sent. Redis still evicts it afterwards.
+  private readonly otpExpiryGraceSeconds = 120;
 
   constructor(
     private jwtService: JwtService,
@@ -106,10 +119,11 @@ export class AuthService {
       this.otpKey(user.id),
       this.hash(code),
       String(this.maxOtpResends),
-      String(this.otpTtlSeconds),
+      String(this.otpExpiresAt()),
+      String(this.otpKeyTtlSeconds()),
     );
     if (resendCount === -1) {
-      throw new BadRequestException('There is no pending OTP or it has expired. Request a new login OTP.');
+      throw new BadRequestException('There is no pending OTP. Request a login OTP first.');
     }
     if (resendCount === -2) {
       throw new BadRequestException('The maximum of three OTP resends has been reached.');
@@ -128,9 +142,13 @@ export class AuthService {
       this.otpKey(user.id),
       this.hash(otp),
       String(this.maxOtpVerificationTries),
+      String(Date.now()),
     );
     if (verificationResult === -1) {
-      throw new BadRequestException('No OTP is pending or it has expired. Request a new login OTP.');
+      throw new BadRequestException('No OTP is pending. Request a new login OTP.');
+    }
+    if (verificationResult === -3) {
+      throw new UnauthorizedException('The OTP has expired. Request a new login OTP.');
     }
     if (verificationResult === -2) {
       throw new ForbiddenException('Too many incorrect OTP attempts. Request a new login OTP.');
@@ -197,7 +215,8 @@ export class AuthService {
       this.hash(code),
       '0',
       '0',
-      String(this.otpTtlSeconds),
+      String(this.otpExpiresAt()),
+      String(this.otpKeyTtlSeconds()),
     );
     await this.deliverOtp(userId, phoneNumber, code);
   }
@@ -231,6 +250,17 @@ export class AuthService {
   // Keeps pending OTP records in a namespaced key per account.
   private otpKey(userId: string) {
     return `auth:otp:${userId}`;
+  }
+
+  // Absolute expiry stamp stored on the hash and treated as authoritative.
+  private otpExpiresAt(): number {
+    return Date.now() + this.otpTtlSeconds * 1000;
+  }
+
+  // Redis key lifetime, which outlives the code by the grace period so an
+  // expired code can still be identified as expired.
+  private otpKeyTtlSeconds(): number {
+    return this.otpTtlSeconds + this.otpExpiryGraceSeconds;
   }
 
   // Formats unknown errors for diagnostic logs without hiding the cause.

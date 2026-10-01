@@ -46,3 +46,7 @@ temp/
 # Prisma SQLite/Local DBs
 *.db
 *.sqlite
+
+# Postman local collections/workspaces
+.postman/
+postman/

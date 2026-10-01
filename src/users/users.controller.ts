@@ -27,10 +27,16 @@ export class UsersController {
   @Patch('me')
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update the current account profile' })
+  @ApiOperation({
+    summary: 'Update the current account profile',
+    description:
+      'Send only the fields to change. `fullName` is trimmed and must be 2 to 120 characters. `phoneNumber` has spaces, parentheses, and hyphens stripped. `email` is trimmed and lowercased, and an empty string clears it. At least one of the three fields is required.',
+  })
   @ApiResponse({ status: 200, description: 'The updated user record', type: UserResponseDto })
+  @ApiBadRequest('The body contains none of `fullName`, `phoneNumber`, or `email`.')
   @ApiTokenRequired()
   @ApiForbidden('The account is no longer active.')
+  @ApiNotFound('The account no longer exists.')
   @ApiConflict('The new phone number or email already belongs to another account.')
   @ApiValidationFailed()
   async updateAccount(@Req() request: { user: { userId: string } }, @Body() body: UpdateAccountDto) {

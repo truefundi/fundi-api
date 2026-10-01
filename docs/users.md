@@ -33,6 +33,13 @@ Request:
 }
 ```
 
+Field rules:
+
+- `fullName` is trimmed first, then must be 2 to 120 characters, so a blank or whitespace-only name is rejected with `400`.
+- `phoneNumber` has spaces, parentheses, and hyphens stripped before it is checked, and must be 7 to 20 digits with an optional leading `+`.
+- `email` is trimmed and lowercased before it is checked. Sending an empty string clears the stored email and the field becomes `null` in the response.
+- Send at least one of the three fields. An empty body is rejected with `400` rather than silently changing nothing.
+
 Success response (`200`): the updated full user record.
 
 ## `DELETE /api/v1/users/me`

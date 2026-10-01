@@ -80,15 +80,17 @@ export class UsersService {
 
   // Updates account-owned fields only, so callers cannot change role or status.
   async updateAccount(id: string, input: UpdateAccountDto) {
+    const data = {
+      ...(input.fullName !== undefined && { fullName: input.fullName.trim() }),
+      ...(input.phoneNumber !== undefined && { phoneNumber: input.phoneNumber }),
+      ...(input.email !== undefined && { email: input.email || null }),
+    };
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('Provide at least one profile field to update.');
+    }
+    await this.getById(id);
     try {
-      return await this.prisma.user.update({
-        where: { id },
-        data: {
-          ...(input.fullName !== undefined && { fullName: input.fullName.trim() }),
-          ...(input.phoneNumber !== undefined && { phoneNumber: input.phoneNumber }),
-          ...(input.email !== undefined && { email: input.email || null }),
-        },
-      });
+      return await this.prisma.user.update({ where: { id }, data });
     } catch (error) {
       this.handleWriteError(error);
     }
@@ -112,10 +114,15 @@ export class UsersService {
     return this.delete(id);
   }
 
-  // Converts database uniqueness violations into actionable API errors.
+  // Converts database write failures into actionable API errors.
   private handleWriteError(error: unknown): never {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      throw new ConflictException('A user with this phone number or email already exists.');
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === 'P2002') {
+        throw new ConflictException('A user with this phone number or email already exists.');
+      }
+      if (error.code === 'P2025') {
+        throw new NotFoundException('The account was not found.');
+      }
     }
     throw error;
   }

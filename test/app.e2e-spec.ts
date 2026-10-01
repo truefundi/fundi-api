@@ -53,4 +53,22 @@ describe('AppController (e2e)', () => {
       .get('/api/v1/technicians/profile')
       .expect(401);
   });
+
+  // The current account cannot be read without a bearer token.
+  it('/api/v1/auth/me (GET) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer()).get('/api/v1/auth/me').expect(401);
+  });
+
+  // The profile cannot be edited without a bearer token.
+  it('/api/v1/users/me (PATCH) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer())
+      .patch('/api/v1/users/me')
+      .send({ fullName: 'Unauthorized Change' })
+      .expect(401);
+  });
+
+  // The account cannot be deleted without a bearer token.
+  it('/api/v1/users/me (DELETE) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer()).delete('/api/v1/users/me').expect(401);
+  });
 });

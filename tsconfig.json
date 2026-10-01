@@ -9,6 +9,7 @@
     "target": "ES2022",
     "sourceMap": true,
     "outDir": "./dist",
+    "types": ["node", "jest", "express"],
     "incremental": true,
     "skipLibCheck": true,
     "strictNullChecks": true,

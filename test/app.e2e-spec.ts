@@ -22,4 +22,28 @@ describe('AppController (e2e)', () => {
   it('/api/v1/health (GET)', () => {
     return request(app.getHttpServer()).get('/api/v1/health').expect(200);
   });
+
+  // Public category discovery returns the active catalog as an array.
+  it('/api/v1/catalog/categories (GET)', () => {
+    return request(app.getHttpServer())
+      .get('/api/v1/catalog/categories')
+      .expect(200)
+      .expect(Array.isArray);
+  });
+
+  // Public category name search is available without authentication.
+  it('/api/v1/catalog/categories/search (GET)', () => {
+    return request(app.getHttpServer())
+      .get('/api/v1/catalog/categories/search?name=plumb')
+      .expect(200)
+      .expect(Array.isArray);
+  });
+
+  // Category mutations require a valid administrator access token.
+  it('/api/v1/catalog/categories (POST) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer())
+      .post('/api/v1/catalog/categories')
+      .send({ name: 'Unauthorized Category' })
+      .expect(401);
+  });
 });

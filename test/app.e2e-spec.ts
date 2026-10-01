@@ -46,4 +46,11 @@ describe('AppController (e2e)', () => {
       .send({ name: 'Unauthorized Category' })
       .expect(401);
   });
+
+  // Technician draft profiles cannot be accessed without a technician token.
+  it('/api/v1/technicians/profile (GET) rejects unauthenticated requests', () => {
+    return request(app.getHttpServer())
+      .get('/api/v1/technicians/profile')
+      .expect(401);
+  });
 });

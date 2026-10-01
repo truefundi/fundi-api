@@ -23,15 +23,16 @@ enum UserStatus {
 }
 
 model User {
-  id            String         @id @default(uuid())
-  email         String?        @unique
-  phoneNumber   String         @unique
-  fullName      String
-  role          UserRole       @default(CUSTOMER)
-  status        UserStatus     @default(ACTIVE)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  refreshTokens RefreshToken[]
+  id                String             @id @default(uuid())
+  email             String?            @unique
+  phoneNumber       String             @unique
+  fullName          String
+  role              UserRole           @default(CUSTOMER)
+  status            UserStatus         @default(ACTIVE)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  refreshTokens     RefreshToken[]
+  technicianProfile TechnicianProfile?
 
   @@map("users")
 }
@@ -49,13 +50,52 @@ model RefreshToken {
 }
 
 model ServiceCategory {
-  id        String   @id @default(uuid())
-  name      String   @unique
-  slug      String   @unique
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+  id          String               @id @default(uuid())
+  name        String               @unique
+  slug        String               @unique
+  isActive    Boolean              @default(true)
+  createdAt   DateTime             @default(now())
+  technicians TechnicianCategory[]
 
   @@map("service_categories")
+}
+
+enum VerificationStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model TechnicianProfile {
+  id                 String               @id @default(uuid())
+  userId             String               @unique
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  onboardingStep     Int                  @default(1)
+  yearsOfExperience  Int?
+  tin                String?
+  baseAddress        String?
+  baseLatitude       Float?
+  baseLongitude      Float?
+  serviceRadiusKm    Int?
+  verificationStatus VerificationStatus   @default(DRAFT)
+  categories         TechnicianCategory[]
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  @@index([verificationStatus])
+  @@map("technician_profiles")
+}
+
+model TechnicianCategory {
+  technicianId String
+  categoryId   String
+  technician   TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  category     ServiceCategory   @relation(fields: [categoryId], references: [id])
+
+  @@id([technicianId, categoryId])
+  @@index([categoryId])
+  @@map("technician_categories")
 }
 
 model AuditLog {

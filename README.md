@@ -66,6 +66,7 @@ backend/
 │   ├── health/               # API, Database, and Redis health checks
 │   ├── jobs/                 # BullMQ background job queues
 │   ├── redis/                # ioredis service & module
+│   ├── technicians/          # Technician onboarding profiles
 │   ├── users/                # User profile management
 │   ├── websockets/           # Socket.IO event gateway
 │   ├── app.controller.ts     # Root controller (Redirect to Swagger docs)
@@ -75,6 +76,7 @@ backend/
 │   ├── authentication.md     # Phone OTP authentication endpoint guide
 │   ├── implementation-roadmap.md # Ordered daily feature delivery plan
 │   ├── service-categories.md # Service catalog endpoint guide
+│   ├── technician-onboarding.md # Technician draft profile API guide
 │   └── users.md              # User management endpoint guide
 ├── test/                     # End-to-end (E2E) integration tests
 ├── .env.example              # Environment variables template
@@ -114,6 +116,7 @@ Detailed request formats and expected responses are documented separately:
 
 - [Phone authentication and OTP endpoints](docs/authentication.md)
 - [Service categories endpoints](docs/service-categories.md)
+- [Technician onboarding profile endpoints](docs/technician-onboarding.md)
 - [User management endpoints](docs/users.md)
 - [Day-by-day implementation roadmap](docs/implementation-roadmap.md)
 

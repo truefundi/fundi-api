@@ -13,10 +13,12 @@ This is a day-by-day sequence of deliverables. Each day should end with a schema
 
 ## Day 2: Technician Profile Draft
 
+**Status: Complete (2026-10-01)**
+
 - Save and resume technician onboarding progress.
 - Capture experience, trade categories, service radius, and base address/GPS coordinates.
 - Keep onboarding status separate from the user's login-active status.
-- Acceptance: a technician can save partial profile details across sessions; only active categories can be selected.
+- Acceptance: technician-only `GET` and `PUT` profile endpoints persist partial drafts across sessions; only active categories can be selected; the profile remains `DRAFT` independently from user status. Verified with 4 profile unit tests, 5 e2e tests, a clean build, and the applied migration.
 
 ## Day 3: Technician Documents and Verification
 

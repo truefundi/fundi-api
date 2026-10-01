@@ -127,6 +127,14 @@ Success response (`200`):
 }
 ```
 
+## `GET /api/v1/auth/me`
+
+Requires `Authorization: Bearer <accessToken>`. Returns the authenticated account's full record, including `email`, `role`, `status`, and timestamps. No request body.
+
+Updating the profile remains at `PATCH /api/v1/users/me`, and deleting the account at `DELETE /api/v1/users/me`.
+
+Success response (`200`): one full user record.
+
 ## `POST /api/v1/auth/refresh`
 
 No authentication header is required, because the access token has usually expired by the time this is called. Send the refresh token from the `verify-otp` response.

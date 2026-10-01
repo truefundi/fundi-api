@@ -14,15 +14,6 @@ import { UpdateAccountDto } from './dto/update-account.dto';
 export class UsersController {
   constructor(private usersService: UsersService) {}
 
-  // Returns the current authenticated account from the database.
-  @Get('me')
-  @UseGuards(AuthGuard('jwt'))
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get current logged in user profile' })
-  async getProfile(@Req() request: { user: { userId: string } }) {
-    return this.usersService.getById(request.user.userId);
-  }
-
   // Allows a signed-in user to edit profile fields but not role or status.
   @Patch('me')
   @UseGuards(AuthGuard('jwt'))

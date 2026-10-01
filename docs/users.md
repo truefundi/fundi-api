@@ -1,6 +1,6 @@
 # User Management API
 
-All routes require `Authorization: Bearer <accessToken>`. Routes marked **Admin** additionally require the `ADMIN` role. Any active signed-in user may use the `/me` routes. Send `Content-Type: application/json` for requests with a body.
+All routes require `Authorization: Bearer <accessToken>`. Routes marked **Admin** additionally require the `ADMIN` role. Any active signed-in user may use the `/me` routes. View the current account with `GET /api/v1/auth/me`. Send `Content-Type: application/json` for requests with a body.
 
 A full user record has this structure:
 
@@ -18,12 +18,6 @@ A full user record has this structure:
 ```
 
 `email` is `null` if no email was provided. Roles are `CUSTOMER`, `TECHNICIAN`, and `ADMIN`; statuses are `ACTIVE` and `INACTIVE`.
-
-## `GET /api/v1/users/me`
-
-View the authenticated user's account. No request body.
-
-Success response (`200`): one full user record.
 
 ## `PATCH /api/v1/users/me`
 

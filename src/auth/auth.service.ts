@@ -43,19 +43,25 @@ return nextResendCount
 // Atomically checks and consumes a code or increments its failed-attempt count.
 // Returns -1 when nothing is pending, -3 when the code has passed its expiry, -2
 // once the attempt limit is reached, 1 on success and 0 on a wrong guess.
+// KEYS[2] is a separate account-scoped counter that outlives the OTP hash, so
+// requesting a fresh code cannot buy back a run of guesses.
 const VERIFY_OTP_SCRIPT = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
 if tonumber(redis.call('HGET', KEYS[1], 'expiresAt') or '0') <= tonumber(ARGV[3]) then
   redis.call('DEL', KEYS[1])
   return -3
 end
+if tonumber(redis.call('GET', KEYS[2]) or '0') >= tonumber(ARGV[4]) then return -2 end
 local verificationTries = tonumber(redis.call('HGET', KEYS[1], 'verificationTries') or '0')
 if verificationTries >= tonumber(ARGV[2]) then return -2 end
 if redis.call('HGET', KEYS[1], 'codeHash') == ARGV[1] then
   redis.call('DEL', KEYS[1])
+  redis.call('DEL', KEYS[2])
   return 1
 end
 redis.call('HINCRBY', KEYS[1], 'verificationTries', 1)
+redis.call('INCR', KEYS[2])
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
 return 0
 `;
 
@@ -68,6 +74,9 @@ export class AuthService {
   // Keeps an expired code around briefly so it can be reported as expired rather
   // than looking like one that was never sent. Redis still evicts it afterwards.
   private readonly otpExpiryGraceSeconds = 120;
+  // Sliding window for the account-wide wrong-guess tally, so a slow trickle of
+  // guesses cannot accumulate forever while a genuine typo recovers within minutes.
+  private readonly otpAttemptWindowSeconds = 900;
 
   constructor(
     private jwtService: JwtService,
@@ -116,7 +125,7 @@ export class AuthService {
     const code = randomInt(100000, 1000000).toString();
     const resendCount = await this.runOtpScript(
       RESEND_OTP_SCRIPT,
-      this.otpKey(user.id),
+      [this.otpKey(user.id)],
       this.hash(code),
       String(this.maxOtpResends),
       String(this.otpExpiresAt()),
@@ -139,10 +148,12 @@ export class AuthService {
     this.ensureActive(user.status);
     const verificationResult = await this.runOtpScript(
       VERIFY_OTP_SCRIPT,
-      this.otpKey(user.id),
+      [this.otpKey(user.id), this.otpTriesKey(user.id)],
       this.hash(otp),
       String(this.maxOtpVerificationTries),
       String(Date.now()),
+      String(this.maxOtpVerificationTries),
+      String(this.otpAttemptWindowSeconds),
     );
     if (verificationResult === -1) {
       throw new BadRequestException('No OTP is pending. Request a new login OTP.');
@@ -151,7 +162,9 @@ export class AuthService {
       throw new UnauthorizedException('The OTP has expired. Request a new login OTP.');
     }
     if (verificationResult === -2) {
-      throw new ForbiddenException('Too many incorrect OTP attempts. Request a new login OTP.');
+      throw new ForbiddenException(
+        'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
+      );
     }
     if (verificationResult === 0) {
       throw new UnauthorizedException('The OTP is incorrect.');
@@ -246,7 +259,7 @@ export class AuthService {
     const code = randomInt(100000, 1000000).toString();
     await this.runOtpScript(
       CREATE_OTP_SCRIPT,
-      this.otpKey(userId),
+      [this.otpKey(userId)],
       this.hash(code),
       '0',
       '0',
@@ -272,9 +285,9 @@ export class AuthService {
   }
 
   // Executes an atomic OTP operation and translates Redis outages to a service error.
-  private async runOtpScript(script: string, key: string, ...args: string[]): Promise<number> {
+  private async runOtpScript(script: string, keys: string[], ...args: string[]): Promise<number> {
     try {
-      const result = await this.redisService.getClient().eval(script, 1, key, ...args);
+      const result = await this.redisService.getClient().eval(script, keys.length, ...keys, ...args);
       return Number(result);
     } catch (error) {
       this.logger.error(`OTP Redis operation failed: ${this.errorMessage(error)}`);
@@ -285,6 +298,12 @@ export class AuthService {
   // Keeps pending OTP records in a namespaced key per account.
   private otpKey(userId: string) {
     return `auth:otp:${userId}`;
+  }
+
+  // Holds the account-wide wrong-guess tally, deliberately separate from the OTP
+  // hash so that issuing a new code cannot reset it.
+  private otpTriesKey(userId: string) {
+    return `auth:otp:tries:${userId}`;
   }
 
   // Absolute expiry stamp stored on the hash and treated as authoritative.

@@ -75,6 +75,7 @@ describe('AuthService OTP scripts against Redis', () => {
   let sent: Array<{ phoneNumber: string; code: string }>;
   let service: AuthService;
   let key: string;
+  let triesKey: string;
 
   // The code most recently handed to the SMS boundary.
   const lastCode = () => sent[sent.length - 1].code;
@@ -86,6 +87,7 @@ describe('AuthService OTP scripts against Redis', () => {
     client = new Redis({ host: HOST, port: PORT });
     sent = [];
     key = `auth:otp:${activeUser.id}`;
+    triesKey = `auth:otp:tries:${activeUser.id}`;
 
     const prisma = {
       user: { findUnique: jest.fn().mockResolvedValue(activeUser) },
@@ -114,12 +116,12 @@ describe('AuthService OTP scripts against Redis', () => {
       { getClient: () => client } as never,
     );
 
-    await client.del(key);
+    await client.del(key, triesKey);
   });
 
   afterEach(async () => {
     if (!client) return;
-    await client.del(key);
+    await client.del(key, triesKey);
     // disconnect() releases the socket without waiting on Redis, which keeps
     // Jest from having to force-exit the worker.
     client.disconnect();
@@ -206,7 +208,7 @@ describe('AuthService OTP scripts against Redis', () => {
         await expect(service.verifyOtp(activeUser.phoneNumber, wrong)).rejects.toThrow('The OTP is incorrect.');
       }
       await expect(service.verifyOtp(activeUser.phoneNumber, wrong)).rejects.toThrow(
-        'Too many incorrect OTP attempts. Request a new login OTP.',
+        'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
       );
     });
 
@@ -218,8 +220,59 @@ describe('AuthService OTP scripts against Redis', () => {
         await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
       }
       await expect(service.verifyOtp(activeUser.phoneNumber, code)).rejects.toThrow(
-        'Too many incorrect OTP attempts. Request a new login OTP.',
+        'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
       );
+    });
+
+    // The tally must belong to the account, not to whichever code is pending.
+    itIfRedis('does not let a freshly requested code buy back guesses', async () => {
+      await service.requestLoginOtp(activeUser.phoneNumber);
+      const wrong = wrongCode();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
+      }
+      // A brand new OTP resets the per-code counter...
+      await service.requestLoginOtp(activeUser.phoneNumber);
+      expect(Number(await client.hget(key, 'verificationTries'))).toBe(0);
+      // ...but the account-scoped tally must still refuse the guess.
+      await expect(service.verifyOtp(activeUser.phoneNumber, wrongCode())).rejects.toThrow(
+        'Too many incorrect OTP attempts.',
+      );
+    });
+
+    itIfRedis('refuses the correct code on a fresh request once the account is locked', async () => {
+      await service.requestLoginOtp(activeUser.phoneNumber);
+      const wrong = wrongCode();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
+      }
+      await service.requestLoginOtp(activeUser.phoneNumber);
+      const fresh = lastCode();
+      await expect(service.verifyOtp(activeUser.phoneNumber, fresh)).rejects.toThrow(
+        'Too many incorrect OTP attempts.',
+      );
+    });
+
+    itIfRedis('clears the account tally once the right code arrives', async () => {
+      await service.requestLoginOtp(activeUser.phoneNumber);
+      const code = lastCode();
+      const wrong = wrongCode();
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
+      }
+      expect(Number(await client.get(triesKey))).toBe(3);
+      await service.verifyOtp(activeUser.phoneNumber, code);
+      expect(await client.get(triesKey)).toBeNull();
+    });
+
+    itIfRedis('keeps the account tally separate per account', async () => {
+      await service.requestLoginOtp(activeUser.phoneNumber);
+      const wrong = wrongCode();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
+      }
+      await expect(client.get(`auth:otp:tries:somebody-else`)).resolves.toBeNull();
+      expect(Number(await client.get(triesKey))).toBe(5);
     });
   });
 

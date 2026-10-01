@@ -26,6 +26,11 @@ npm run prisma:generate
 npm run start:dev
 ```
 
+To populate the initial service categories in the configured database, run:
+```bash
+npm run prisma:seed
+```
+
 * **API Base URL:** `http://localhost:3000`
 * **Swagger OpenAPI Documentation:** `http://localhost:3000/api/docs`
 * **Health Check Endpoint:** `http://localhost:3000/api/v1/health`
@@ -55,6 +60,7 @@ backend/
 ├── src/
 │   ├── auth/                 # JWT Authentication & Passport strategy
 │   ├── common/               # Global filters & interceptors
+│   ├── catalog/              # Public service categories and admin catalog management
 │   ├── config/               # Environment configuration loader
 │   ├── database/             # Prisma database service & module
 │   ├── health/               # API, Database, and Redis health checks
@@ -67,6 +73,8 @@ backend/
 │   └── main.ts               # Application entry point
 ├── docs/
 │   ├── authentication.md     # Phone OTP authentication endpoint guide
+│   ├── implementation-roadmap.md # Ordered daily feature delivery plan
+│   ├── service-categories.md # Service catalog endpoint guide
 │   └── users.md              # User management endpoint guide
 ├── test/                     # End-to-end (E2E) integration tests
 ├── .env.example              # Environment variables template
@@ -105,6 +113,8 @@ Open `http://localhost:3000/api/docs` in a browser to explore the generated Open
 Detailed request formats and expected responses are documented separately:
 
 - [Phone authentication and OTP endpoints](docs/authentication.md)
+- [Service categories endpoints](docs/service-categories.md)
 - [User management endpoints](docs/users.md)
+- [Day-by-day implementation roadmap](docs/implementation-roadmap.md)
 
 These guides include required authentication, request examples, successful response structures, and common errors.

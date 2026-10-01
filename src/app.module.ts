@@ -9,6 +9,8 @@ import { WebSocketsModule } from './websockets/websockets.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { HealthModule } from './health/health.module';
+import { AuditModule } from './audit/audit.module';
+import { CatalogModule } from './catalog/catalog.module';
 
 @Module({
   imports: [
@@ -22,6 +24,8 @@ import { HealthModule } from './health/health.module';
     WebSocketsModule,
     AuthModule,
     UsersModule,
+    AuditModule,
+    CatalogModule,
     HealthModule,
   ],
   controllers: [AppController],

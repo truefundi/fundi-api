@@ -15,6 +15,10 @@ export default () => {
   sms: {
     mode: process.env.SMS_MODE || (environment === 'development' ? 'console' : 'provider'),
   },
+  otp: {
+    // OTP lifetime in seconds. `|| 300` also swallows a non-numeric value.
+    ttlSeconds: Number(process.env.OTP_TTL_SECONDS) || 300,
+  },
   jwt: {
     accessSecret:
       process.env.JWT_ACCESS_SECRET || 'default_dev_access_secret_32chars',
@@ -22,8 +26,8 @@ export default () => {
       process.env.JWT_REFRESH_SECRET || 'default_dev_refresh_secret_32chars',
     tokenHashSecret:
       process.env.TOKEN_HASH_SECRET || process.env.JWT_REFRESH_SECRET || 'development_token_hash_secret_change_before_production',
-    accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m',
-    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+    accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '7d',
+    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
   },
   cors: {
     origins: (process.env.CORS_ORIGINS || 'http://localhost:3000').split(','),

@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../database/prisma.service';
@@ -114,5 +114,120 @@ describe('AuthService phone OTP flow', () => {
     prisma.user.findUnique.mockResolvedValue(activeUser);
     redisClient.eval.mockResolvedValue(0);
     await expect(service.verifyOtp(activeUser.phoneNumber, '654321')).rejects.toThrow('The OTP is incorrect.');
+  });
+});
+
+// Covers refresh-token exchange, including the single-use rotation guard.
+describe('AuthService refresh token exchange', () => {
+  const activeUser = {
+    id: 'user-1',
+    fullName: 'Amina Example',
+    phoneNumber: '+250788123456',
+    email: null,
+    role: 'CUSTOMER',
+    status: 'ACTIVE',
+  };
+
+  // Builds a service whose transaction callback runs against the same mocked client.
+  const createService = (overrides: Record<string, unknown> = {}, settings: Record<string, string> = {}) => {
+    const storedSession = {
+      id: 'session-row-1',
+      sessionId: 'sid-old',
+      userId: activeUser.id,
+      token: 'hash-of-current-refresh-token',
+      expiresAt: new Date(Date.now() + 60_000),
+      ...overrides,
+    };
+    const tx = {
+      refreshToken: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const prisma = {
+      user: { findUnique: jest.fn().mockResolvedValue(activeUser) },
+      refreshToken: { findUnique: jest.fn().mockResolvedValue(storedSession) },
+      $transaction: jest.fn((work: (t: typeof tx) => Promise<unknown>) => work(tx)),
+    };
+    const jwt = {
+      signAsync: jest.fn().mockResolvedValueOnce('new-access-token').mockResolvedValueOnce('new-refresh-token'),
+    };
+    // No default is forced here: an unset key falls through to the service's own
+    // fallback, so these tests cover the shipped default rather than the mock.
+    const config = {
+      get: jest.fn((key: string, fallback: string) => settings[key] ?? fallback),
+    };
+    const service = new AuthService(
+      jwt as unknown as JwtService,
+      config as unknown as ConfigService,
+      prisma as unknown as PrismaService,
+      { sendOtp: jest.fn() } as unknown as SmsService,
+      { getClient: () => ({ eval: jest.fn() }) } as unknown as RedisService,
+    );
+    return { service, prisma, tx };
+  };
+
+  // Returns a new pair and stores the rotated session row.
+  it('issues a new token pair for a valid refresh token', async () => {
+    const { service, tx } = createService();
+    const result = await service.refreshTokens('current-refresh-token');
+    expect(result).toMatchObject({
+      user: { id: activeUser.id, fullName: activeUser.fullName },
+      accessToken: 'new-access-token',
+      refreshToken: 'new-refresh-token',
+    });
+    expect(tx.refreshToken.create).toHaveBeenCalledTimes(1);
+  });
+
+  // Rejects a token with no stored session, covering forged and already-revoked values.
+  it('rejects an unknown refresh token', async () => {
+    const { service, prisma } = createService();
+    prisma.refreshToken.findUnique.mockResolvedValue(null);
+    await expect(service.refreshTokens('nope')).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  // Refuses a stored session whose lifetime has already elapsed.
+  it('rejects an expired refresh token', async () => {
+    const { service } = createService({ expiresAt: new Date(Date.now() - 1000) });
+    await expect(service.refreshTokens('current-refresh-token')).rejects.toThrow('The refresh token has expired.');
+  });
+
+  // Stops a deactivated account from extending its session.
+  it('rejects refresh for an inactive account', async () => {
+    const { service, prisma } = createService();
+    prisma.user.findUnique.mockResolvedValue({ ...activeUser, status: 'INACTIVE' });
+    await expect(service.refreshTokens('current-refresh-token')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  // Fails the second of two concurrent refreshes so one token cannot mint two pairs.
+  it('refuses a refresh token that was already consumed', async () => {
+    const { service, tx } = createService();
+    tx.refreshToken.deleteMany.mockResolvedValue({ count: 0 });
+    await expect(service.refreshTokens('current-refresh-token')).rejects.toThrow(
+      'The refresh token is invalid or already revoked.',
+    );
+    expect(tx.refreshToken.create).not.toHaveBeenCalled();
+  });
+
+  // Derives the stored expiry from jwt.refreshExpiresIn instead of a fixed constant.
+  it('defaults the stored session expiry to thirty days', async () => {
+    const { service, tx } = createService();
+    const before = Date.now();
+    await service.refreshTokens('current-refresh-token');
+    const stored = tx.refreshToken.create.mock.calls[0][0].data;
+    const seconds = (stored.expiresAt.getTime() - before) / 1000;
+    expect(seconds).toBeGreaterThan(29.9 * 86400);
+    expect(seconds).toBeLessThan(30.1 * 86400);
+  });
+
+  // Honours a shortened configured lifetime rather than always assuming thirty days.
+  it('follows a shortened jwt.refreshExpiresIn', async () => {
+    const { service, tx } = createService({}, { 'jwt.refreshExpiresIn': '1d' });
+    const before = Date.now();
+    await service.refreshTokens('current-refresh-token');
+    const stored = tx.refreshToken.create.mock.calls[0][0].data;
+    const seconds = (stored.expiresAt.getTime() - before) / 1000;
+    expect(seconds).toBeGreaterThan(0.9 * 86400);
+    expect(seconds).toBeLessThan(1.1 * 86400);
   });
 });

@@ -39,7 +39,18 @@ async function bootstrap() {
     .setTitle('Fundi API')
     .setDescription('Fundi Platform Backend REST & Realtime API')
     .setVersion('1.0')
-    .addBearerAuth()
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        description:
+          'Paste the `accessToken` returned by `POST /api/v1/auth/verify-otp`, with no "Bearer " prefix.',
+      },
+      'accessToken',
+    )
+    .addTag('auth', 'Phone-OTP sign-up and sign-in, token exchange, and session revocation.')
+    .addTag('users', 'Profile and account administration. Routes marked admin need the ADMIN role.')
     .build();
 
   const document = SwaggerModule.createDocument(app, config);

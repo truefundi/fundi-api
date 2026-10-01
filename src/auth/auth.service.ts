@@ -17,44 +17,66 @@ import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { UserRole } from '@prisma/client';
 
-// Creates the initial OTP hash and applies its one-minute Redis TTL atomically.
+// Creates the initial OTP hash and applies its Redis TTL atomically. The absolute
+// expiry is stored as a field so an expired code stays distinguishable from one
+// that was never sent, and the key outlives the code to allow that.
 const CREATE_OTP_SCRIPT = `
-redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', ARGV[2], 'verificationTries', ARGV[3])
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
+redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', ARGV[2], 'verificationTries', ARGV[3], 'expiresAt', ARGV[4])
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[5]))
 return 1
 `;
 
-// Atomically enforces resend limits while replacing the code and expiry.
+// Atomically enforces resend limits while replacing the code and expiry. The
+// failed-attempt counter is carried over so resending cannot clear a run of
+// wrong guesses.
 const RESEND_OTP_SCRIPT = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
 local resendCount = tonumber(redis.call('HGET', KEYS[1], 'resendCount') or '0')
 if resendCount >= tonumber(ARGV[2]) then return -2 end
 local verificationTries = redis.call('HGET', KEYS[1], 'verificationTries') or '0'
 local nextResendCount = resendCount + 1
-redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', nextResendCount, 'verificationTries', verificationTries)
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', nextResendCount, 'verificationTries', verificationTries, 'expiresAt', ARGV[3])
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
 return nextResendCount
 `;
 
 // Atomically checks and consumes a code or increments its failed-attempt count.
+// Returns -1 when nothing is pending, -3 when the code has passed its expiry, -2
+// once the attempt limit is reached, 1 on success and 0 on a wrong guess.
+// KEYS[2] is a separate account-scoped counter that outlives the OTP hash, so
+// requesting a fresh code cannot buy back a run of guesses.
 const VERIFY_OTP_SCRIPT = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
+if tonumber(redis.call('HGET', KEYS[1], 'expiresAt') or '0') <= tonumber(ARGV[3]) then
+  redis.call('DEL', KEYS[1])
+  return -3
+end
+if tonumber(redis.call('GET', KEYS[2]) or '0') >= tonumber(ARGV[4]) then return -2 end
 local verificationTries = tonumber(redis.call('HGET', KEYS[1], 'verificationTries') or '0')
 if verificationTries >= tonumber(ARGV[2]) then return -2 end
 if redis.call('HGET', KEYS[1], 'codeHash') == ARGV[1] then
   redis.call('DEL', KEYS[1])
+  redis.call('DEL', KEYS[2])
   return 1
 end
 redis.call('HINCRBY', KEYS[1], 'verificationTries', 1)
+redis.call('INCR', KEYS[2])
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
 return 0
 `;
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private readonly otpTtlSeconds = 60;
+  private readonly otpTtlSeconds: number;
   private readonly maxOtpResends = 3;
   private readonly maxOtpVerificationTries = 5;
+  // Keeps an expired code around briefly so it can be reported as expired rather
+  // than looking like one that was never sent. Redis still evicts it afterwards.
+  private readonly otpExpiryGraceSeconds = 120;
+  // Sliding window for the account-wide wrong-guess tally, so a slow trickle of
+  // guesses cannot accumulate forever while a genuine typo recovers within minutes.
+  private readonly otpAttemptWindowSeconds = 900;
 
   constructor(
     private jwtService: JwtService,
@@ -62,7 +84,9 @@ export class AuthService {
     private prisma: PrismaService,
     private smsService: SmsService,
     private redisService: RedisService,
-  ) {}
+  ) {
+    this.otpTtlSeconds = this.configService.get<number>('otp.ttlSeconds', 300);
+  }
 
   // Creates a customer or technician account, defaulting to customer, then starts OTP verification.
   async register(input: RegisterDto) {
@@ -92,7 +116,7 @@ export class AuthService {
     if (!user) throw new NotFoundException('No account was found for this phone number.');
     this.ensureActive(user.status);
     await this.issueOtp(user.id, user.phoneNumber);
-    return { message: 'OTP generated. It expires in one minute.' };
+    return { message: `OTP generated. It expires in ${this.otpLifetimeMinutes()} minutes.` };
   }
 
   // Issues a replacement OTP while Redis retains its resend and attempt counters.
@@ -103,13 +127,14 @@ export class AuthService {
     const code = randomInt(100000, 1000000).toString();
     const resendCount = await this.runOtpScript(
       RESEND_OTP_SCRIPT,
-      this.otpKey(user.id),
+      [this.otpKey(user.id)],
       this.hash(code),
       String(this.maxOtpResends),
-      String(this.otpTtlSeconds),
+      String(this.otpExpiresAt()),
+      String(this.otpKeyTtlSeconds()),
     );
     if (resendCount === -1) {
-      throw new BadRequestException('There is no pending OTP or it has expired. Request a new login OTP.');
+      throw new BadRequestException('There is no pending OTP. Request a login OTP first.');
     }
     if (resendCount === -2) {
       throw new BadRequestException('The maximum of three OTP resends has been reached.');
@@ -125,22 +150,30 @@ export class AuthService {
     this.ensureActive(user.status);
     const verificationResult = await this.runOtpScript(
       VERIFY_OTP_SCRIPT,
-      this.otpKey(user.id),
+      [this.otpKey(user.id), this.otpTriesKey(user.id)],
       this.hash(otp),
       String(this.maxOtpVerificationTries),
+      String(Date.now()),
+      String(this.maxOtpVerificationTries),
+      String(this.otpAttemptWindowSeconds),
     );
     if (verificationResult === -1) {
-      throw new BadRequestException('No OTP is pending or it has expired. Request a new login OTP.');
+      throw new BadRequestException('No OTP is pending. Request a new login OTP.');
+    }
+    if (verificationResult === -3) {
+      throw new UnauthorizedException('The OTP has expired. Request a new login OTP.');
     }
     if (verificationResult === -2) {
-      throw new ForbiddenException('Too many incorrect OTP attempts. Request a new login OTP.');
+      throw new ForbiddenException(
+        'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
+      );
     }
     if (verificationResult === 0) {
       throw new UnauthorizedException('The OTP is incorrect.');
     }
     const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
     const refreshHash = this.hash(tokens.refreshToken);
-    const refreshExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const refreshExpiresAt = this.refreshTokenExpiresAt();
     await this.prisma.refreshToken.create({
       data: { token: refreshHash, sessionId, userId: user.id, expiresAt: refreshExpiresAt },
     });
@@ -159,6 +192,41 @@ export class AuthService {
     return { message: 'Logged out successfully.' };
   }
 
+  // Exchanges a valid refresh token for a fresh pair and rotates the stored session.
+  async refreshTokens(refreshToken: string) {
+    const currentHash = this.hash(refreshToken);
+    const session = await this.prisma.refreshToken.findUnique({ where: { token: currentHash } });
+    if (!session) {
+      throw new UnauthorizedException('The refresh token is invalid or already revoked.');
+    }
+    if (session.expiresAt.getTime() <= Date.now()) {
+      throw new UnauthorizedException('The refresh token has expired. Log in again.');
+    }
+    const user = await this.prisma.user.findUnique({ where: { id: session.userId } });
+    if (!user) {
+      throw new UnauthorizedException('The account associated with this token no longer exists.');
+    }
+    this.ensureActive(user.status);
+    const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
+    const expiresAt = this.refreshTokenExpiresAt();
+    const rotatedHash = this.hash(tokens.refreshToken);
+    // Deleting and reinserting in one transaction keeps the old token single-use: two
+    // concurrent refreshes race on the same row and only one delete can report a match.
+    await this.prisma.$transaction(async (tx) => {
+      const revoked = await tx.refreshToken.deleteMany({ where: { id: session.id, userId: user.id } });
+      if (revoked.count === 0) {
+        throw new UnauthorizedException('The refresh token is invalid or already revoked.');
+      }
+      await tx.refreshToken.create({
+        data: { token: rotatedHash, sessionId, userId: user.id, expiresAt },
+      });
+    });
+    return {
+      user: { id: user.id, fullName: user.fullName, phoneNumber: user.phoneNumber, role: user.role },
+      ...tokens,
+    };
+  }
+
   // Generates JWTs with the account identity and configured expiration periods.
   async generateTokens(userId: string, phoneNumber: string, role: string) {
     const sessionId = randomUUID();
@@ -173,12 +241,12 @@ export class AuthService {
 
     const accessToken = await this.jwtService.signAsync(payload, {
       secret: accessSecret,
-      expiresIn: this.configService.get<string>('jwt.accessExpiresIn', '15m') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      expiresIn: this.configService.get<string>('jwt.accessExpiresIn', '7d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
     });
 
     const refreshToken = await this.jwtService.signAsync(payload, {
       secret: refreshSecret,
-      expiresIn: this.configService.get<string>('jwt.refreshExpiresIn', '7d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      expiresIn: this.configService.get<string>('jwt.refreshExpiresIn', '30d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
     });
 
     return {
@@ -193,11 +261,12 @@ export class AuthService {
     const code = randomInt(100000, 1000000).toString();
     await this.runOtpScript(
       CREATE_OTP_SCRIPT,
-      this.otpKey(userId),
+      [this.otpKey(userId)],
       this.hash(code),
       '0',
       '0',
-      String(this.otpTtlSeconds),
+      String(this.otpExpiresAt()),
+      String(this.otpKeyTtlSeconds()),
     );
     await this.deliverOtp(userId, phoneNumber, code);
   }
@@ -218,9 +287,9 @@ export class AuthService {
   }
 
   // Executes an atomic OTP operation and translates Redis outages to a service error.
-  private async runOtpScript(script: string, key: string, ...args: string[]): Promise<number> {
+  private async runOtpScript(script: string, keys: string[], ...args: string[]): Promise<number> {
     try {
-      const result = await this.redisService.getClient().eval(script, 1, key, ...args);
+      const result = await this.redisService.getClient().eval(script, keys.length, ...keys, ...args);
       return Number(result);
     } catch (error) {
       this.logger.error(`OTP Redis operation failed: ${this.errorMessage(error)}`);
@@ -233,6 +302,28 @@ export class AuthService {
     return `auth:otp:${userId}`;
   }
 
+  // Holds the account-wide wrong-guess tally, deliberately separate from the OTP
+  // hash so that issuing a new code cannot reset it.
+  private otpTriesKey(userId: string) {
+    return `auth:otp:tries:${userId}`;
+  }
+
+  // Absolute expiry stamp stored on the hash and treated as authoritative.
+  private otpExpiresAt(): number {
+    return Date.now() + this.otpTtlSeconds * 1000;
+  }
+
+  // Whole minutes the code stays usable, for the messages shown to callers.
+  private otpLifetimeMinutes(): number {
+    return Math.round(this.otpTtlSeconds / 60);
+  }
+
+  // Redis key lifetime, which outlives the code by the grace period so an
+  // expired code can still be identified as expired.
+  private otpKeyTtlSeconds(): number {
+    return this.otpTtlSeconds + this.otpExpiryGraceSeconds;
+  }
+
   // Formats unknown errors for diagnostic logs without hiding the cause.
   private errorMessage(error: unknown) {
     return error instanceof Error ? error.message : String(error);
@@ -243,6 +334,20 @@ export class AuthService {
     if (status !== 'ACTIVE') {
       throw new ForbiddenException('This account is not active. Please contact the administrator through the Contact Us page.');
     }
+  }
+
+  // Converts a JWT duration such as 30d or 7d into seconds so the stored session
+  // expiry can follow the configured token lifetime instead of a fixed constant.
+  private durationToSeconds(value: string): number {
+    const match = /^(\d+)\s*(s|m|h|d|w|y)?$/i.exec(String(value).trim());
+    if (!match) return 30 * 24 * 60 * 60;
+    const units: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 604800, y: 31536000 };
+    return Number(match[1]) * units[(match[2] || 's').toLowerCase()];
+  }
+
+  // Expiry stored on a refresh-token row, kept in step with jwt.refreshExpiresIn.
+  private refreshTokenExpiresAt(): Date {
+    return new Date(Date.now() + this.durationToSeconds(this.configService.get<string>('jwt.refreshExpiresIn', '30d')) * 1000);
   }
 
   // Hashes OTP and refresh-token secrets before storing them in the database.

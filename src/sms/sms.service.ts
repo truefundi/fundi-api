@@ -14,6 +14,9 @@ export class SmsService {
     if (mode !== 'console') {
       throw new ServiceUnavailableException('SMS provider is not configured for this environment.');
     }
-    this.logger.warn(`Development OTP for ${phoneNumber}: ${otp} (expires in 60 seconds)`);
+    const ttlSeconds = this.configService.get<number>('otp.ttlSeconds', 300);
+    this.logger.warn(
+      `Development OTP for ${phoneNumber}: ${otp} (expires in ${Math.round(ttlSeconds / 60)} minutes)`,
+    );
   }
 }

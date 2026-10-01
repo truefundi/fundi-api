@@ -2,7 +2,9 @@
 
 Phone numbers are the login identifier. Public registration accepts `CUSTOMER` or `TECHNICIAN` (case-insensitive) and defaults to `CUSTOMER`; it cannot create an administrator. New accounts default to `ACTIVE`.
 
-Send `Content-Type: application/json` for requests with a body. OTP hashes and resend/verification counters are stored temporarily in Redis, where the OTP key expires automatically after 60 seconds; PostgreSQL stores user and refresh-token data, not OTPs. During development, `SMS_MODE=console` prints OTP codes in the backend terminal, not in the HTTP response. OTPs can be resent at most three times and are rejected after five incorrect attempts. The five-attempt limit is counted per account rather than per code, so requesting or resending a new OTP does not reset it. After five incorrect guesses the account is locked out of verification for fifteen minutes, and each further guess restarts that window; a successful verification clears the count.
+Send `Content-Type: application/json` for requests with a body. OTP hashes and resend/verification counters are stored temporarily in Redis, where the OTP key expires automatically after five minutes; PostgreSQL stores user and refresh-token data, not OTPs. During development, `SMS_MODE=console` prints OTP codes in the backend terminal, not in the HTTP response. OTPs can be resent at most three times and are rejected after five incorrect attempts. The five-attempt limit is counted per account rather than per code, so requesting or resending a new OTP does not reset it. After five incorrect guesses the account is locked out of verification for fifteen minutes, and each further guess restarts that window; a successful verification clears the count.
+
+Lifetimes are settings, not constants: `OTP_TTL_SECONDS` (default `300`, five minutes) controls how long a code stays usable, `JWT_ACCESS_EXPIRES_IN` (default `7d`) the access token, and `JWT_REFRESH_EXPIRES_IN` (default `30d`) the refresh token and the matching `refresh_tokens` row. Durations accept `s`, `m`, `h`, `d`, `w`, and `y`; there is no month unit, so a month is expressed as `30d`. Note that a one-week access token means a leaked token stays usable until it expires or the session is revoked, so keep `JWT_ACCESS_SECRET` private and prefer the shortest lifetime that still suits the client.
 
 ## `POST /api/v1/auth/register`
 
@@ -49,7 +51,7 @@ Success response (`200`):
 
 ```json
 {
-  "message": "OTP generated. It expires in one minute."
+  "message": "OTP generated. It expires in 5 minutes."
 }
 ```
 
@@ -164,7 +166,7 @@ Success response (`200`):
 }
 ```
 
-The stored session lifetime follows the `JWT_REFRESH_EXPIRES_IN` setting, so shortening it also shortens how long a refresh token can be exchanged.
+The stored session lifetime follows `JWT_REFRESH_EXPIRES_IN` (default `30d`). Changing that setting changes how long a refresh token remains valid, so the database row and JWT are always in step.
 
 ## Common errors
 

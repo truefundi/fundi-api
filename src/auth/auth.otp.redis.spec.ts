@@ -145,8 +145,25 @@ describe('AuthService OTP scripts against Redis', () => {
 
     itIfRedis('keeps the key alive past the code lifetime', async () => {
       await service.requestLoginOtp(activeUser.phoneNumber);
-      // 60s of validity plus the grace period that keeps expiry reportable.
-      expect(await client.ttl(key)).toBeGreaterThan(60);
+      // 300s of validity plus the 120s grace period that keeps expiry reportable.
+      const ttl = await client.ttl(key);
+      expect(ttl).toBeGreaterThan(300);
+      expect(ttl).toBeLessThanOrEqual(420);
+    });
+
+    itIfRedis('stamps the hash with the configured five-minute expiry', async () => {
+      const before = Date.now();
+      await service.requestLoginOtp(activeUser.phoneNumber);
+      const stored = await client.hgetall(key);
+      const seconds = (Number(stored.expiresAt) - before) / 1000;
+      expect(seconds).toBeGreaterThan(295);
+      expect(seconds).toBeLessThanOrEqual(300);
+    });
+
+    itIfRedis('tells the caller how long the code stays usable', async () => {
+      await expect(service.requestLoginOtp(activeUser.phoneNumber)).resolves.toMatchObject({
+        message: 'OTP generated. It expires in 5 minutes.',
+      });
     });
 
     itIfRedis('starts the attempt and resend counters at zero', async () => {

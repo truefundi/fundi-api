@@ -68,7 +68,7 @@ return 0
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private readonly otpTtlSeconds = 60;
+  private readonly otpTtlSeconds: number;
   private readonly maxOtpResends = 3;
   private readonly maxOtpVerificationTries = 5;
   // Keeps an expired code around briefly so it can be reported as expired rather
@@ -84,7 +84,9 @@ export class AuthService {
     private prisma: PrismaService,
     private smsService: SmsService,
     private redisService: RedisService,
-  ) {}
+  ) {
+    this.otpTtlSeconds = this.configService.get<number>('otp.ttlSeconds', 300);
+  }
 
   // Creates a customer or technician account, defaulting to customer, then starts OTP verification.
   async register(input: RegisterDto) {
@@ -114,7 +116,7 @@ export class AuthService {
     if (!user) throw new NotFoundException('No account was found for this phone number.');
     this.ensureActive(user.status);
     await this.issueOtp(user.id, user.phoneNumber);
-    return { message: 'OTP generated. It expires in one minute.' };
+    return { message: `OTP generated. It expires in ${this.otpLifetimeMinutes()} minutes.` };
   }
 
   // Issues a replacement OTP while Redis retains its resend and attempt counters.
@@ -239,12 +241,12 @@ export class AuthService {
 
     const accessToken = await this.jwtService.signAsync(payload, {
       secret: accessSecret,
-      expiresIn: this.configService.get<string>('jwt.accessExpiresIn', '15m') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      expiresIn: this.configService.get<string>('jwt.accessExpiresIn', '7d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
     });
 
     const refreshToken = await this.jwtService.signAsync(payload, {
       secret: refreshSecret,
-      expiresIn: this.configService.get<string>('jwt.refreshExpiresIn', '7d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      expiresIn: this.configService.get<string>('jwt.refreshExpiresIn', '30d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
     });
 
     return {
@@ -311,6 +313,11 @@ export class AuthService {
     return Date.now() + this.otpTtlSeconds * 1000;
   }
 
+  // Whole minutes the code stays usable, for the messages shown to callers.
+  private otpLifetimeMinutes(): number {
+    return Math.round(this.otpTtlSeconds / 60);
+  }
+
   // Redis key lifetime, which outlives the code by the grace period so an
   // expired code can still be identified as expired.
   private otpKeyTtlSeconds(): number {
@@ -329,18 +336,18 @@ export class AuthService {
     }
   }
 
-  // Converts a JWT duration such as 7d or 15m into seconds so the stored session
+  // Converts a JWT duration such as 30d or 7d into seconds so the stored session
   // expiry can follow the configured token lifetime instead of a fixed constant.
   private durationToSeconds(value: string): number {
     const match = /^(\d+)\s*(s|m|h|d|w|y)?$/i.exec(String(value).trim());
-    if (!match) return 7 * 24 * 60 * 60;
+    if (!match) return 30 * 24 * 60 * 60;
     const units: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 604800, y: 31536000 };
     return Number(match[1]) * units[(match[2] || 's').toLowerCase()];
   }
 
   // Expiry stored on a refresh-token row, kept in step with jwt.refreshExpiresIn.
   private refreshTokenExpiresAt(): Date {
-    return new Date(Date.now() + this.durationToSeconds(this.configService.get<string>('jwt.refreshExpiresIn', '7d')) * 1000);
+    return new Date(Date.now() + this.durationToSeconds(this.configService.get<string>('jwt.refreshExpiresIn', '30d')) * 1000);
   }
 
   // Hashes OTP and refresh-token secrets before storing them in the database.

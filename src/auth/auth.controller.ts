@@ -47,7 +47,7 @@ export class AuthController {
   @ApiOperation({
     summary: 'Send a login OTP to a registered phone number',
     description:
-      'Only starts a login for an account that already exists and is active. The code expires in one minute.',
+      'Only starts a login for an account that already exists and is active. The code expires in five minutes.',
   })
   @ApiValidationFailed()
   @ApiNotFound('No account was found for this phone number.')

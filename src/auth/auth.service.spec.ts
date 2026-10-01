@@ -152,8 +152,10 @@ describe('AuthService refresh token exchange', () => {
     const jwt = {
       signAsync: jest.fn().mockResolvedValueOnce('new-access-token').mockResolvedValueOnce('new-refresh-token'),
     };
+    // No default is forced here: an unset key falls through to the service's own
+    // fallback, so these tests cover the shipped default rather than the mock.
     const config = {
-      get: jest.fn((key: string, fallback: string) => settings[key] ?? ({ 'jwt.refreshExpiresIn': '7d' }[key] ?? fallback)),
+      get: jest.fn((key: string, fallback: string) => settings[key] ?? fallback),
     };
     const service = new AuthService(
       jwt as unknown as JwtService,
@@ -208,17 +210,17 @@ describe('AuthService refresh token exchange', () => {
   });
 
   // Derives the stored expiry from jwt.refreshExpiresIn instead of a fixed constant.
-  it('stores the session expiry from the configured refresh lifetime', async () => {
+  it('defaults the stored session expiry to thirty days', async () => {
     const { service, tx } = createService();
     const before = Date.now();
     await service.refreshTokens('current-refresh-token');
     const stored = tx.refreshToken.create.mock.calls[0][0].data;
     const seconds = (stored.expiresAt.getTime() - before) / 1000;
-    expect(seconds).toBeGreaterThan(6.9 * 86400);
-    expect(seconds).toBeLessThan(7.1 * 86400);
+    expect(seconds).toBeGreaterThan(29.9 * 86400);
+    expect(seconds).toBeLessThan(30.1 * 86400);
   });
 
-  // Honours a shortened configured lifetime rather than always assuming seven days.
+  // Honours a shortened configured lifetime rather than always assuming thirty days.
   it('follows a shortened jwt.refreshExpiresIn', async () => {
     const { service, tx } = createService({}, { 'jwt.refreshExpiresIn': '1d' });
     const before = Date.now();

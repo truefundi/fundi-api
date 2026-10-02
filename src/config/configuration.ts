@@ -29,6 +29,9 @@ export default () => {
     accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '7d',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
   },
+  security: {
+    nationalIdEncryptionKey: process.env.NATIONAL_ID_ENCRYPTION_KEY,
+  },
   cors: {
     origins: (process.env.CORS_ORIGINS || 'http://localhost:3000').split(','),
   },

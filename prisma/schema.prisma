@@ -61,29 +61,46 @@ model ServiceCategory {
 }
 
 enum VerificationStatus {
-  DRAFT
   PENDING
   APPROVED
   REJECTED
 }
 
+enum TechnicianAvailability {
+  ONLINE
+  OFFLINE
+}
+
+enum TechnicianGender {
+  FEMALE
+  MALE
+  NON_BINARY
+  PREFER_NOT_TO_SAY
+}
+
 model TechnicianProfile {
-  id                 String               @id @default(uuid())
-  userId             String               @unique
-  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  onboardingStep     Int                  @default(1)
-  yearsOfExperience  Int?
-  tin                String?
-  baseAddress        String?
-  baseLatitude       Float?
-  baseLongitude      Float?
-  serviceRadiusKm    Int?
-  verificationStatus VerificationStatus   @default(DRAFT)
-  categories         TechnicianCategory[]
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
+  id                    String                   @id @default(uuid())
+  userId                String                   @unique
+  user                  User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gender                TechnicianGender?
+  yearsOfExperience     Int?
+  nationalIdEncrypted   String?
+  nationalIdHash        String?                @unique
+  baseAddress           String?
+  publicLocationLabel   String?
+  baseLatitude          Float?
+  baseLongitude         Float?
+  baseLocation          Unsupported("geography(Point,4326)")?
+  profilePicture        Bytes?
+  profilePictureMimeType String?
+  verificationStatus    VerificationStatus       @default(PENDING)
+  availabilityStatus    TechnicianAvailability   @default(OFFLINE)
+  categories            TechnicianCategory[]
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
 
   @@index([verificationStatus])
+  @@index([availabilityStatus, verificationStatus])
   @@map("technician_profiles")
 }
 

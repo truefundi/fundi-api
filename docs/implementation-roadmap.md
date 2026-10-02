@@ -11,20 +11,21 @@ This is a day-by-day sequence of deliverables. Each day should end with a schema
 - Enforce admin authorization and audit category mutations.
 - Acceptance: category endpoints are wired, database migration is applied, duplicate/invalid/not-found cases have clear responses, tests pass, and the API guide is published. Verified with 6 catalog unit tests, 4 e2e tests, a clean build, and 10 seeded categories.
 
-## Day 2: Technician Profile Draft
+## Day 2: Technician Profiles, Verification, and Availability
 
 **Status: Complete (2026-10-01)**
 
-- Save and resume technician onboarding progress.
-- Capture experience, trade categories, service radius, and base address/GPS coordinates.
-- Keep onboarding status separate from the user's login-active status.
-- Acceptance: technician-only `GET` and `PUT` profile endpoints persist partial drafts across sessions; only active categories can be selected; the profile remains `DRAFT` independently from user status. Verified with 4 profile unit tests, 5 e2e tests, a clean build, and the applied migration.
+- Let a signed-in technician update user identity and profile fields in one transaction, including gender, experience, active categories, address, GPS coordinates, and optional binary profile photo.
+- Let administrators create, update, delete, search, and review technicians; keep `PENDING`/`APPROVED`/`REJECTED` verification separate from user active status and `ONLINE`/`OFFLINE` availability.
+- Let customers browse only active, approved, online technicians and retrieve a selected technician's full profile.
+- Store coordinates in decimal degrees and synchronize a PostGIS `geography(Point,4326)` for later spatial matching. Do not filter by service radius until job dispatch is implemented.
+- Acceptance: updates across user/profile/category tables commit atomically; only active categories can be assigned; unapproved/inactive technicians cannot be online; search returns every match; image bytes are validated and returned as a data URL. Verified with 12 technician unit tests, 10 e2e tests, a clean build, and the applied migration.
 
 ## Day 3: Technician Documents and Verification
 
 - Securely upload profile images, IDs, and licenses to S3-compatible storage.
 - Add document metadata, size/type validation, and private download authorization.
-- Submit complete profiles for admin review; implement pending, approved, and rejected transitions.
+- Add document uploads and KYC review details to the verification states introduced on Day 2.
 - Acceptance: documents are private, state transitions are audited, and incomplete submissions are rejected with a checklist.
 
 ## Day 4: Job Request and Diagnostic Payment

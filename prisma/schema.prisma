@@ -29,6 +29,10 @@ model User {
   fullName          String
   role              UserRole           @default(CUSTOMER)
   status            UserStatus         @default(ACTIVE)
+  // Nullable because customers and technicians sign in with phone + OTP only.
+  // Deliberately not unique: bcrypt salts every hash, so two admins holding the same
+  // password produce different hashes and no constraint could detect the overlap.
+  passwordHash      String?
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   refreshTokens     RefreshToken[]

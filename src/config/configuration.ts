@@ -29,6 +29,28 @@ export default () => {
     accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '7d',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
   },
+  adminAuth: {
+    // bcrypt work factor. Higher is slower and safer; 12 is a sane production default.
+    bcryptRounds: Number(process.env.ADMIN_BCRYPT_ROUNDS) || 12,
+    // Wrong-password lockout, keyed by a hash of the email so unknown addresses are covered too.
+    maxLoginAttempts: Number(process.env.ADMIN_MAX_LOGIN_ATTEMPTS) || 5,
+    loginLockoutSeconds: Number(process.env.ADMIN_LOGIN_LOCKOUT_SECONDS) || 900,
+    // Lifetime of the two-factor challenge and its six-digit code.
+    twoFactorTtlSeconds: Number(process.env.ADMIN_2FA_TTL_SECONDS) || 300,
+    twoFactorMaxResends: Number(process.env.ADMIN_2FA_MAX_RESENDS) || 3,
+    twoFactorMaxTries: Number(process.env.ADMIN_2FA_MAX_TRIES) || 5,
+    accessExpiresIn: process.env.ADMIN_ACCESS_EXPIRES_IN || '15m',
+    refreshExpiresIn: process.env.ADMIN_REFRESH_EXPIRES_IN || '12h',
+    cookie: {
+      // 'none' is only honoured by browsers when secure is also true.
+      sameSite: process.env.ADMIN_COOKIE_SAME_SITE || 'lax',
+      secure: process.env.ADMIN_COOKIE_SECURE
+        ? process.env.ADMIN_COOKIE_SECURE === 'true'
+        : environment === 'production',
+      // Leave unset unless the admin dashboard is on its own subdomain.
+      domain: process.env.ADMIN_COOKIE_DOMAIN || undefined,
+    },
+  },
   security: {
     nationalIdEncryptionKey: process.env.NATIONAL_ID_ENCRYPTION_KEY,
   },

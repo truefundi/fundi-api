@@ -3,6 +3,10 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { json, urlencoded } from 'express';
+// Namespace import, not a default import: the project compiles without
+// esModuleInterop, so `import cookieParser from 'cookie-parser'` typechecks but is
+// undefined at runtime.
+import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
@@ -13,6 +17,9 @@ async function bootstrap() {
   // Allows a bounded base64 profile image while keeping request bodies size-limited.
   app.use(json({ limit: '8mb' }));
   app.use(urlencoded({ extended: true, limit: '8mb' }));
+
+  // Populates req.cookies for the admin session cookies and the two-factor challenge.
+  app.use(cookieParser());
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('port', 3000);
@@ -54,7 +61,15 @@ async function bootstrap() {
       },
       'accessToken',
     )
+    // Lets Swagger UI send the admin session cookies, which no request body carries.
+    .addCookieAuth('adminAccessToken')
+    .addCookieAuth('adminRefreshToken')
+    .addCookieAuth('adminTwoFactorChallenge')
     .addTag('auth', 'Phone-OTP sign-up and sign-in, token exchange, and session revocation.')
+    .addTag(
+      'admin-auth',
+      'Admin dashboard sign-in: email and password, then an SMS second factor. Sessions are held in httpOnly cookies.',
+    )
     .addTag('users', 'Profile and account administration. Routes marked admin need the ADMIN role.')
     .build();
 

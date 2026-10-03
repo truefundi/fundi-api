@@ -73,6 +73,7 @@ backend/
 │   ├── app.module.ts         # Main NestJS module
 │   └── main.ts               # Application entry point
 ├── docs/
+│   ├── admin-authentication.md # Admin email + password and 2FA endpoint guide
 │   ├── authentication.md     # Phone OTP authentication endpoint guide
 │   ├── implementation-roadmap.md # Ordered daily feature delivery plan
 │   ├── service-categories.md # Service catalog endpoint guide
@@ -115,6 +116,7 @@ Open `http://localhost:3000/api/docs` in a browser to explore the generated Open
 Detailed request formats and expected responses are documented separately:
 
 - [Phone authentication and OTP endpoints](docs/authentication.md)
+- [Admin dashboard authentication and two-factor endpoints](docs/admin-authentication.md)
 - [Service categories endpoints](docs/service-categories.md)
 - [Technician management and discovery endpoints](docs/technician-onboarding.md)
 - [User management endpoints](docs/users.md)

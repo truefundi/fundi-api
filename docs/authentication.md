@@ -1,5 +1,7 @@
 # Phone Authentication API
 
+This guide covers customers and technicians, who sign in with a phone number and an SMS code and receive bearer tokens they hold themselves. Administrators sign in separately with an email address, a password, and a second SMS code; their session lives in `httpOnly` cookies instead of tokens. That flow is documented in [admin-authentication.md](admin-authentication.md). The two flows share no endpoints, and public registration cannot create an administrator.
+
 Phone numbers are the login identifier. Public registration accepts `CUSTOMER` or `TECHNICIAN` (case-insensitive) and defaults to `CUSTOMER`; it cannot create an administrator. New accounts default to `ACTIVE`.
 
 Send `Content-Type: application/json` for requests with a body. OTP hashes and resend/verification counters are stored temporarily in Redis, where the OTP key expires automatically after five minutes; PostgreSQL stores user and refresh-token data, not OTPs. During development, `SMS_MODE=console` prints OTP codes in the backend terminal, not in the HTTP response. OTPs can be resent at most three times and are rejected after five incorrect attempts. The five-attempt limit is counted per account rather than per code, so requesting or resending a new OTP does not reset it. After five incorrect guesses the account is locked out of verification for fifteen minutes, and each further guess restarts that window; a successful verification clears the count.

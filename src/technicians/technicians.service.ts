@@ -15,16 +15,13 @@ import {
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
+import { StorageService } from '../storage/storage.service';
+import { TechnicianDocumentsService } from './documents/technician-documents.service';
 import { NationalIdCryptoService } from './national-id-crypto.service';
 import { AdminUpdateTechnicianDto } from './dto/admin-update-technician.dto';
 import { CreateTechnicianDto } from './dto/create-technician.dto';
 import { SearchTechniciansDto } from './dto/search-technicians.dto';
-import {
-  UpdateTechnicianProfileDto,
-  TECHNICIAN_IMAGE_MIME_TYPES,
-} from './dto/update-technician-profile.dto';
-
-const MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024;
+import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto';
 
 const PROFILE_INCLUDE = {
   user: {
@@ -50,17 +47,14 @@ type TechnicianProfileWithDetails = Prisma.TechnicianProfileGetPayload<{
   include: typeof PROFILE_INCLUDE;
 }>;
 
-type ProfilePhotoData = {
-  profilePicture?: Uint8Array<ArrayBuffer> | null;
-  profilePictureMimeType?: string | null;
-};
-
 @Injectable()
 export class TechniciansService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly nationalIdCrypto: NationalIdCryptoService,
+    private readonly storage: StorageService,
+    private readonly documents: TechnicianDocumentsService,
   ) {}
 
   // Returns the technician's complete profile after they explicitly register it.
@@ -79,7 +73,6 @@ export class TechniciansService {
   async registerMyProfile(userId: string, dto: UpdateTechnicianProfileDto) {
     this.assertUpdateHasFields(dto);
     this.assertCoordinatePair(dto);
-    const photo = this.decodePhoto(dto);
     try {
       const profile = await this.runSerializable(async (tx) => {
         const existing = await tx.technicianProfile.findUnique({
@@ -101,7 +94,6 @@ export class TechniciansService {
           tx,
           current,
           dto,
-          photo,
           userId,
           false,
           'PROFILE_REGISTERED',
@@ -117,7 +109,6 @@ export class TechniciansService {
   async updateMyProfile(userId: string, dto: UpdateTechnicianProfileDto) {
     this.assertUpdateHasFields(dto);
     this.assertCoordinatePair(dto);
-    const photo = this.decodePhoto(dto);
 
     try {
       const profile = await this.runSerializable(async (tx) => {
@@ -135,7 +126,7 @@ export class TechniciansService {
           where: { id: saved.id },
           include: PROFILE_INCLUDE,
         });
-        return this.saveProfileFields(tx, current, dto, photo, userId);
+        return this.saveProfileFields(tx, current, dto, userId);
       });
       return this.toResponse(profile);
     } catch (error) {
@@ -162,7 +153,9 @@ export class TechniciansService {
       include: PROFILE_INCLUDE,
       orderBy: { updatedAt: 'desc' },
     });
-    return profiles.map((profile) => this.toMarketplaceResponse(profile));
+    return Promise.all(
+      profiles.map((profile) => this.toMarketplaceResponse(profile)),
+    );
   }
 
   // Hides pending, offline, and inactive accounts from customer technician details.
@@ -200,7 +193,6 @@ export class TechniciansService {
     }
     const profileDto = dto.profile ?? {};
     this.assertCoordinatePair(profileDto);
-    const photo = this.decodePhoto(profileDto);
     const nationalIdFields = this.encodeNationalId(
       profileDto.nationalIdNumber,
     );
@@ -230,8 +222,6 @@ export class TechniciansService {
               profileDto.publicLocationLabel?.trim() || null,
             baseLatitude: profileDto.baseLatitude ?? null,
             baseLongitude: profileDto.baseLongitude ?? null,
-            profilePicture: photo.profilePicture ?? null,
-            profilePictureMimeType: photo.profilePictureMimeType ?? null,
             verificationStatus: VerificationStatus.PENDING,
             availabilityStatus: TechnicianAvailability.OFFLINE,
           },
@@ -267,7 +257,7 @@ export class TechniciansService {
       include: PROFILE_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
-    return profiles.map((profile) => this.toResponse(profile));
+    return Promise.all(profiles.map((profile) => this.toResponse(profile)));
   }
 
   // Retrieves any technician profile by its profile ID for administrators.
@@ -344,7 +334,7 @@ export class TechniciansService {
       include: PROFILE_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
-    return profiles.map((profile) => this.toResponse(profile));
+    return Promise.all(profiles.map((profile) => this.toResponse(profile)));
   }
 
   // Updates technician profile and account fields for an admin in one transaction.
@@ -355,7 +345,6 @@ export class TechniciansService {
   ) {
     this.assertUpdateHasFields(dto);
     this.assertCoordinatePair(dto);
-    const photo = this.decodePhoto(dto);
     try {
       const profile = await this.runSerializable(async (tx) => {
         const found = await tx.technicianProfile.findUnique({
@@ -367,7 +356,7 @@ export class TechniciansService {
           where: { id: profileId },
           include: PROFILE_INCLUDE,
         });
-        return this.saveProfileFields(tx, current, dto, photo, actorId, true);
+        return this.saveProfileFields(tx, current, dto, actorId, true);
       });
       return this.toResponse(profile);
     } catch (error) {
@@ -423,7 +412,6 @@ export class TechniciansService {
     dto: UpdateTechnicianProfileDto & {
       verificationStatus?: VerificationStatus;
     },
-    photo: ProfilePhotoData,
     actorId: string,
     admin = false,
     auditAction?: string,
@@ -435,6 +423,16 @@ export class TechniciansService {
     const requestedVerification: VerificationStatus = admin
       ? (dto.verificationStatus ?? current.verificationStatus)
       : current.verificationStatus;
+
+    // Approval requires a profile picture and accepted identity and certificate documents.
+    if (
+      admin &&
+      requestedVerification === VerificationStatus.APPROVED &&
+      current.verificationStatus !== VerificationStatus.APPROVED
+    ) {
+      await this.documents.assertReadyForApproval(tx, current.id);
+    }
+
     let nextAvailability = dto.availabilityStatus ?? current.availabilityStatus;
     if (
       nextAvailability === TechnicianAvailability.ONLINE &&
@@ -481,7 +479,6 @@ export class TechniciansService {
         verificationStatus: requestedVerification,
       }),
       availabilityStatus: nextAvailability,
-      ...photo,
     };
     await tx.technicianProfile.update({
       where: { id: current.id },
@@ -624,101 +621,6 @@ export class TechniciansService {
     }
   }
 
-  // Validates binary image size and verifies its signature against the supplied MIME type.
-  private decodePhoto(
-    dto: Pick<
-      UpdateTechnicianProfileDto,
-      'profilePictureBase64' | 'profilePictureMimeType'
-    >,
-  ): ProfilePhotoData {
-    if (dto.profilePictureBase64 === undefined) {
-      if (dto.profilePictureMimeType !== undefined) {
-        throw new BadRequestException(
-          'profilePictureBase64 is required with profilePictureMimeType.',
-        );
-      }
-      return {};
-    }
-    if (dto.profilePictureBase64 === null) {
-      return { profilePicture: null, profilePictureMimeType: null };
-    }
-    if (!dto.profilePictureMimeType) {
-      throw new BadRequestException(
-        'profilePictureMimeType is required with profilePictureBase64.',
-      );
-    }
-    if (
-      !TECHNICIAN_IMAGE_MIME_TYPES.includes(
-        dto.profilePictureMimeType as (typeof TECHNICIAN_IMAGE_MIME_TYPES)[number],
-      )
-    ) {
-      throw new BadRequestException(
-        'Profile image type must be JPEG, PNG, or WebP.',
-      );
-    }
-    const decoded = Buffer.from(dto.profilePictureBase64, 'base64');
-    if (!decoded.length || decoded.length > MAX_PROFILE_IMAGE_BYTES) {
-      throw new BadRequestException(
-        'Profile images must be smaller than 5 MB.',
-      );
-    }
-    if (this.detectImageMime(decoded) !== dto.profilePictureMimeType) {
-      throw new BadRequestException(
-        'Profile image content does not match its MIME type.',
-      );
-    }
-    const bytes = new Uint8Array(decoded.length);
-    bytes.set(decoded);
-    return {
-      profilePicture: bytes,
-      profilePictureMimeType: dto.profilePictureMimeType,
-    };
-  }
-
-  // Recognizes image signatures so arbitrary binary data cannot be saved as an image.
-  private detectImageMime(bytes: Buffer): string | null {
-    if (
-      bytes
-        .subarray(0, 8)
-        .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-    )
-      return 'image/png';
-    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)
-      return 'image/jpeg';
-    if (
-      bytes.toString('ascii', 0, 4) === 'RIFF' &&
-      bytes.toString('ascii', 8, 12) === 'WEBP'
-    )
-      return 'image/webp';
-    return null;
-  }
-
-  // Builds scalar profile data shared by technician and administrator updates.
-  private profileData(
-    dto: UpdateTechnicianProfileDto & {
-      verificationStatus?: VerificationStatus;
-    },
-    photo: ProfilePhotoData,
-  ): Prisma.TechnicianProfileUpdateInput {
-    return {
-      ...(dto.gender !== undefined && { gender: dto.gender }),
-      ...(dto.yearsOfExperience !== undefined && {
-        yearsOfExperience: dto.yearsOfExperience,
-      }),
-      ...(dto.baseAddress !== undefined && {
-        baseAddress: dto.baseAddress?.trim() || null,
-      }),
-      ...(dto.baseLatitude !== undefined && { baseLatitude: dto.baseLatitude }),
-      ...(dto.baseLongitude !== undefined && {
-        baseLongitude: dto.baseLongitude,
-      }),
-      ...(dto.availabilityStatus !== undefined && {
-        availabilityStatus: dto.availabilityStatus,
-      }),
-      ...photo,
-    };
-  }
-
   // Enforces a non-empty patch body for profile updates.
   private assertUpdateHasFields(dto: object) {
     if (!Object.keys(dto).length) {
@@ -728,11 +630,16 @@ export class TechniciansService {
     }
   }
 
-  // Converts bytea profile pictures to a data URI that frontend clients can display.
-  private toResponse(profile: TechnicianProfileWithDetails) {
-    const profilePicture = profile.profilePicture
-      ? `data:${profile.profilePictureMimeType};base64,${Buffer.from(profile.profilePicture).toString('base64')}`
-      : null;
+  // Returns a short-lived link to the profile picture, or null when there is none.
+  private async profilePictureUrl(
+    profile: Pick<TechnicianProfileWithDetails, 'profilePictureObjectKey'>,
+  ): Promise<string | null> {
+    if (!profile.profilePictureObjectKey) return null;
+    return this.storage.getDownloadUrl(profile.profilePictureObjectKey);
+  }
+
+  // Builds the full account and profile view for the owner and administrators.
+  private async toResponse(profile: TechnicianProfileWithDetails) {
     return {
       id: profile.id,
       user: profile.user,
@@ -750,17 +657,14 @@ export class TechniciansService {
         latitude: profile.baseLatitude,
         longitude: profile.baseLongitude,
       },
-      profilePicture,
+      profilePictureUrl: await this.profilePictureUrl(profile),
       createdAt: profile.createdAt,
       updatedAt: profile.updatedAt,
     };
   }
 
   // Creates the limited data shown to visitors and signed-in marketplace users.
-  private toMarketplaceResponse(profile: TechnicianProfileWithDetails) {
-    const profilePicture = profile.profilePicture
-      ? `data:${profile.profilePictureMimeType};base64,${Buffer.from(profile.profilePicture).toString('base64')}`
-      : null;
+  private async toMarketplaceResponse(profile: TechnicianProfileWithDetails) {
     return {
       id: profile.id,
       fullName: profile.user.fullName,
@@ -768,7 +672,7 @@ export class TechniciansService {
       yearsOfExperience: profile.yearsOfExperience,
       categories: profile.categories.map(({ category }) => category),
       location: profile.publicLocationLabel,
-      profilePicture,
+      profilePictureUrl: await this.profilePictureUrl(profile),
     };
   }
 

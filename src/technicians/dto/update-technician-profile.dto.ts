@@ -2,11 +2,9 @@ import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
-  IsBase64,
   IsEmail,
   IsEnum,
   IsInt,
-  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -19,13 +17,8 @@ import {
 } from 'class-validator';
 import { TechnicianAvailability, TechnicianGender } from '@prisma/client';
 
-export const TECHNICIAN_IMAGE_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-] as const;
-
 // Validates all user and technician fields changed by one atomic profile request.
+// Profile pictures are uploaded separately through PUT /api/v1/technicians/profile/picture.
 export class UpdateTechnicianProfileDto {
   @IsOptional()
   @IsString()
@@ -106,16 +99,6 @@ export class UpdateTechnicianProfileDto {
   @Min(-180)
   @Max(180)
   baseLongitude?: number | null;
-
-  @IsOptional()
-  @IsBase64()
-  @MaxLength(7_000_000)
-  profilePictureBase64?: string | null;
-
-  @IsOptional()
-  @IsString()
-  @IsIn(TECHNICIAN_IMAGE_MIME_TYPES)
-  profilePictureMimeType?: string | null;
 
   @IsOptional()
   @IsEnum(TechnicianAvailability)

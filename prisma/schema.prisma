@@ -88,30 +88,67 @@ enum TechnicianGender {
   PREFER_NOT_TO_SAY
 }
 
+enum DocumentType {
+  NATIONAL_ID
+  TVET_CERTIFICATE
+}
+
+enum DocumentStatus {
+  SUBMITTED
+  REVIEWING
+  ACCEPTED
+  DENIED
+}
+
 model TechnicianProfile {
-  id                    String                   @id @default(uuid())
-  userId                String                   @unique
-  user                  User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  gender                TechnicianGender?
-  yearsOfExperience     Int?
-  nationalIdEncrypted   String?
-  nationalIdHash        String?                @unique
-  baseAddress           String?
-  publicLocationLabel   String?
-  baseLatitude          Float?
-  baseLongitude         Float?
-  baseLocation          Unsupported("geography(Point,4326)")?
-  profilePicture        Bytes?
+  id                     String                   @id @default(uuid())
+  userId                 String                   @unique
+  user                   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gender                 TechnicianGender?
+  yearsOfExperience      Int?
+  nationalIdEncrypted    String?
+  nationalIdHash         String?                  @unique
+  baseAddress            String?
+  publicLocationLabel    String?
+  baseLatitude           Float?
+  baseLongitude          Float?
+  baseLocation           Unsupported("geography(Point,4326)")?
+  profilePictureObjectKey String?
   profilePictureMimeType String?
-  verificationStatus    VerificationStatus       @default(PENDING)
-  availabilityStatus    TechnicianAvailability   @default(OFFLINE)
-  categories            TechnicianCategory[]
-  createdAt             DateTime                 @default(now())
-  updatedAt             DateTime                 @updatedAt
+  verificationStatus     VerificationStatus       @default(PENDING)
+  availabilityStatus     TechnicianAvailability   @default(OFFLINE)
+  categories             TechnicianCategory[]
+  documents              TechnicianDocument[]
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
 
   @@index([verificationStatus])
   @@index([availabilityStatus, verificationStatus])
   @@map("technician_profiles")
+}
+
+model TechnicianDocument {
+  id               String           @id @default(uuid())
+  technicianId     String
+  technician       TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  type             DocumentType
+  title            String
+  titleNormalized  String
+  objectKey        String
+  mimeType         String
+  originalFileName String
+  sizeBytes        Int
+  status           DocumentStatus   @default(SUBMITTED)
+  reviewNote       String?
+  reviewedById     String?
+  reviewedAt       DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([technicianId, status])
+  @@index([status])
+  @@index([type])
+  @@map("technician_documents")
 }
 
 model TechnicianCategory {

@@ -7,14 +7,18 @@ import {
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
+import { StorageService } from '../storage/storage.service';
+import { TechnicianDocumentsService } from './documents/technician-documents.service';
 import { NationalIdCryptoService } from './national-id-crypto.service';
 import { TechniciansService } from './technicians.service';
 
-// Tests technician profile integrity, availability, category and image behavior.
+// Tests technician profile integrity, availability, category and storage-backed image behavior.
 describe('TechniciansService', () => {
   const userId = 'technician-user-id';
   const profileId = 'profile-id';
   const categoryId = 'e5a4f4d7-0b21-46d8-9a4b-98765d332100';
+  const pictureKey = 'technicians/profile-id/profile.png';
+  const signedUrl = 'https://storage.test/signed-url';
   const now = new Date('2026-10-01T10:00:00.000Z');
   const profile = {
     id: profileId,
@@ -24,8 +28,7 @@ describe('TechniciansService', () => {
     baseAddress: null,
     baseLatitude: null,
     baseLongitude: null,
-    profilePicture: null,
-    profilePictureMimeType: null,
+    profilePictureObjectKey: null as string | null,
     nationalIdEncrypted: null,
     nationalIdHash: null,
     publicLocationLabel: 'Kigali, Rwanda',
@@ -46,7 +49,7 @@ describe('TechniciansService', () => {
     categories: [],
   };
 
-  // Builds transaction-aware database and audit doubles for service tests.
+  // Builds transaction-aware database, audit, storage and document doubles for service tests.
   const createService = () => {
     const transaction = {
       $queryRaw: jest
@@ -88,16 +91,26 @@ describe('TechniciansService', () => {
       decrypt: jest.fn((value: string) => value.replace('encrypted:', '')),
       hash: jest.fn((value: string) => `hash:${value}`),
     };
+    const storage = {
+      getDownloadUrl: jest.fn().mockResolvedValue(signedUrl),
+    };
+    const documents = {
+      assertReadyForApproval: jest.fn().mockResolvedValue(undefined),
+    };
     return {
       service: new TechniciansService(
         prisma as unknown as PrismaService,
         audit as unknown as AuditService,
         nationalIdCrypto as unknown as NationalIdCryptoService,
+        storage as unknown as StorageService,
+        documents as unknown as TechnicianDocumentsService,
       ),
       prisma,
       transaction,
       audit,
       nationalIdCrypto,
+      storage,
+      documents,
     };
   };
 
@@ -280,47 +293,68 @@ describe('TechniciansService', () => {
     expect(transaction.technicianCategory.createMany).not.toHaveBeenCalled();
   });
 
-  // Returns a data URL when binary profile image bytes are read back from PostgreSQL.
-  it('returns stored profile image bytes as a displayable data URL', async () => {
-    const { service, transaction } = createService();
-    const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-    transaction.technicianProfile.findUniqueOrThrow.mockResolvedValue({
-      ...profile,
-      profilePicture: new Uint8Array(pngSignature),
-      profilePictureMimeType: 'image/png',
-    });
+  // Requires accepted documents (via TechnicianDocumentsService) before an admin can approve.
+  it('checks documents before an admin approves a technician', async () => {
+    const { service, transaction, documents } = createService();
 
-    const result = await service.updateMyProfile(userId, {
-      profilePictureBase64: pngSignature.toString('base64'),
-      profilePictureMimeType: 'image/png',
-    });
+    await service.setVerificationStatus(
+      profileId,
+      VerificationStatus.APPROVED,
+      'admin-1',
+    );
 
-    expect(result.profilePicture).toBe(
-      `data:image/png;base64,${pngSignature.toString('base64')}`,
+    expect(documents.assertReadyForApproval).toHaveBeenCalledWith(
+      transaction,
+      profileId,
+    );
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          verificationStatus: VerificationStatus.APPROVED,
+        }),
+      }),
     );
   });
 
-  // Rejects malformed bytes and MIME mismatches before database writes.
-  it('rejects profile images whose data does not match the declared MIME type', async () => {
-    const { service, prisma } = createService();
+  // Blocks approval, and writes nothing, when the documents are not ready.
+  it('does not approve a technician whose documents are not ready', async () => {
+    const { service, transaction, documents } = createService();
+    documents.assertReadyForApproval.mockRejectedValue(
+      new BadRequestException('Required documents are missing.'),
+    );
+
     await expect(
-      service.updateMyProfile(userId, {
-        profilePictureBase64: Buffer.from('not an image').toString('base64'),
-        profilePictureMimeType: 'image/png',
-      }),
+      service.setVerificationStatus(
+        profileId,
+        VerificationStatus.APPROVED,
+        'admin-1',
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
   });
 
-  // Requires both photo data and MIME type when setting an image.
-  it('rejects an image without a MIME type', async () => {
-    const { service } = createService();
-    const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-    await expect(
-      service.updateMyProfile(userId, {
-        profilePictureBase64: pngSignature.toString('base64'),
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+  // Returns a signed storage URL when the picture is stored in the bucket.
+  it('returns a signed URL when the technician has a profile picture', async () => {
+    const { service, prisma, storage } = createService();
+    prisma.technicianProfile.findUnique.mockResolvedValue({
+      ...profile,
+      profilePictureObjectKey: pictureKey,
+    });
+
+    const result = await service.getMyProfile(userId);
+
+    expect(storage.getDownloadUrl).toHaveBeenCalledWith(pictureKey);
+    expect(result.profilePictureUrl).toBe(signedUrl);
+  });
+
+  // Skips the storage call entirely when there is no picture.
+  it('returns null and skips storage when there is no profile picture', async () => {
+    const { service, storage } = createService();
+
+    const result = await service.getMyProfile(userId);
+
+    expect(storage.getDownloadUrl).not.toHaveBeenCalled();
+    expect(result.profilePictureUrl).toBeNull();
   });
 
   // Searches admin records across technician profile and related user fields.
@@ -368,30 +402,31 @@ describe('TechniciansService', () => {
   });
 
   // Ensures the public marketplace projection contains no private contact, ID, or exact GPS fields.
-  it('returns a privacy-safe public technician listing with a photo and public location', async () => {
-    const { service, prisma } = createService();
+  it('returns a privacy-safe public technician listing with a photo URL and public location', async () => {
+    const { service, prisma, storage } = createService();
     prisma.technicianProfile.findMany.mockResolvedValue([
       {
         ...profile,
         nationalIdEncrypted: 'encrypted:ID12345',
-        profilePicture: new Uint8Array([1, 2, 3]),
-        profilePictureMimeType: 'image/png',
+        profilePictureObjectKey: pictureKey,
         publicLocationLabel: 'Kigali, Rwanda',
         baseLatitude: -1.95,
         baseLongitude: 30.06,
       },
     ]);
     const results = await service.listPublic();
+    expect(storage.getDownloadUrl).toHaveBeenCalledWith(pictureKey);
     expect(results[0]).toMatchObject({
       fullName: 'Amina Example',
       location: 'Kigali, Rwanda',
-      profilePicture: 'data:image/png;base64,AQID',
+      profilePictureUrl: signedUrl,
     });
     expect(results[0]).not.toHaveProperty('phoneNumber');
     expect(results[0]).not.toHaveProperty('email');
     expect(results[0]).not.toHaveProperty('nationalIdNumber');
     expect(results[0]).not.toHaveProperty('baseLatitude');
     expect(results[0]).not.toHaveProperty('baseLongitude');
+    expect(results[0]).not.toHaveProperty('profilePictureObjectKey');
   });
 
   // Retries a profile write after PostgreSQL reports a serialization conflict.

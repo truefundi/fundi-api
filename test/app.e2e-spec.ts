@@ -128,8 +128,8 @@ describe('AppController (e2e)', () => {
   });
 
   // Admin sign-in. Only the checks that need neither Postgres nor Redis are covered
-  // here, so these run on a bare checkout. The credential, lockout and code-checking
-  // logic is covered by admin-auth.service.spec.ts.
+  // here, so these run on a bare checkout. The credential, lockout and authenticator
+  // code-checking logic is covered by admin-auth.service.spec.ts.
   describe('admin sign-in', () => {
     // The body is validated before any credential is looked up.
     it('/api/v1/auth/admin/login (POST) rejects a request with no password', () => {
@@ -163,8 +163,10 @@ describe('AppController (e2e)', () => {
         .expect(400);
     });
 
-    it('/api/v1/auth/admin/2fa/resend (POST) rejects a resend with no pending challenge', () => {
-      return request(app.getHttpServer()).post('/api/v1/auth/admin/2fa/resend').expect(400);
+    // The second factor is an authenticator app, so there is nothing to resend and the
+    // route is gone rather than left answering 400.
+    it('/api/v1/auth/admin/2fa/resend (POST) is no longer routed', () => {
+      return request(app.getHttpServer()).post('/api/v1/auth/admin/2fa/resend').expect(404);
     });
 
     // Refreshing reads the cookie and nothing else, so there is no body to send.

@@ -29,6 +29,16 @@ model User {
   fullName          String
   role              UserRole           @default(CUSTOMER)
   status            UserStatus         @default(ACTIVE)
+  // Nullable because customers and technicians sign in with phone + OTP only.
+  // Deliberately not unique: bcrypt salts every hash, so two admins holding the same
+  // password produce different hashes and no constraint could detect the overlap.
+  passwordHash      String?
+  // Second factor is an authenticator app, not an SMS code. The secret is encrypted
+  // rather than hashed because the server must read it back to compute the expected
+  // code. Set only once a first code has been accepted, so an abandoned enrolment
+  // leaves nothing behind.
+  totpSecret        String?
+  totpEnabledAt     DateTime?
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   refreshTokens     RefreshToken[]

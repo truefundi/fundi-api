@@ -4,6 +4,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { UsersService } from './users.service';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { BearerOnly } from '../auth/bearer-only.guard';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
@@ -25,6 +26,7 @@ export class UsersController {
 
   // Allows a signed-in user to edit profile fields but not role or status.
   @Patch('me')
+  @BearerOnly()
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Update the current account profile' })
@@ -39,6 +41,7 @@ export class UsersController {
 
   // Allows a signed-in user to permanently delete their own account.
   @Delete('me')
+  @BearerOnly()
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth()
   @ApiOperation({

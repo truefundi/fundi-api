@@ -26,6 +26,7 @@ export class SearchTechniciansDto {
       : value,
   )
   @IsString()
+
   @MinLength(4)
   @MaxLength(64)
   @Matches(/^[A-Z0-9]+$/)
@@ -43,3 +44,4 @@ export class SearchTechniciansDto {
   @IsEnum(TechnicianAvailability)
   availabilityStatus?: TechnicianAvailability;
 }
+

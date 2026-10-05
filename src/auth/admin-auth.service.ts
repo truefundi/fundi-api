@@ -11,16 +11,21 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UserRole } from '@prisma/client';
+import { authenticator } from 'otplib';
 import { compare } from 'bcrypt';
-import { createHmac, randomInt, randomUUID } from 'crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
-import { SmsService } from '../sms/sms.service';
 import { RedisService } from '../redis/redis.service';
+import { TotpCryptoService } from './totp-crypto.service';
 import { AdminLoginDto } from './dto/admin-login.dto';
 
 // One message for every credential failure, so the endpoint cannot be used to
 // discover which addresses belong to an administrator.
 const INVALID_CREDENTIALS = 'Invalid email or password.';
+
+// One message for every missing or spent challenge, so it cannot be used to tell a
+// stale sign-in from one that never existed.
+const NO_PENDING_VERIFICATION = 'There is no pending verification. Sign in again.';
 
 // A real 12-round bcrypt hash of a random string nobody holds. Comparing against it
 // costs the same as a genuine check, so an unknown address takes the same time to
@@ -33,13 +38,6 @@ function tooManyRequests(message: string) {
   return new HttpException(message, HttpStatus.TOO_MANY_REQUESTS);
 }
 
-// Shows which number a code went to without disclosing it, so an admin who no
-// longer has that phone can tell before entering a code that can never arrive.
-function maskPhoneNumber(phoneNumber: string): string {
-  if (phoneNumber.length <= 7) return phoneNumber;
-  return `${phoneNumber.slice(0, 4)}${'*'.repeat(phoneNumber.length - 7)}${phoneNumber.slice(-3)}`;
-}
-
 // Counts one failed password against an address, on a sliding window. Keyed by a
 // hash of the email so an address nobody registered still burns attempts and no
 // plaintext address is written to Redis.
@@ -50,52 +48,52 @@ return count
 `;
 
 // Creates a challenge and supersedes any earlier one, so a second sign-in makes the
-// first code worthless and only one code per admin is ever live. ARGV: key prefix,
-// userId, code hash, absolute expiry (ms), key TTL (s), challengeId.
+// first worthless and only one challenge per admin is ever live.
+//
+// In 'enroll' mode the shared secret is held here in the clear for the length of the
+// enrolment window. It is written to the database only once a first code is accepted,
+// so an enrolment that is abandoned leaves nothing behind to clean up.
+//
+// ARGV: key prefix, userId, mode, secret, absolute expiry (ms), key TTL (s), challengeId.
 const CREATE_CHALLENGE_SCRIPT = `
 local previous = redis.call('GET', KEYS[2])
 if previous then redis.call('DEL', ARGV[1] .. previous) end
-redis.call('HSET', KEYS[1], 'userId', ARGV[2], 'codeHash', ARGV[3], 'resendCount', '0', 'verificationTries', '0', 'expiresAt', ARGV[4])
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[5]))
-redis.call('SET', KEYS[2], ARGV[6], 'EX', tonumber(ARGV[5]))
+redis.call('HSET', KEYS[1], 'userId', ARGV[2], 'mode', ARGV[3], 'secret', ARGV[4], 'expiresAt', ARGV[5])
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[6]))
+redis.call('SET', KEYS[2], ARGV[7], 'EX', tonumber(ARGV[6]))
 return 1
 `;
 
-// Replaces the pending code while carrying the resend budget and failed-guess tally
-// over, so resending cannot buy back a run of wrong guesses. -1 nothing pending,
-// -2 budget spent.
-const RESEND_CHALLENGE_SCRIPT = `
+// Claims exactly one guess and counts it, before the code itself is checked. The
+// check has to happen outside Redis because verifying a TOTP means computing an
+// HMAC, so this is what keeps the attempt budget honest: the counters move in the
+// same atomic step that authorises the attempt, so concurrent requests cannot both
+// slip past the limit. KEYS[2] is a per-account tally that outlives the challenge, so
+// signing in again cannot clear it.
+//
+// -1 nothing pending, -3 past its expiry, -2 the attempt limit was reached, 1 allowed.
+const CLAIM_ATTEMPT_SCRIPT = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
-local resendCount = tonumber(redis.call('HGET', KEYS[1], 'resendCount') or '0')
-if resendCount >= tonumber(ARGV[2]) then return -2 end
-local verificationTries = redis.call('HGET', KEYS[1], 'verificationTries') or '0'
-redis.call('HSET', KEYS[1], 'codeHash', ARGV[1], 'resendCount', resendCount + 1, 'verificationTries', verificationTries, 'expiresAt', ARGV[3])
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
-return resendCount + 1
-`;
-
-// Atomically checks and consumes a code. -1 nothing pending, -3 past its expiry,
-// -2 the attempt limit was reached, 1 on success, 0 on a wrong guess. KEYS[2] is a
-// per-account tally that outlives the challenge, so requesting a new code cannot
-// clear it. ARGV: code hash, per-challenge limit, now (ms), per-account limit, window (s).
-const VERIFY_CHALLENGE_SCRIPT = `
-if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
-if tonumber(redis.call('HGET', KEYS[1], 'expiresAt') or '0') <= tonumber(ARGV[3]) then
+if tonumber(redis.call('HGET', KEYS[1], 'expiresAt') or '0') <= tonumber(ARGV[2]) then
   redis.call('DEL', KEYS[1])
   return -3
 end
-local verificationTries = tonumber(redis.call('HGET', KEYS[1], 'verificationTries') or '0')
-if verificationTries >= tonumber(ARGV[2]) then return -2 end
-if tonumber(redis.call('GET', KEYS[2]) or '0') >= tonumber(ARGV[4]) then return -2 end
-if redis.call('HGET', KEYS[1], 'codeHash') == ARGV[1] then
-  redis.call('DEL', KEYS[1])
-  redis.call('DEL', KEYS[2])
-  return 1
-end
+if tonumber(redis.call('HGET', KEYS[1], 'verificationTries') or '0') >= tonumber(ARGV[1]) then return -2 end
+if tonumber(redis.call('GET', KEYS[2]) or '0') >= tonumber(ARGV[3]) then return -2 end
 redis.call('HINCRBY', KEYS[1], 'verificationTries', 1)
 redis.call('INCR', KEYS[2])
-redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
-return 0
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[4]))
+return 1
+`;
+
+// Retires the challenge and the attempt tally in one step, returning how many keys
+// were actually removed. A caller that loses the race to a concurrent request sees 0
+// and is refused, which is what makes a single valid code mint at most one session.
+const CONSUME_CHALLENGE_SCRIPT = `
+local removed = redis.call('DEL', KEYS[1])
+redis.call('DEL', KEYS[2])
+redis.call('DEL', KEYS[3])
+return removed
 `;
 
 @Injectable()
@@ -103,32 +101,37 @@ export class AdminAuthService {
   private readonly logger = new Logger(AdminAuthService.name);
   private readonly maxLoginAttempts: number;
   private readonly loginLockoutSeconds: number;
-  private readonly twoFactorTtlSeconds: number;
-  private readonly twoFactorMaxResends: number;
+  private readonly twoFactorPendingSeconds: number;
   private readonly twoFactorMaxTries: number;
+  private readonly totpIssuer: string;
+  private readonly totpWindow: number;
   // Sliding window for the per-account wrong-code tally, matching the mobile OTP
   // behaviour so a slow trickle of guesses cannot accumulate forever.
   private readonly twoFactorAttemptWindowSeconds = 900;
-  // Outlives the code by this much, so an expired code is still reported as expired
-  // rather than looking like one that was never sent.
-  private readonly twoFactorExpiryGraceSeconds = 120;
+  // Seconds in one TOTP step. Fixed by the standard, not configurable.
+  private readonly totpStepSeconds = 30;
 
   constructor(
     private jwtService: JwtService,
     private configService: ConfigService,
     private prisma: PrismaService,
-    private smsService: SmsService,
     private redisService: RedisService,
+    private totpCrypto: TotpCryptoService,
   ) {
     this.maxLoginAttempts = this.configService.get<number>('adminAuth.maxLoginAttempts', 5);
     this.loginLockoutSeconds = this.configService.get<number>('adminAuth.loginLockoutSeconds', 900);
-    this.twoFactorTtlSeconds = this.configService.get<number>('adminAuth.twoFactorTtlSeconds', 300);
-    this.twoFactorMaxResends = this.configService.get<number>('adminAuth.twoFactorMaxResends', 3);
+    this.twoFactorPendingSeconds = this.configService.get<number>(
+      'adminAuth.twoFactorPendingSeconds',
+      300,
+    );
     this.twoFactorMaxTries = this.configService.get<number>('adminAuth.twoFactorMaxTries', 5);
+    this.totpIssuer = this.configService.get<string>('adminAuth.totpIssuer', 'Fundi');
+    this.totpWindow = this.configService.get<number>('adminAuth.totpWindow', 1);
   }
 
-  // Step one: verifies the password and starts the second factor. Every failure
-  // answers identically, so this endpoint cannot be used to enumerate administrators.
+  // Step one: verifies the password, then either asks for a code or starts a first
+  // enrolment. Every credential failure answers identically, so this endpoint cannot
+  // be used to enumerate administrators.
   async login(input: AdminLoginDto) {
     const failuresKey = this.loginFailuresKey(input.email);
     await this.assertNotLockedOut(failuresKey);
@@ -138,11 +141,11 @@ export class AdminAuthService {
       select: {
         id: true,
         fullName: true,
-        phoneNumber: true,
         email: true,
         role: true,
         status: true,
         passwordHash: true,
+        totpEnabledAt: true,
       },
     });
 
@@ -161,86 +164,89 @@ export class AdminAuthService {
     }
 
     await this.clearLoginFailures(failuresKey);
-    const challengeId = await this.startTwoFactor(user!.id, user!.phoneNumber);
+
+    // Already enrolled: the secret is on the account, so the only thing left is the
+    // code the authenticator is showing. Nothing is generated and nothing is sent.
+    if (user!.totpEnabledAt) {
+      const challengeId = await this.startChallenge(user!.id, 'verify', '');
+      return {
+        message: 'Enter the 6-digit code from your authenticator app.',
+        enrollmentRequired: false,
+        expiresInSeconds: this.twoFactorChallengeSeconds(),
+        challengeId,
+      };
+    }
+
+    // First time. A secret is generated per sign-in rather than per account and is
+    // only persisted once a code proves the app can produce it, so re-running this
+    // simply replaces an unconfirmed enrolment instead of orphaning one.
+    const secret = authenticator.generateSecret(20);
+    const challengeId = await this.startChallenge(user!.id, 'enroll', secret);
     return {
-      message: `Verification code sent. It expires in ${this.twoFactorLifetimeMinutes()} minutes.`,
-      maskedPhoneNumber: maskPhoneNumber(user!.phoneNumber),
-      expiresInSeconds: this.twoFactorTtlSeconds,
-      // Handed to the controller so it can set the challenge cookie. The controller
-      // keeps it out of the response body.
+      message:
+        'Scan this with your authenticator app, then enter the 6-digit code it shows. ' +
+        'If you cannot scan, enter the secret by hand.',
+      enrollmentRequired: true,
+      expiresInSeconds: this.twoFactorChallengeSeconds(),
+      otpauthUri: authenticator.keyuri(user!.email ?? user!.id, this.totpIssuer, secret),
+      // Also returned so the dashboard can offer manual entry. Shown only while the
+      // challenge is open, and never stored in the clear.
+      secret,
       challengeId,
     };
   }
 
-  // Replaces the pending code, keeping the resend budget for that same challenge.
-  async resendTwoFactor(challengeId: string) {
-    const challenge = await this.loadChallenge(challengeId);
-    if (!challenge) {
-      throw new BadRequestException('There is no pending verification. Sign in again.');
-    }
-    const user = await this.prisma.user.findUnique({
-      where: { id: challenge.userId },
-      select: { id: true, phoneNumber: true },
-    });
-    if (!user) {
-      throw new BadRequestException('There is no pending verification. Sign in again.');
-    }
-
-    const code = randomInt(100000, 1000000).toString();
-    const resendCount = await this.runScript(
-      RESEND_CHALLENGE_SCRIPT,
-      [this.challengeKey(challengeId)],
-      this.hashSecret(code),
-      String(this.twoFactorMaxResends),
-      String(this.twoFactorExpiresAt()),
-      String(this.twoFactorKeyTtlSeconds()),
-    );
-    if (resendCount === -1) {
-      throw new BadRequestException('There is no pending verification. Sign in again.');
-    }
-    if (resendCount === -2) {
-      throw new BadRequestException(
-        `The maximum of ${this.twoFactorMaxResends} code resends has been reached. Sign in again to request a new one.`,
-      );
-    }
-
-    await this.deliverCode(challengeId, user.id, user.phoneNumber, code);
-    return {
-      message: `Verification code resent. ${this.twoFactorMaxResends - resendCount} resend(s) remain.`,
-      maskedPhoneNumber: maskPhoneNumber(user.phoneNumber),
-      expiresInSeconds: this.twoFactorTtlSeconds,
-    };
-  }
-
-  // Step two: checks the code and, only now, creates the session.
+  // Step two: checks the code and, only now, creates the session. A correct code in
+  // enrolment mode also commits the secret, which is what makes the factor usable on
+  // every later sign-in.
   async verifyTwoFactor(challengeId: string, code: string) {
     const challenge = await this.loadChallenge(challengeId);
     if (!challenge) {
-      throw new BadRequestException('There is no pending verification. Sign in again.');
+      throw new BadRequestException(NO_PENDING_VERIFICATION);
     }
 
-    const result = await this.runScript(
-      VERIFY_CHALLENGE_SCRIPT,
+    const claim = await this.runScript(
+      CLAIM_ATTEMPT_SCRIPT,
       [this.challengeKey(challengeId), this.twoFactorTriesKey(challenge.userId)],
-      this.hashSecret(code),
       String(this.twoFactorMaxTries),
       String(Date.now()),
       String(this.twoFactorMaxTries),
       String(this.twoFactorAttemptWindowSeconds),
     );
-    if (result === -1) {
-      throw new BadRequestException('There is no pending verification. Sign in again.');
+    if (claim === -1) {
+      throw new BadRequestException(NO_PENDING_VERIFICATION);
     }
-    if (result === -3) {
-      throw new UnauthorizedException('The verification code has expired. Request a new one.');
+    if (claim === -3) {
+      throw new UnauthorizedException('The sign-in window has expired. Sign in again.');
     }
-    if (result === -2) {
+    if (claim === -2) {
       throw tooManyRequests(
-        'Too many incorrect verification codes. Request a new one in a few minutes.',
+        'Too many incorrect verification codes. Wait a few minutes and sign in again.',
       );
     }
-    if (result === 0) {
+
+    const secret =
+      challenge.mode === 'enroll' ? challenge.secret : await this.readStoredSecret(challenge.userId);
+    if (!this.codeMatches(code, secret)) {
       throw new UnauthorizedException('The verification code is incorrect.');
+    }
+
+    if (challenge.mode === 'enroll') {
+      await this.commitSecret(challenge.userId, secret);
+    }
+
+    const consumed = await this.runScript(
+      CONSUME_CHALLENGE_SCRIPT,
+      [
+        this.challengeKey(challengeId),
+        this.currentChallengeKey(challenge.userId),
+        this.twoFactorTriesKey(challenge.userId),
+      ],
+    );
+    // Lost the race to a concurrent request holding the same code. Refused rather
+    // than issued twice, so one code is worth at most one session.
+    if (consumed === 0) {
+      throw new BadRequestException(NO_PENDING_VERIFICATION);
     }
 
     return this.startSession(challenge.userId);
@@ -267,11 +273,7 @@ export class AdminAuthService {
       throw new ForbiddenException('This account is not an administrator.');
     }
 
-    const { sessionId, ...tokens } = await this.generateTokens(
-      user.id,
-      user.phoneNumber,
-      user.role,
-    );
+    const { sessionId, ...tokens } = await this.generateTokens(user.id, user.role);
     const rotatedHash = this.hashSecret(tokens.refreshToken);
     // Deleting and reinserting in one transaction keeps the old token single-use:
     // two concurrent refreshes race on the same row and only one delete can match.
@@ -318,7 +320,7 @@ export class AdminAuthService {
       throw new UnauthorizedException('The account associated with this session no longer exists.');
     }
     // Picked one field at a time rather than spread, so that loosening the select
-    // above can never start handing the password hash to a caller.
+    // above can never start handing the password hash or the TOTP secret to a caller.
     return { id: user.id, fullName: user.fullName, email: user.email ?? '', role: user.role };
   }
 
@@ -337,50 +339,82 @@ export class AdminAuthService {
     );
   }
 
-  // Seconds a pending challenge stays usable, used to age the challenge cookie so it
-  // disappears at about the same moment the code does.
+  // Seconds a password-verified sign-in stays open waiting for a code. Used to age
+  // the challenge cookie so it disappears at about the same moment the window does.
   twoFactorChallengeSeconds(): number {
-    return this.twoFactorTtlSeconds;
+    return this.twoFactorPendingSeconds;
   }
 
-  // Writes the challenge state and dispatches the first code, returning the challenge
-  // id so the caller can bind it to the cookie.
-  private async startTwoFactor(userId: string, phoneNumber: string): Promise<string> {
+  // Writes the challenge state and returns its id so the caller can bind it to the
+  // cookie. In 'enroll' mode the secret rides along and is not yet on the account.
+  private async startChallenge(userId: string, mode: string, secret: string): Promise<string> {
     const challengeId = randomUUID();
-    const code = randomInt(100000, 1000000).toString();
     await this.runScript(
       CREATE_CHALLENGE_SCRIPT,
       [this.challengeKey(challengeId), this.currentChallengeKey(userId)],
       'auth:admin:2fa:',
       userId,
-      this.hashSecret(code),
-      String(this.twoFactorExpiresAt()),
+      mode,
+      secret,
+      String(Date.now() + this.twoFactorPendingSeconds * 1000),
       String(this.twoFactorKeyTtlSeconds()),
       challengeId,
     );
-    await this.deliverCode(challengeId, userId, phoneNumber, code);
     return challengeId;
   }
 
-  // Sends the code and drops the challenge if delivery fails, so an admin is never
-  // left waiting on a message that cannot arrive. They sign in again to retry.
-  private async deliverCode(
-    challengeId: string,
-    userId: string,
-    phoneNumber: string,
-    code: string,
-  ) {
-    try {
-      await this.smsService.sendOtp(phoneNumber, code);
-    } catch (error) {
-      await this.deleteKeys([this.challengeKey(challengeId), this.currentChallengeKey(userId)]);
-      this.logger.error(
-        `Two-factor SMS failed for admin ${userId}: ${this.errorMessage(error)}`,
-      );
-      throw new ServiceUnavailableException(
-        'The verification code could not be sent. Try again shortly.',
+  // Reads the encrypted secret off the account. A missing value means the enrolment
+  // was cleared, which is not something a caller can be told about quietly.
+  private async readStoredSecret(userId: string): Promise<string> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { totpSecret: true },
+    });
+    if (!user?.totpSecret) {
+      throw new BadRequestException(
+        'This account has no authenticator enrolled. Sign in again to set one up.',
       );
     }
+    return this.totpCrypto.decrypt(user.totpSecret);
+  }
+
+  // Persists the secret once the admin has proved their authenticator can produce a
+  // matching code, and marks the factor usable from this moment on.
+  private async commitSecret(userId: string, secret: string) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { totpSecret: this.totpCrypto.encrypt(secret), totpEnabledAt: new Date() },
+    });
+  }
+
+  // Compares a submitted code against every step in the tolerance window, in constant
+  // time. otplib's own check uses `===`, so it is not used here: a short, repeatedly
+  // submitted value is exactly the case where an early-exit compare leaks how many
+  // leading digits were right.
+  private codeMatches(code: string, secret: string): boolean {
+    if (!/^\d{6}$/.test(code) || !secret) return false;
+    const now = Date.now();
+    const submitted = Buffer.from(code, 'utf8');
+    // otplib derives its expected code from the epoch held on the instance, and
+    // `generate` takes no epoch argument. A fresh instance per candidate is used
+    // rather than reassigning the shared singleton's options, which would let one
+    // request verify a code against another request's clock.
+    const options = authenticator.allOptions();
+    let matched = 0;
+    // Every candidate is compared, with no short-circuit, so the work done is the same
+    // whether the code was right or wrong.
+    for (let step = -this.totpWindow; step <= this.totpWindow; step++) {
+      const expected = Buffer.from(
+        authenticator
+          .create({ ...options, epoch: now + step * this.totpStepSeconds * 1000 })
+          .generate(secret),
+        'utf8',
+      );
+      if (expected.length === submitted.length && timingSafeEqual(submitted, expected)) {
+        matched = 1;
+      }
+    }
+    return matched === 1;
   }
 
   // Issues the tokens and persists the session row the JWT strategy checks on every
@@ -394,11 +428,7 @@ export class AdminAuthService {
     if (user.role !== UserRole.ADMIN) {
       throw new ForbiddenException('This account is not an administrator.');
     }
-    const { sessionId, ...tokens } = await this.generateTokens(
-      user.id,
-      user.phoneNumber,
-      user.role,
-    );
+    const { sessionId, ...tokens } = await this.generateTokens(user.id, user.role);
     await this.prisma.refreshToken.create({
       data: {
         token: this.hashSecret(tokens.refreshToken),
@@ -424,10 +454,11 @@ export class AdminAuthService {
     };
   }
 
-  // Signs the pair with the admin lifetimes rather than the mobile ones.
-  private async generateTokens(userId: string, phoneNumber: string, role: string) {
+  // Signs the pair with the admin lifetimes rather than the mobile ones. The claim
+  // carries no phone number, since the admin factor is no longer tied to one.
+  private async generateTokens(userId: string, role: string) {
     const sessionId = randomUUID();
-    const payload = { sub: userId, phoneNumber, role, sid: sessionId };
+    const payload = { sub: userId, role, sid: sessionId };
     const accessSecret =
       this.configService.get<string>('jwt.accessSecret') || 'default_dev_access_secret_32chars';
     const refreshSecret =
@@ -445,15 +476,17 @@ export class AdminAuthService {
     return { accessToken, refreshToken, sessionId };
   }
 
-  // Reads the owner of a pending challenge, or null when it is gone or expired.
-  private async loadChallenge(challengeId: string): Promise<{ userId: string } | null> {
+  // Reads the owner and mode of a pending challenge, or null when it is gone.
+  private async loadChallenge(
+    challengeId: string,
+  ): Promise<{ userId: string; mode: string; secret: string } | null> {
     if (!challengeId) return null;
     const client = this.redisService.getClient();
     const stored = await this.readRedis('Reading a two-factor challenge', () =>
       client.hgetall(this.challengeKey(challengeId)),
     );
     if (!stored?.userId) return null;
-    return { userId: stored.userId };
+    return { userId: stored.userId, mode: stored.mode, secret: stored.secret ?? '' };
   }
 
   // Refuses a locked address before spending any bcrypt time on it.
@@ -493,8 +526,8 @@ export class AdminAuthService {
     return `auth:admin:2fa:current:${userId}`;
   }
 
-  // Holds the per-account wrong-code tally, separate from the challenge so a new
-  // code cannot reset it.
+  // Holds the per-account wrong-code tally, separate from the challenge so signing in
+  // again cannot reset it.
   private twoFactorTriesKey(userId: string) {
     return `auth:admin:2fa:tries:${userId}`;
   }
@@ -505,18 +538,10 @@ export class AdminAuthService {
     return `auth:admin:login:tries:${this.hashSecret(email)}`;
   }
 
-  private twoFactorExpiresAt(): number {
-    return Date.now() + this.twoFactorTtlSeconds * 1000;
-  }
-
-  private twoFactorLifetimeMinutes(): number {
-    return Math.round(this.twoFactorTtlSeconds / 60);
-  }
-
-  // The challenge key outlives the code by a grace period so an expired code is
-  // reported as expired instead of looking like one that was never sent.
+  // The challenge key outlives its window slightly, so an expired sign-in is still
+  // reported as expired rather than looking like one that never happened.
   private twoFactorKeyTtlSeconds(): number {
-    return this.twoFactorTtlSeconds + this.twoFactorExpiryGraceSeconds;
+    return this.twoFactorPendingSeconds + 120;
   }
 
   // Expiry stored on the refresh-token row, kept in step with adminAuth.refreshExpiresIn.

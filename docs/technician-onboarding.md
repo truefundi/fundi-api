@@ -1,5 +1,32 @@
 # Technician Management API
 
+### `POST /api/v1/technicians/profile`
+
+Registers the signed-in technician's profile for the first time. The authenticated user must already have the `TECHNICIAN` role (created either by an administrator via `POST /api/v1/admin/technicians` or through the technician signup flow). New profiles start as `PENDING` verification and `OFFLINE` availability.
+
+Send only fields that are known at registration time; at least one field is required. `categoryIds` replaces the current category selection, and every selected category must be active. Latitude and longitude must be supplied together; set both to `null` to clear the location. Coordinates are decimal degrees: latitude ranges from -90 to 90, longitude from -180 to 180. The server also stores a PostGIS `geography(Point,4326)` value, using longitude as X and latitude as Y.
+
+An optional profile photo is sent as base64 and stored in PostgreSQL binary form. JPEG, PNG, and WebP are accepted up to 5 MiB. The response converts the bytes into a displayable data URL.
+
+Returns `409` if a technician profile already exists for this user — use `PUT /api/v1/technicians/profile` to update an existing profile.
+
+Request:
+
+```json
+{
+  "fullName": "Amina Example",
+  "phoneNumber": "+250788123456",
+  "email": "amina@example.com",
+  "gender": "FEMALE",
+  "yearsOfExperience": 5,
+  "categoryIds": ["e5a4f4d7-0b21-46d8-9a4b-98765d332100"],
+  "baseAddress": "Kigali, Rwanda",
+  "baseLatitude": -1.95,
+  "baseLongitude": 30.06,
+  "profilePictureBase64": "<base64-image-data>",
+  "profilePictureMimeType": "image/png"
+}
+
 This API manages technician identity, profile details, verification, and availability. These are three separate concepts:
 
 - `user.status` controls whether the account is active and can authenticate.

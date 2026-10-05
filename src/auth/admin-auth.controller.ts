@@ -9,7 +9,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import { ApiCookieAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiCookieAuth, ApiExtraModels, ApiOperation, ApiResponse, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
@@ -18,6 +18,7 @@ import { AdminLoginDto } from './dto/admin-login.dto';
 import { VerifyAdminTwoFactorDto } from './dto/admin-2fa.dto';
 import {
   AdminSessionDto,
+  AdminTwoFactorEnrollDto,
   AdminTwoFactorRequiredDto,
   AdminUserDto,
 } from './dto/admin-auth-response.dto';
@@ -36,6 +37,7 @@ import {
   ApiForbidden,
   ApiServiceUnavailable,
   ApiTokenRequired,
+  ApiTooManyRequests,
   ApiUnauthorized,
   ApiValidationFailed,
 } from '../common/decorators/api-error-responses.decorator';
@@ -58,57 +60,41 @@ export class AdminAuthController {
     private configService: ConfigService,
   ) {}
 
-  // Step one of admin sign-in: password, then a second factor over SMS.
+  // Step one of admin sign-in: password, then a second factor from an authenticator
+  // app. The answer has two shapes, because the first sign-in on an account also has
+  // to set the factor up.
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @ApiExtraModels(AdminTwoFactorEnrollDto, AdminTwoFactorRequiredDto)
   @ApiOperation({
     summary: 'Start an admin sign-in with email and password',
     description:
-      'On success no token is issued. A two-factor challenge cookie is set and a six-digit code is sent by SMS, which must be submitted to `/2fa/verify` before any protected route will answer. Every credential failure answers `401` with the same message, so this endpoint cannot be used to discover which addresses belong to an administrator.',
+      'On success no token is issued. A two-factor challenge cookie is set and the code from the authenticator app must be submitted to `/2fa/verify` before any protected route will answer.\n\n' +
+      'Returns `enrollmentRequired: true` with an `otpauthUri` and `secret` on the very first sign-in of an account, which is what the dashboard renders as a QR code. Once an authenticator is enrolled it returns `enrollmentRequired: false` and only asks for the code.\n\n' +
+      'The secret is returned so a client that cannot scan can type it in. It is sent with `Cache-Control: no-store` and is stored only after a first code is accepted, so a sign-in that is abandoned leaves nothing behind.\n\n' +
+      'Every credential failure answers `401` with the same message, so this endpoint cannot be used to discover which addresses belong to an administrator.',
   })
   @ApiResponse({
     status: 200,
-    description: 'Password accepted, code sent',
-    type: AdminTwoFactorRequiredDto,
+    description: 'Password accepted, waiting on the authenticator',
+    schema: {
+      oneOf: [
+        { $ref: getSchemaPath(AdminTwoFactorEnrollDto) },
+        { $ref: getSchemaPath(AdminTwoFactorRequiredDto) },
+      ],
+    },
   })
   @ApiValidationFailed()
   @ApiUnauthorized(
     'The email or password is incorrect, or the account is not an active administrator.',
   )
-  @ApiServiceUnavailable(
-    'The verification code could not be sent, or the rate-limit store is unavailable.',
-  )
+  @ApiTooManyRequests('Too many failed sign-in attempts for this address.')
+  @ApiServiceUnavailable('The rate-limit store or the secret store is unavailable.')
   async login(@Body() body: AdminLoginDto, @Res({ passthrough: true }) response: Response) {
     const { challengeId, ...result } = await this.adminAuthService.login(body);
-    response.cookie(ADMIN_2FA_CHALLENGE_COOKIE, challengeId, this.challengeCookieOptions());
-    return result;
-  }
-
-  // Replaces the pending code while keeping the resend budget for that challenge.
-  @Post('2fa/resend')
-  @HttpCode(HttpStatus.OK)
-  @ApiCookieAuth('adminTwoFactorChallenge')
-  @ApiOperation({
-    summary: 'Resend the pending two-factor code',
-    description:
-      'Requires the challenge cookie from `/login`. Can be called at most three times per challenge. Resending does not clear the failed-attempt count.',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'A replacement code was sent',
-    type: AdminTwoFactorRequiredDto,
-  })
-  @ApiBadRequest(
-    'There is no pending verification, or the three-resend limit has been reached.',
-  )
-  @ApiServiceUnavailable('The code could not be sent, or the rate-limit store is unavailable.')
-  async resendTwoFactor(
-    @Req() request: AuthenticatedRequest,
-    @Res({ passthrough: true }) response: Response,
-  ) {
-    const challengeId = this.challengeId(request);
-    const result = await this.adminAuthService.resendTwoFactor(challengeId);
-    // Re-issues the cookie so it ages alongside the extended challenge.
+    // The body carries the shared secret on a first sign-in, so it must not be cached
+    // by the browser or by any proxy in between.
+    response.setHeader('Cache-Control', 'no-store');
     response.cookie(ADMIN_2FA_CHALLENGE_COOKIE, challengeId, this.challengeCookieOptions());
     return result;
   }
@@ -118,21 +104,23 @@ export class AdminAuthController {
   @HttpCode(HttpStatus.OK)
   @ApiCookieAuth('adminTwoFactorChallenge')
   @ApiOperation({
-    summary: 'Submit the two-factor code and receive an admin session',
+    summary: 'Submit the authenticator code and receive an admin session',
     description:
-      'The only step that issues tokens. The access and refresh tokens are set as httpOnly cookies and are never included in the response body, so nothing on the page can read them. Submitting a correct code consumes it.',
+      'The only step that issues tokens. The access and refresh tokens are set as httpOnly cookies and are never included in the response body, so nothing on the page can read them.\n\n' +
+      'On a first sign-in the same request confirms the enrolment, which is what commits the secret to the account. Submitting a correct code consumes it: replaying it answers `400`, so one code is worth at most one session.',
   })
   @ApiResponse({
     status: 200,
     description: 'An authenticated admin session',
     type: AdminSessionDto,
   })
-  @ApiBadRequest('There is no pending verification.')
-  @ApiUnauthorized('The code is incorrect or has expired.')
-  @ApiServiceUnavailable()
-  @ApiForbidden(
-    'Too many incorrect codes were submitted, or the account is no longer an active administrator.',
+  @ApiBadRequest('There is no pending verification, or the challenge was already used.')
+  @ApiUnauthorized('The code is incorrect, or the sign-in window has closed.')
+  @ApiTooManyRequests(
+    'Too many incorrect codes were submitted for this account. Wait a few minutes.',
   )
+  @ApiServiceUnavailable()
+  @ApiForbidden('The account is no longer an active administrator.')
   async verifyTwoFactor(
     @Req() request: AuthenticatedRequest,
     @Body() body: VerifyAdminTwoFactorDto,
@@ -142,6 +130,7 @@ export class AdminAuthController {
       this.challengeId(request),
       body.code,
     );
+    response.setHeader('Cache-Control', 'no-store');
     this.clearChallengeCookie(response);
     this.setSessionCookies(response, result.tokens);
     return this.sessionBody(result);

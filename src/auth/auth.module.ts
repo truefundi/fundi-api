@@ -5,6 +5,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminAuthController } from './admin-auth.controller';
+import { TotpCryptoService } from './totp-crypto.service';
 import { JwtStrategy } from './jwt.strategy';
 import { SmsModule } from '../sms/sms.module';
 import { UsersModule } from '../users/users.module';
@@ -17,7 +18,7 @@ import { UsersModule } from '../users/users.module';
     UsersModule,
   ],
   controllers: [AuthController, AdminAuthController],
-  providers: [AuthService, JwtStrategy, AdminAuthService],
-  exports: [AuthService, JwtStrategy, PassportModule],
+  providers: [AuthService, JwtStrategy, AdminAuthService, TotpCryptoService],
+  exports: [AuthService, JwtStrategy, TotpCryptoService, PassportModule],
 })
 export class AuthModule {}

@@ -42,6 +42,13 @@ export const ApiNotFound = (description = 'Not found') =>
 export const ApiConflict = (description = 'Conflict') =>
   applyDecorators(ApiResponse({ status: 409, description, type: ErrorResponseDto }));
 
+// Used where a caller is being slowed down rather than refused: too many failed
+// sign-ins, or too many wrong verification codes.
+export const ApiTooManyRequests = (
+  description = 'Too many attempts. The caller is being slowed down, not refused.',
+) =>
+  applyDecorators(ApiResponse({ status: 429, description, type: ErrorResponseDto }));
+
 export const ApiServiceUnavailable = (
   description = 'Redis is unavailable, so the OTP could not be processed',
 ) =>

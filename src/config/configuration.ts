@@ -35,10 +35,19 @@ export default () => {
     // Wrong-password lockout, keyed by a hash of the email so unknown addresses are covered too.
     maxLoginAttempts: Number(process.env.ADMIN_MAX_LOGIN_ATTEMPTS) || 5,
     loginLockoutSeconds: Number(process.env.ADMIN_LOGIN_LOCKOUT_SECONDS) || 900,
-    // Lifetime of the two-factor challenge and its six-digit code.
-    twoFactorTtlSeconds: Number(process.env.ADMIN_2FA_TTL_SECONDS) || 300,
-    twoFactorMaxResends: Number(process.env.ADMIN_2FA_MAX_RESENDS) || 3,
+    // How long a password-verified sign-in stays open waiting for a code. Not a code
+    // lifetime: a TOTP code is valid for 30s by the authenticator's own clock, and
+    // there is nothing to resend, so this only bounds an abandoned sign-in.
+    twoFactorPendingSeconds: Number(process.env.ADMIN_2FA_PENDING_SECONDS) || 300,
+    // Wrong codes allowed per account. More important than the SMS version: a TOTP
+    // space is six digits and each code is live for 30s, so guessing is cheaper.
     twoFactorMaxTries: Number(process.env.ADMIN_2FA_MAX_TRIES) || 5,
+    // Label the authenticator app shows, and the issuer in the otpauth:// URI. It has
+    // to match in both the label and the query parameter or the scan is rejected.
+    totpIssuer: process.env.ADMIN_TOTP_ISSUER || 'Fundi',
+    // Steps of clock drift tolerated either side of the current one. One step absorbs
+    // ordinary server/client clock skew without meaningfully widening the guess space.
+    totpWindow: Number(process.env.ADMIN_TOTP_WINDOW) || 1,
     accessExpiresIn: process.env.ADMIN_ACCESS_EXPIRES_IN || '15m',
     refreshExpiresIn: process.env.ADMIN_REFRESH_EXPIRES_IN || '12h',
     cookie: {
@@ -53,6 +62,7 @@ export default () => {
   },
   security: {
     nationalIdEncryptionKey: process.env.NATIONAL_ID_ENCRYPTION_KEY,
+    totpEncryptionKey: process.env.ADMIN_TOTP_ENCRYPTION_KEY,
   },
   cors: {
     origins: (process.env.CORS_ORIGINS || 'http://localhost:3000').split(','),

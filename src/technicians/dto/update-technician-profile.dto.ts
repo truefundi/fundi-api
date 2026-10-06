@@ -1,106 +1,66 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
-  ArrayMaxSize,
-  IsArray,
-  IsEmail,
-  IsEnum,
-  IsInt,
-  IsNumber,
-  IsOptional,
-  IsString,
-  IsUUID,
-  Matches,
-  Max,
-  MaxLength,
-  MinLength,
-  Min,
+  ArrayMaxSize, IsArray, IsEmail, IsEnum, IsInt, IsNumber, IsOptional,
+  IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength,
+  ValidateNested,
 } from 'class-validator';
-import { TechnicianAvailability, TechnicianGender } from '@prisma/client';
+import {
+  PaymentMethod, TechnicianAvailability, TechnicianGender,
+} from '@prisma/client';
+import { ServiceExperienceDto } from './service-experience.dto';
 
-// Validates all user and technician fields changed by one atomic profile request.
-// Profile pictures are uploaded separately through PUT /api/v1/technicians/profile/picture.
 export class UpdateTechnicianProfileDto {
-  @IsOptional()
-  @IsString()
-  @MinLength(2)
-  @MaxLength(120)
+  @IsOptional() @IsString() @MinLength(2) @MaxLength(120)
   fullName?: string;
 
   @IsOptional()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.replace(/[\s()-]/g, '') : value,
-  )
-  @IsString()
-  @MinLength(7)
-  @MaxLength(20)
-  @Matches(/^\+?[0-9]+$/)
+  @Transform(({ value }) => typeof value === 'string' ? value.replace(/[\s()-]/g, '') : value)
+  @IsString() @MinLength(7) @MaxLength(20) @Matches(/^\+?[0-9]+$/)
   phoneNumber?: string;
 
-  @IsOptional()
-  @IsEmail()
-  @MaxLength(254)
+  @IsOptional() @IsEmail() @MaxLength(254)
   email?: string | null;
 
-  @IsOptional()
-  @IsEnum(TechnicianGender)
-  gender?: TechnicianGender | null;
+  @IsOptional() @IsEnum(TechnicianGender)
+  gender?: TechnicianGender;
 
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(60)
-  yearsOfExperience?: number;
+  @Transform(({ value }) => typeof value === 'string'
+    ? value.normalize('NFKC').trim().replace(/[\s-]/g, '').toUpperCase()
+    : value)
+  @IsString() @MinLength(4) @MaxLength(64) @Matches(/^[A-Z0-9]+$/)
+  nationalIdNumber?: string;
 
-  @IsOptional()
-  @Transform(({ value }) =>
-    typeof value === 'string'
-      ? value.normalize('NFKC').trim().replace(/[\s-]/g, '').toUpperCase()
-      : value,
-  )
-  @IsString()
-  @MinLength(4)
-  @MaxLength(64)
-  @Matches(/^[A-Z0-9]+$/)
-  nationalIdNumber?: string | null;
+  @IsOptional() @IsString() @MaxLength(255)
+  baseAddress?: string;
 
-  @IsOptional()
-  @Transform(({ value }) =>
-    Array.isArray(value) ? [...new Set(value)] : value,
-  )
-  @IsArray()
-  @ArrayMaxSize(10)
-  @IsUUID('4', { each: true })
-  categoryIds?: string[];
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  baseAddress?: string | null;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(120)
+  @IsOptional() @IsString() @MaxLength(120)
   publicLocationLabel?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) =>
-    value === null || value === undefined ? value : Number(value),
-  )
-  @IsNumber()
-  @Min(-90)
-  @Max(90)
-  baseLatitude?: number | null;
+  @Transform(({ value }) => value === null || value === undefined ? value : Number(value))
+  @IsNumber() @Min(-90) @Max(90)
+  baseLatitude?: number;
 
   @IsOptional()
-  @Transform(({ value }) =>
-    value === null || value === undefined ? value : Number(value),
-  )
-  @IsNumber()
-  @Min(-180)
-  @Max(180)
-  baseLongitude?: number | null;
+  @Transform(({ value }) => value === null || value === undefined ? value : Number(value))
+  @IsNumber() @Min(-180) @Max(180)
+  baseLongitude?: number;
+
+  @IsOptional() @IsEnum(PaymentMethod)
+  paymentMethod?: PaymentMethod;
 
   @IsOptional()
-  @IsEnum(TechnicianAvailability)
+  @Transform(({ value }) => typeof value === 'string' ? value.replace(/\s/g, '') : value)
+  @IsString() @MinLength(6) @MaxLength(24) @Matches(/^\+?[0-9]+$/)
+  paymentNumber?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => Array.isArray(value) ? value : value)
+  @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true })
+  @Type(() => ServiceExperienceDto)
+  serviceExperiences?: ServiceExperienceDto[];
+
+  @IsOptional() @IsEnum(TechnicianAvailability)
   availabilityStatus?: TechnicianAvailability;
 }

@@ -30,13 +30,17 @@ const MAX_ACTIVE_DOCUMENTS = 10;
 // Document types an administrator must accept before a technician can be approved.
 export const REQUIRED_DOCUMENT_TYPES: DocumentType[] = [
   DocumentType.NATIONAL_ID,
-  DocumentType.TVET_CERTIFICATE,
+  DocumentType.CERTIFICATE,
 ];
 
+// Human-readable labels for each required document type in the checklist.
 const DOCUMENT_LABELS: Record<DocumentType, string> = {
   NATIONAL_ID: 'Accepted National ID document',
-  TVET_CERTIFICATE: 'Accepted TVET certificate',
+  CERTIFICATE: 'Accepted TVET certificate',
 };
+
+// The checklist only counts a CERTIFICATE whose certificateType matches this value.
+const APPROVAL_CERTIFICATE_TYPE = 'TVET_CERTIFICATE';
 
 export interface ChecklistItem {
   key: string;
@@ -49,6 +53,18 @@ export interface VerificationChecklist {
   complete: boolean;
   items: ChecklistItem[];
 }
+
+interface ResolvedCategoryRef {
+  categoryId: string | null;
+  customCategoryName: string | null;
+  customCategoryNormalized: string | null;
+}
+
+const EMPTY_CATEGORY_REF: ResolvedCategoryRef = {
+  categoryId: null,
+  customCategoryName: null,
+  customCategoryNormalized: null,
+};
 
 // Handles private technician files: profile pictures, KYC documents, review, and the approval checklist.
 @Injectable()
@@ -134,46 +150,15 @@ export class TechnicianDocumentsService {
     const profile = await this.requireProfile(userId);
     const detected = this.validateFile(file, DOCUMENT_MIME_TYPES);
     const titleNormalized = this.normalizeTitle(dto.title);
+    const categoryRef = await this.resolveCertificateCategory(dto);
 
-    const activeCount = await this.prisma.technicianDocument.count({
-      where: {
-        technicianId: profile.id,
-        status: { not: DocumentStatus.DENIED },
-      },
-    });
-    if (activeCount >= MAX_ACTIVE_DOCUMENTS) {
-      throw new ConflictException(
-        `You can have at most ${MAX_ACTIVE_DOCUMENTS} active documents. Delete one first.`,
-      );
-    }
-    // The database allows one live title per technician (any type) and one live National ID.
-    const duplicateTitle = await this.prisma.technicianDocument.findFirst({
-      where: {
-        technicianId: profile.id,
-        titleNormalized,
-        status: { not: DocumentStatus.DENIED },
-      },
-      select: { id: true },
-    });
-    if (duplicateTitle) {
-      throw new ConflictException(
-        'You already have a document with this title. Use a different title, or wait until it is denied.',
-      );
-    }
+    await this.assertActiveDocumentBudget(profile.id);
+    await this.assertUniqueTitle(profile.id, titleNormalized);
     if (dto.type === DocumentType.NATIONAL_ID) {
-      const liveNationalId = await this.prisma.technicianDocument.findFirst({
-        where: {
-          technicianId: profile.id,
-          type: DocumentType.NATIONAL_ID,
-          status: { not: DocumentStatus.DENIED },
-        },
-        select: { id: true },
-      });
-      if (liveNationalId) {
-        throw new ConflictException(
-          'A National ID document is already submitted. Delete it while it is still SUBMITTED, or wait until it is denied, before uploading another.',
-        );
-      }
+      await this.assertNoLiveNationalId(profile.id);
+    }
+    if (dto.type === DocumentType.CERTIFICATE) {
+      await this.assertNoLiveCertificate(profile.id, dto, categoryRef);
     }
 
     const objectKey = `technicians/${profile.id}/documents/${randomUUID()}.${detected.extension}`;
@@ -186,6 +171,11 @@ export class TechnicianDocumentsService {
             type: dto.type,
             title: dto.title,
             titleNormalized,
+            certificateType:
+              dto.type === DocumentType.CERTIFICATE ? dto.certificateType! : null,
+            categoryId: categoryRef.categoryId,
+            customCategoryName: categoryRef.customCategoryName,
+            customCategoryNormalized: categoryRef.customCategoryNormalized,
             objectKey,
             mimeType: detected.mime,
             originalFileName: this.cleanFileName(file!.originalname),
@@ -199,7 +189,13 @@ export class TechnicianDocumentsService {
             action: 'DOCUMENT_UPLOADED',
             toStatus: DocumentStatus.SUBMITTED,
             actorId: userId,
-            metadata: { technicianId: profile.id, type: dto.type },
+            metadata: {
+              technicianId: profile.id,
+              type: dto.type,
+              certificateType: dto.certificateType ?? null,
+              categoryId: categoryRef.categoryId,
+              customCategoryName: categoryRef.customCategoryName,
+            },
           },
           tx,
         );
@@ -225,6 +221,7 @@ export class TechnicianDocumentsService {
     const profile = await this.requireProfile(userId);
     const documents = await this.prisma.technicianDocument.findMany({
       where: { technicianId: profile.id },
+      include: { category: { select: { id: true, name: true, slug: true } } },
       orderBy: { createdAt: 'desc' },
     });
     return documents.map((document) => this.toResponse(document));
@@ -282,6 +279,7 @@ export class TechnicianDocumentsService {
     if (!exists) throw new NotFoundException('Technician not found.');
     const documents = await this.prisma.technicianDocument.findMany({
       where: { technicianId: profileId },
+      include: { category: { select: { id: true, name: true, slug: true } } },
       orderBy: { createdAt: 'desc' },
     });
     return documents.map((document) => this.toResponse(document, true));
@@ -347,6 +345,7 @@ export class TechnicianDocumentsService {
       );
       const updated = await tx.technicianDocument.findUniqueOrThrow({
         where: { id: documentId },
+        include: { category: { select: { id: true, name: true, slug: true } } },
       });
       return this.toResponse(updated, true);
     });
@@ -369,7 +368,9 @@ export class TechnicianDocumentsService {
       where: { id: profileId },
       select: {
         profilePictureObjectKey: true,
-        documents: { select: { type: true, status: true } },
+        documents: {
+          select: { type: true, certificateType: true, status: true },
+        },
       },
     });
     if (!profile) throw new NotFoundException('Technician not found.');
@@ -381,26 +382,9 @@ export class TechnicianDocumentsService {
         satisfied: Boolean(profile.profilePictureObjectKey),
         detail: profile.profilePictureObjectKey ? 'Uploaded' : 'Not uploaded',
       },
-      ...REQUIRED_DOCUMENT_TYPES.map((type) => {
-        const documents = profile.documents.filter((d) => d.type === type);
-        const has = (status: DocumentStatus) =>
-          documents.some((d) => d.status === status);
-        const detail = has(DocumentStatus.ACCEPTED)
-          ? 'Accepted'
-          : has(DocumentStatus.REVIEWING)
-            ? 'Under review'
-            : has(DocumentStatus.SUBMITTED)
-              ? 'Submitted, waiting for review'
-              : documents.length
-                ? 'Denied, upload a new document'
-                : 'Not uploaded';
-        return {
-          key: type,
-          label: DOCUMENT_LABELS[type],
-          satisfied: has(DocumentStatus.ACCEPTED),
-          detail,
-        };
-      }),
+      ...REQUIRED_DOCUMENT_TYPES.map((type) =>
+        this.buildChecklistItem(type, profile.documents),
+      ),
     ];
     return { complete: items.every((item) => item.satisfied), items };
   }
@@ -421,7 +405,163 @@ export class TechnicianDocumentsService {
     });
   }
 
-  // ---------- Helpers ----------
+  // ---------- Private helpers ----------
+
+  // Builds one checklist item, applying the CERTIFICATE + TVET_CERTIFICATE rule.
+  private buildChecklistItem(
+    type: DocumentType,
+    documents: Array<{
+      type: DocumentType;
+      certificateType: string | null;
+      status: DocumentStatus;
+    }>,
+  ): ChecklistItem {
+    const relevant = documents.filter(
+      (d) =>
+        d.type === type &&
+        (type !== DocumentType.CERTIFICATE ||
+          d.certificateType === APPROVAL_CERTIFICATE_TYPE),
+    );
+    const has = (status: DocumentStatus) =>
+      relevant.some((d) => d.status === status);
+    const detail = has(DocumentStatus.ACCEPTED)
+      ? 'Accepted'
+      : has(DocumentStatus.REVIEWING)
+        ? 'Under review'
+        : has(DocumentStatus.SUBMITTED)
+          ? 'Submitted, waiting for review'
+          : relevant.length
+            ? 'Denied, upload a new document'
+            : 'Not uploaded';
+    return {
+      key: type,
+      label: DOCUMENT_LABELS[type],
+      satisfied: has(DocumentStatus.ACCEPTED),
+      detail,
+    };
+  }
+
+  // Certificate documents must reference exactly one of an active category or a custom name.
+  private async resolveCertificateCategory(
+    dto: UploadDocumentDto,
+  ): Promise<ResolvedCategoryRef> {
+    if (dto.type !== DocumentType.CERTIFICATE) {
+      return EMPTY_CATEGORY_REF;
+    }
+    if (!dto.certificateType) {
+      throw new BadRequestException(
+        'A certificateType is required for a CERTIFICATE document.',
+      );
+    }
+    const hasCategory = !!dto.categoryId;
+    const hasCustom = !!dto.customCategoryName;
+    if (hasCategory === hasCustom) {
+      throw new BadRequestException(
+        'Provide exactly one of categoryId or customCategoryName for a certificate.',
+      );
+    }
+    if (hasCategory) {
+      const row = await this.prisma.serviceCategory.findUnique({
+        where: { id: dto.categoryId },
+        select: { id: true, isActive: true },
+      });
+      if (!row || !row.isActive) {
+        throw new BadRequestException(
+          'The selected category is invalid or inactive.',
+        );
+      }
+      return {
+        categoryId: row.id,
+        customCategoryName: null,
+        customCategoryNormalized: null,
+      };
+    }
+    const trimmed = dto.customCategoryName!.trim();
+    return {
+      categoryId: null,
+      customCategoryName: trimmed,
+      customCategoryNormalized: trimmed.toLowerCase(),
+    };
+  }
+
+  // Enforces the 10-active-document budget.
+  private async assertActiveDocumentBudget(profileId: string) {
+    const activeCount = await this.prisma.technicianDocument.count({
+      where: {
+        technicianId: profileId,
+        status: { not: DocumentStatus.DENIED },
+      },
+    });
+    if (activeCount >= MAX_ACTIVE_DOCUMENTS) {
+      throw new ConflictException(
+        `You can have at most ${MAX_ACTIVE_DOCUMENTS} active documents. Delete one first.`,
+      );
+    }
+  }
+
+  // Rejects a title that collides with any live document of the same technician.
+  private async assertUniqueTitle(
+    profileId: string,
+    titleNormalized: string,
+  ) {
+    const duplicate = await this.prisma.technicianDocument.findFirst({
+      where: {
+        technicianId: profileId,
+        titleNormalized,
+        status: { not: DocumentStatus.DENIED },
+      },
+      select: { id: true },
+    });
+    if (duplicate) {
+      throw new ConflictException(
+        'You already have a document with this title. Use a different title, or wait until it is denied.',
+      );
+    }
+  }
+
+  // Rejects a second live NATIONAL_ID.
+  private async assertNoLiveNationalId(profileId: string) {
+    const existing = await this.prisma.technicianDocument.findFirst({
+      where: {
+        technicianId: profileId,
+        type: DocumentType.NATIONAL_ID,
+        status: { not: DocumentStatus.DENIED },
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new ConflictException(
+        'A National ID document is already submitted. Wait until it is denied before uploading another.',
+      );
+    }
+  }
+
+  // Rejects a second live CERTIFICATE with the same category + certificateType.
+  private async assertNoLiveCertificate(
+    profileId: string,
+    dto: UploadDocumentDto,
+    categoryRef: ResolvedCategoryRef,
+  ) {
+    const existing = await this.prisma.technicianDocument.findFirst({
+      where: {
+        technicianId: profileId,
+        type: DocumentType.CERTIFICATE,
+        certificateType: dto.certificateType,
+        status: { not: DocumentStatus.DENIED },
+        ...(categoryRef.categoryId
+          ? { categoryId: categoryRef.categoryId }
+          : {
+              customCategoryNormalized: categoryRef.customCategoryNormalized,
+            }),
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new ConflictException(
+        'You already have a live certificate for this category and certificate type.',
+      );
+    }
+  }
 
   private async requireProfile(userId: string) {
     const profile = await this.prisma.technicianProfile.findUnique({
@@ -487,12 +627,21 @@ export class TechnicianDocumentsService {
   }
 
   // Never exposes the internal object key.
-  private toResponse(document: TechnicianDocument, forAdmin = false) {
+  private toResponse(
+    document: TechnicianDocument & {
+      category?: { id: string; name: string; slug: string } | null;
+    },
+    forAdmin = false,
+  ) {
     return {
       id: document.id,
       technicianId: document.technicianId,
       type: document.type,
       title: document.title,
+      certificateType: document.certificateType,
+      categoryId: document.categoryId,
+      category: document.category ?? null,
+      customCategoryName: document.customCategoryName,
       mimeType: document.mimeType,
       originalFileName: document.originalFileName,
       sizeBytes: document.sizeBytes,

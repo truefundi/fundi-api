@@ -1,4 +1,5 @@
-import { Controller, Get, Param, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
+import { SearchAvailableTechniciansDto } from './dto/search-available-technicians.dto';
 import { TechniciansService } from './technicians.service';
 
 // Serves a limited technician-card projection suitable for landing pages.
@@ -8,8 +9,8 @@ export class TechniciansPublicController {
 
   // Lists only active, approved, online technicians without requiring sign-in.
   @Get()
-  list() {
-    return this.technicians.listPublic();
+  list(@Query() dto: SearchAvailableTechniciansDto) {
+    return this.technicians.listPublic(dto);
   }
 
   // Returns safe marketplace details for one technician who is currently available.

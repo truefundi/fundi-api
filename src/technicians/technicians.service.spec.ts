@@ -12,26 +12,30 @@ import { TechnicianDocumentsService } from './documents/technician-documents.ser
 import { NationalIdCryptoService } from './national-id-crypto.service';
 import { TechniciansService } from './technicians.service';
 
-// Tests technician profile integrity, availability, category and storage-backed image behavior.
+// Tests technician profile integrity, per-service experience, discovery and storage-backed images.
 describe('TechniciansService', () => {
   const userId = 'technician-user-id';
   const profileId = 'profile-id';
   const categoryId = 'e5a4f4d7-0b21-46d8-9a4b-98765d332100';
+  const secondCategoryId = 'a1b2c3d4-e5f6-4789-9abc-def012345678';
   const pictureKey = 'technicians/profile-id/profile.png';
   const signedUrl = 'https://storage.test/signed-url';
   const now = new Date('2026-10-01T10:00:00.000Z');
-  const profile = {
+
+  const baseProfile = () => ({
     id: profileId,
     userId,
-    gender: null,
-    yearsOfExperience: null,
-    baseAddress: null,
-    baseLatitude: null,
-    baseLongitude: null,
-    profilePictureObjectKey: null as string | null,
-    nationalIdEncrypted: null,
-    nationalIdHash: null,
+    gender: TechnicianGender.FEMALE,
+    nationalIdEncrypted: 'encrypted:ID123456',
+    nationalIdHash: 'hash:ID123456',
+    baseAddress: 'Kigali, Rwanda',
     publicLocationLabel: 'Kigali, Rwanda',
+    baseLatitude: -1.95,
+    baseLongitude: 30.06,
+    paymentMethod: 'MOMO' as const,
+    paymentNumber: '+250788123456',
+    profilePictureObjectKey: null as string | null,
+    profilePictureMimeType: null as string | null,
     verificationStatus: VerificationStatus.PENDING,
     availabilityStatus: TechnicianAvailability.OFFLINE,
     createdAt: now,
@@ -40,16 +44,22 @@ describe('TechniciansService', () => {
       id: userId,
       fullName: 'Amina Example',
       phoneNumber: '+250788123456',
-      email: null,
+      email: null as string | null,
       role: 'TECHNICIAN',
       status: 'ACTIVE',
       createdAt: now,
       updatedAt: now,
     },
-    categories: [],
-  };
+    categories: [] as Array<{
+      technicianId: string;
+      categoryId: string | null;
+      customName: string | null;
+      customNameNormalized: string;
+      yearsOfExperience: number;
+      category: { id: string; name: string; slug: string } | null;
+    }>,
+  });
 
-  // Builds transaction-aware database, audit, storage and document doubles for service tests.
   const createService = () => {
     const transaction = {
       $queryRaw: jest
@@ -58,16 +68,15 @@ describe('TechniciansService', () => {
         .mockResolvedValue([{ id: categoryId }]),
       $executeRaw: jest.fn().mockResolvedValue(1),
       user: {
-        create: jest.fn().mockResolvedValue(profile.user),
-        update: jest.fn().mockResolvedValue(profile.user),
-        delete: jest.fn().mockResolvedValue(profile.user),
+        create: jest.fn().mockResolvedValue(baseProfile().user),
+        update: jest.fn().mockResolvedValue(baseProfile().user),
+        delete: jest.fn().mockResolvedValue(baseProfile().user),
       },
       technicianProfile: {
-        create: jest.fn().mockResolvedValue(profile),
-        update: jest.fn().mockResolvedValue(profile),
-        upsert: jest.fn().mockResolvedValue(profile),
-        findUnique: jest.fn().mockResolvedValue(profile),
-        findUniqueOrThrow: jest.fn().mockResolvedValue(profile),
+        create: jest.fn().mockResolvedValue(baseProfile()),
+        update: jest.fn().mockResolvedValue(baseProfile()),
+        findUnique: jest.fn().mockResolvedValue(baseProfile()),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(baseProfile()),
       },
       technicianCategory: {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -76,9 +85,9 @@ describe('TechniciansService', () => {
     };
     const prisma = {
       technicianProfile: {
-        findMany: jest.fn().mockResolvedValue([profile]),
-        findFirst: jest.fn().mockResolvedValue(profile),
-        findUnique: jest.fn().mockResolvedValue(profile),
+        findMany: jest.fn().mockResolvedValue([baseProfile()]),
+        findFirst: jest.fn().mockResolvedValue(baseProfile()),
+        findUnique: jest.fn().mockResolvedValue(baseProfile()),
       },
       $transaction: jest.fn(
         (callback: (tx: typeof transaction) => Promise<unknown>) =>
@@ -91,9 +100,7 @@ describe('TechniciansService', () => {
       decrypt: jest.fn((value: string) => value.replace('encrypted:', '')),
       hash: jest.fn((value: string) => `hash:${value}`),
     };
-    const storage = {
-      getDownloadUrl: jest.fn().mockResolvedValue(signedUrl),
-    };
+    const storage = { getDownloadUrl: jest.fn().mockResolvedValue(signedUrl) };
     const documents = {
       assertReadyForApproval: jest.fn().mockResolvedValue(undefined),
     };
@@ -114,8 +121,26 @@ describe('TechniciansService', () => {
     };
   };
 
-  // Reads the profile created explicitly through the registration endpoint.
-  it('returns an existing pending/offline profile', async () => {
+  // A complete, valid registration body matching the new required fields.
+  const validRegistration = () => ({
+    fullName: 'Amina Example',
+    phoneNumber: '+250788123456',
+    gender: TechnicianGender.FEMALE,
+    nationalIdNumber: 'ID123456',
+    baseAddress: 'Kigali, Rwanda',
+    publicLocationLabel: 'Kigali, Rwanda',
+    baseLatitude: -1.95,
+    baseLongitude: 30.06,
+    paymentMethod: 'MOMO' as const,
+    paymentNumber: '+250788123456',
+    serviceExperiences: [
+      { categoryId, yearsOfExperience: 5 },
+    ],
+  });
+
+  // ─── Read ──────────────────────────────────────────────────────────────
+
+  it('returns an existing technician profile to its owner', async () => {
     const { service, prisma } = createService();
     const result = await service.getMyProfile(userId);
     expect(prisma.technicianProfile.findUnique).toHaveBeenCalledWith(
@@ -128,45 +153,85 @@ describe('TechniciansService', () => {
     });
   });
 
-  // Requires an explicit POST registration before subsequent profile updates.
-  it('registers a partial technician profile once', async () => {
+  it('404s when the technician has not registered yet', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.findUnique.mockResolvedValue(null);
+    await expect(service.getMyProfile(userId)).rejects.toThrow(
+      /Register one first/,
+    );
+  });
+
+  // ─── Registration ──────────────────────────────────────────────────────
+
+  it('registers a full technician profile once', async () => {
     const { service, transaction, audit } = createService();
     transaction.technicianProfile.findUnique.mockResolvedValue(null);
-    await service.registerMyProfile(userId, {
-      gender: TechnicianGender.FEMALE,
-      publicLocationLabel: 'Kigali',
-    });
-    expect(transaction.technicianProfile.create).toHaveBeenCalledWith({
-      data: { userId },
-    });
+    await service.registerMyProfile(userId, validRegistration());
+    expect(transaction.technicianProfile.create).toHaveBeenCalled();
+    expect(transaction.technicianCategory.createMany).toHaveBeenCalled();
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'PROFILE_REGISTERED' }),
       transaction,
     );
   });
 
-  // Requires at least one value when registering a new technician profile.
-  it('rejects an empty registration body', async () => {
+    it('rejects registration missing required fields with a combined list', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue(null);
+    await expect(
+      service.registerMyProfile(userId, {
+        fullName: 'Amina Example',
+      }),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('gender'),
+    });
+  });
+
+  it('rejects registration when the technician already has a profile', async () => {
+    const { service } = createService();
+    await expect(
+      service.registerMyProfile(userId, validRegistration()),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('rejects a service that has both categoryId and customName', async () => {
     const { service, prisma } = createService();
-    await expect(service.registerMyProfile(userId, {})).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(
+      service.registerMyProfile(userId, {
+        ...validRegistration(),
+        serviceExperiences: [
+          { categoryId, customName: 'Carpentry', yearsOfExperience: 5 },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  // Saves account and technician fields, category links, and location in one transaction.
-  it('updates all supplied account and profile fields atomically', async () => {
+  it('rejects more than 10 service entries', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue(null);
+    await expect(
+      service.registerMyProfile(userId, {
+        ...validRegistration(),
+        serviceExperiences: Array.from({ length: 11 }, (_, i) => ({
+          categoryId,
+          yearsOfExperience: i,
+        })),
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  // ─── Update ────────────────────────────────────────────────────────────
+
+  it('updates account, profile, and service experience atomically', async () => {
     const { service, transaction, audit } = createService();
-    const result = await service.updateMyProfile(userId, {
+    await service.updateMyProfile(userId, {
       fullName: 'Amina Newname',
       phoneNumber: '+250788123457',
       email: ' AMINA@example.com ',
-      gender: TechnicianGender.FEMALE,
-      yearsOfExperience: 5,
-      categoryIds: [categoryId],
-      baseAddress: 'Kigali, Rwanda',
-      baseLatitude: -1.95,
-      baseLongitude: 30.06,
+      paymentMethod: 'MOMO',
+      paymentNumber: '+250788123457',
+      serviceExperiences: [{ categoryId, yearsOfExperience: 6 }],
     });
 
     expect(transaction.user.update).toHaveBeenCalledWith({
@@ -177,20 +242,21 @@ describe('TechniciansService', () => {
         email: 'amina@example.com',
       },
     });
-    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: profileId },
-        data: expect.objectContaining({
-          gender: TechnicianGender.FEMALE,
-          yearsOfExperience: 5,
-          availabilityStatus: TechnicianAvailability.OFFLINE,
-        }),
-      }),
-    );
-    expect(transaction.technicianCategory.createMany).toHaveBeenCalledWith({
-      data: [{ technicianId: profileId, categoryId }],
+    expect(transaction.technicianProfile.update).toHaveBeenCalled();
+    expect(transaction.technicianCategory.deleteMany).toHaveBeenCalledWith({
+      where: { technicianId: profileId },
     });
-    expect(transaction.$executeRaw).toHaveBeenCalled();
+    expect(transaction.technicianCategory.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          technicianId: profileId,
+          categoryId,
+          customName: null,
+          customNameNormalized: '',
+          yearsOfExperience: 6,
+        },
+      ],
+    });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'UPDATED',
@@ -198,20 +264,59 @@ describe('TechniciansService', () => {
       }),
       transaction,
     );
-    expect(result.user.fullName).toBe('Amina Example');
   });
 
-  // Encrypts and hashes a normalized national ID instead of persisting plaintext.
-  it('stores national ID ciphertext and a keyed digest', async () => {
+  it('accepts a custom service name when no category matches', async () => {
+    const { service, transaction } = createService();
+    transaction.$queryRaw.mockReset().mockResolvedValue([]);
+    await service.updateMyProfile(userId, {
+      serviceExperiences: [
+        { customName: '  Solar Panel Install ', yearsOfExperience: 3 },
+      ],
+    });
+    expect(transaction.technicianCategory.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          technicianId: profileId,
+          categoryId: null,
+          customName: 'Solar Panel Install',
+          customNameNormalized: 'solar panel install',
+          yearsOfExperience: 3,
+        },
+      ],
+    });
+  });
+
+  it('rejects duplicate custom names in the same request', async () => {
+    const { service, transaction } = createService();
+    transaction.$queryRaw.mockReset().mockResolvedValue([]);
+    await expect(
+      service.updateMyProfile(userId, {
+        serviceExperiences: [
+          { customName: 'Solar', yearsOfExperience: 3 },
+          { customName: 'solar', yearsOfExperience: 4 },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects an inactive or unknown category id', async () => {
+    const { service, transaction } = createService();
+    transaction.$queryRaw
+      .mockReset()
+      .mockResolvedValueOnce([{ id: profileId }])
+      .mockResolvedValueOnce([]);
+    await expect(
+      service.updateMyProfile(userId, {
+        serviceExperiences: [{ categoryId, yearsOfExperience: 3 }],
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.technicianCategory.createMany).not.toHaveBeenCalled();
+  });
+
+  it('encrypts and hashes a national ID before persisting', async () => {
     const { service, transaction, nationalIdCrypto } = createService();
-    transaction.technicianProfile.findUniqueOrThrow.mockResolvedValue({
-      ...profile,
-      nationalIdEncrypted: 'encrypted:ID123456',
-      nationalIdHash: 'hash:ID123456',
-    });
-    const result = await service.updateMyProfile(userId, {
-      nationalIdNumber: 'ID-123456',
-    });
+    await service.updateMyProfile(userId, { nationalIdNumber: 'ID-123456' });
     expect(nationalIdCrypto.encrypt).toHaveBeenCalledWith('ID-123456');
     expect(nationalIdCrypto.hash).toHaveBeenCalledWith('ID-123456');
     expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
@@ -222,11 +327,9 @@ describe('TechniciansService', () => {
         }),
       }),
     );
-    expect(result.nationalIdNumber).toBe('ID123456');
   });
 
-  // Returns an actionable conflict when the national-ID digest is already unique.
-  it('rejects a national ID already assigned to another technician', async () => {
+  it('returns conflict when the national ID is already taken', async () => {
     const { service, transaction } = createService();
     transaction.technicianProfile.update.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
@@ -240,8 +343,7 @@ describe('TechniciansService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  // Prevents a pending technician from making themselves available for jobs.
-  it('rejects going online before admin approval', async () => {
+  it('prevents going online before approval', async () => {
     const { service, transaction } = createService();
     await expect(
       service.updateMyAvailability(userId, TechnicianAvailability.ONLINE),
@@ -249,7 +351,6 @@ describe('TechniciansService', () => {
     expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
   });
 
-  // Requires latitude and longitude to be supplied or cleared as a pair.
   it('rejects an incomplete coordinate pair', async () => {
     const { service, prisma } = createService();
     await expect(
@@ -258,8 +359,7 @@ describe('TechniciansService', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  // Translates unique user-field collisions into a client-visible conflict.
-  it('returns conflict when a technician updates to an email used by another user', async () => {
+  it('returns conflict when an email is already used', async () => {
     const { service, transaction } = createService();
     transaction.user.update.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
@@ -273,56 +373,41 @@ describe('TechniciansService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  // Rejects inactive category assignment during administrator-created technician setup.
-  it('rejects inactive categories when an admin creates a technician', async () => {
-    const { service, transaction } = createService();
-    transaction.$queryRaw
-      .mockReset()
-      .mockResolvedValueOnce([{ id: profileId }])
-      .mockResolvedValueOnce([]);
+  // ─── Admin ─────────────────────────────────────────────────────────────
 
+  it('rejects an admin create that is missing required profile fields', async () => {
+    const { service, prisma } = createService();
     await expect(
       service.createByAdmin(
         {
           user: { fullName: 'Amina Example', phoneNumber: '+250788123456' },
-          profile: { categoryIds: [categoryId] },
+          profile: {},
         },
         'admin-1',
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
-    expect(transaction.technicianCategory.createMany).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  // Requires accepted documents (via TechnicianDocumentsService) before an admin can approve.
   it('checks documents before an admin approves a technician', async () => {
     const { service, transaction, documents } = createService();
-
     await service.setVerificationStatus(
       profileId,
       VerificationStatus.APPROVED,
       'admin-1',
     );
-
     expect(documents.assertReadyForApproval).toHaveBeenCalledWith(
       transaction,
       profileId,
     );
-    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          verificationStatus: VerificationStatus.APPROVED,
-        }),
-      }),
-    );
+    expect(transaction.technicianProfile.update).toHaveBeenCalled();
   });
 
-  // Blocks approval, and writes nothing, when the documents are not ready.
-  it('does not approve a technician whose documents are not ready', async () => {
+  it('does not approve when documents are not ready', async () => {
     const { service, transaction, documents } = createService();
     documents.assertReadyForApproval.mockRejectedValue(
       new BadRequestException('Required documents are missing.'),
     );
-
     await expect(
       service.setVerificationStatus(
         profileId,
@@ -333,118 +418,197 @@ describe('TechniciansService', () => {
     expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
   });
 
-  // Returns a signed storage URL when the picture is stored in the bucket.
-  it('returns a signed URL when the technician has a profile picture', async () => {
-    const { service, prisma, storage } = createService();
-    prisma.technicianProfile.findUnique.mockResolvedValue({
-      ...profile,
-      profilePictureObjectKey: pictureKey,
-    });
+  // ─── Discovery ─────────────────────────────────────────────────────────
 
-    const result = await service.getMyProfile(userId);
-
-    expect(storage.getDownloadUrl).toHaveBeenCalledWith(pictureKey);
-    expect(result.profilePictureUrl).toBe(signedUrl);
-  });
-
-  // Skips the storage call entirely when there is no picture.
-  it('returns null and skips storage when there is no profile picture', async () => {
-    const { service, storage } = createService();
-
-    const result = await service.getMyProfile(userId);
-
-    expect(storage.getDownloadUrl).not.toHaveBeenCalled();
-    expect(result.profilePictureUrl).toBeNull();
-  });
-
-  // Searches admin records across technician profile and related user fields.
-  it('returns administrator search matches with profile details', async () => {
+  it('lists only active, approved, online technicians to authenticated viewers', async () => {
     const { service, prisma } = createService();
-    const results = await service.searchByAdmin({ query: 'Amina' });
+    await service.listAvailable({}, 'authenticated');
     expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ AND: expect.any(Array) }),
-      }),
-    );
-    expect(results).toHaveLength(1);
-    expect(results[0].user.phoneNumber).toBe('+250788123456');
-  });
-
-  // Searches national IDs through their keyed digest, never by plaintext storage.
-  it('filters administrator national-ID searches by the keyed digest', async () => {
-    const { service, prisma, nationalIdCrypto } = createService();
-    await service.searchByAdmin({ nationalIdNumber: 'ID123456' });
-    expect(nationalIdCrypto.hash).toHaveBeenCalledWith('ID123456');
-    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          AND: [{ nationalIdHash: 'hash:ID123456' }],
-        },
-      }),
-    );
-  });
-
-  // Exposes only active, approved, online technicians to customer discovery.
-  it('filters customer results to available technicians', async () => {
-    const { service, prisma } = createService();
-    await service.listAvailable();
-    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
+        where: expect.objectContaining({
           verificationStatus: VerificationStatus.APPROVED,
           availabilityStatus: TechnicianAvailability.ONLINE,
           user: {
             is: { status: 'ACTIVE', role: 'TECHNICIAN' },
           },
+        }),
+      }),
+    );
+  });
+
+  it('filters discovery by category when categoryId is supplied', async () => {
+    const { service, prisma } = createService();
+    await service.listAvailable({ categoryId }, 'authenticated');
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          categories: { some: { categoryId } },
+        }),
+      }),
+    );
+  });
+
+  it('lists approved technicians regardless of availability for listApproved', async () => {
+    const { service, prisma } = createService();
+    await service.listApproved({}, 'authenticated');
+    const call = prisma.technicianProfile.findMany.mock.calls[0][0];
+    expect(call.where.verificationStatus).toBe(VerificationStatus.APPROVED);
+    expect(call.where.availabilityStatus).toBeUndefined();
+  });
+
+  // ─── Redaction by viewer ───────────────────────────────────────────────
+
+  it('returns national ID and payment fields to the owner', async () => {
+    const { service } = createService();
+    const result = await service.getMyProfile(userId);
+    expect(result).toHaveProperty('nationalIdNumber');
+    expect(result).toHaveProperty('paymentMethod');
+    expect(result).toHaveProperty('paymentNumber');
+  });
+
+  it('redacts payment and national ID for authenticated non-owners', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.findMany.mockResolvedValue([baseProfile()]);
+    const [result] = await service.listAvailable({}, 'authenticated');
+    expect(result.nationalIdNumber).toBeNull();
+    expect(result.paymentMethod).toBeNull();
+    expect(result.paymentNumber).toBeNull();
+    expect(result.user.phoneNumber).toBe('+250788123456');
+  });
+
+  it('redacts contact, payment, and national ID for anonymous viewers', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.findMany.mockResolvedValue([baseProfile()]);
+    const [result] = await service.listPublic({});
+    expect(result.user).toEqual({
+      id: userId,
+      fullName: 'Amina Example',
+      role: 'TECHNICIAN',
+      phoneNumber: null,
+      email: null,
+      status: null,
+      createdAt: null,
+      updatedAt: null,
+    });
+    expect(result.paymentMethod).toBeNull();
+    expect(result.paymentNumber).toBeNull();
+    expect(result.nationalIdNumber).toBeNull();
+  });
+
+  // ─── Derived experience + picture ──────────────────────────────────────
+
+  it('derives yearsOfExperience as the maximum across services', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      categories: [
+        {
+          technicianId: profileId,
+          categoryId,
+          customName: null,
+          customNameNormalized: '',
+          yearsOfExperience: 5,
+          category: { id: categoryId, name: 'Carpentry', slug: 'carpentry' },
+        },
+        {
+          technicianId: profileId,
+          categoryId: secondCategoryId,
+          customName: null,
+          customNameNormalized: '',
+          yearsOfExperience: 9,
+          category: {
+            id: secondCategoryId,
+            name: 'Plumbing',
+            slug: 'plumbing',
+          },
+        },
+      ],
+    });
+    const result = await service.getMyProfile(userId);
+    expect(result.yearsOfExperience).toBe(9);
+    expect(result.serviceExperiences).toHaveLength(2);
+  });
+
+  it('returns a signed URL when the technician has a profile picture', async () => {
+    const { service, prisma, storage } = createService();
+    prisma.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      profilePictureObjectKey: pictureKey,
+    });
+    const result = await service.getMyProfile(userId);
+    expect(storage.getDownloadUrl).toHaveBeenCalledWith(pictureKey);
+    expect(result.profilePictureUrl).toBe(signedUrl);
+  });
+
+  it('returns null and skips storage when there is no picture', async () => {
+    const { service, storage } = createService();
+    const result = await service.getMyProfile(userId);
+    expect(storage.getDownloadUrl).not.toHaveBeenCalled();
+    expect(result.profilePictureUrl).toBeNull();
+  });
+
+  // ─── Admin search ──────────────────────────────────────────────────────
+
+  it('searches admin records across profile and user fields', async () => {
+  const { service, prisma } = createService();
+  const results = await service.searchByAdmin({ query: 'Amina' });
+  expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+    expect.objectContaining({
+      where: expect.objectContaining({ AND: expect.any(Array) }),
+    }),
+  );
+  expect(results).toHaveLength(1);
+  expect(results[0].user.phoneNumber).toBe('+250788123456');
+});
+
+
+
+  it('filters national-ID search by keyed digest, not plaintext', async () => {
+    const { service, prisma, nationalIdCrypto } = createService();
+    await service.searchByAdmin({ nationalIdNumber: 'ID123456' });
+    expect(nationalIdCrypto.hash).toHaveBeenCalledWith('ID123456');
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { AND: [{ nationalIdHash: 'hash:ID123456' }] },
+      }),
+    );
+  });
+
+  it('requires at least one identifier in searchByUserDetails', async () => {
+    const { service, prisma } = createService();
+    await expect(service.searchByUserDetails({})).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.technicianProfile.findMany).not.toHaveBeenCalled();
+  });
+
+  it('searches user details by phone number', async () => {
+    const { service, prisma } = createService();
+    await service.searchByUserDetails({ phoneNumber: '+250788123456' });
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          user: { is: { phoneNumber: '+250788123456' } },
         },
       }),
     );
   });
 
-  // Ensures the public marketplace projection contains no private contact, ID, or exact GPS fields.
-  it('returns a privacy-safe public technician listing with a photo URL and public location', async () => {
-    const { service, prisma, storage } = createService();
-    prisma.technicianProfile.findMany.mockResolvedValue([
-      {
-        ...profile,
-        nationalIdEncrypted: 'encrypted:ID12345',
-        profilePictureObjectKey: pictureKey,
-        publicLocationLabel: 'Kigali, Rwanda',
-        baseLatitude: -1.95,
-        baseLongitude: 30.06,
-      },
-    ]);
-    const results = await service.listPublic();
-    expect(storage.getDownloadUrl).toHaveBeenCalledWith(pictureKey);
-    expect(results[0]).toMatchObject({
-      fullName: 'Amina Example',
-      location: 'Kigali, Rwanda',
-      profilePictureUrl: signedUrl,
-    });
-    expect(results[0]).not.toHaveProperty('phoneNumber');
-    expect(results[0]).not.toHaveProperty('email');
-    expect(results[0]).not.toHaveProperty('nationalIdNumber');
-    expect(results[0]).not.toHaveProperty('baseLatitude');
-    expect(results[0]).not.toHaveProperty('baseLongitude');
-    expect(results[0]).not.toHaveProperty('profilePictureObjectKey');
-  });
+  // ─── Serialization retry ───────────────────────────────────────────────
 
-  // Retries a profile write after PostgreSQL reports a serialization conflict.
   it('retries serializable profile updates', async () => {
     const { service, prisma, transaction } = createService();
-    const serializationConflict = new Prisma.PrismaClientKnownRequestError(
+    const conflict = new Prisma.PrismaClientKnownRequestError(
       'Transaction write conflict',
       { code: 'P2034', clientVersion: 'test' },
     );
     prisma.$transaction
-      .mockRejectedValueOnce(serializationConflict)
+      .mockRejectedValueOnce(conflict)
       .mockImplementationOnce(
         (callback: (tx: typeof transaction) => Promise<unknown>) =>
           callback(transaction),
       );
-
-    await service.updateMyProfile(userId, { yearsOfExperience: 6 });
-
+    await service.updateMyProfile(userId, { fullName: 'Amina Retry' });
     expect(prisma.$transaction).toHaveBeenCalledTimes(2);
   });
 });

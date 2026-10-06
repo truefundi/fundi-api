@@ -22,6 +22,56 @@ enum UserStatus {
   INACTIVE
 }
 
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TechnicianAvailability {
+  ONLINE
+  OFFLINE
+}
+
+enum TechnicianGender {
+  FEMALE
+  MALE
+  NON_BINARY
+  PREFER_NOT_TO_SAY
+}
+
+
+
+enum DocumentType {
+  NATIONAL_ID
+  CERTIFICATE
+}
+
+enum CertificateType {
+  TVET_CERTIFICATE
+  DIPLOMA
+  ADVANCED_DIPLOMA
+  DEGREE
+  SHORT_COURSE
+  OTHER
+}
+
+enum DocumentStatus {
+  SUBMITTED
+  REVIEWING
+  ACCEPTED
+  DENIED
+}
+
+
+
+enum PaymentMethod {
+  MOMO
+  BANK_TRANSFER
+  CASH
+  OTHER
+}
+
 model User {
   id                String             @id @default(uuid())
   email             String?            @unique
@@ -29,14 +79,7 @@ model User {
   fullName          String
   role              UserRole           @default(CUSTOMER)
   status            UserStatus         @default(ACTIVE)
-  // Nullable because customers and technicians sign in with phone + OTP only.
-  // Deliberately not unique: bcrypt salts every hash, so two admins holding the same
-  // password produce different hashes and no constraint could detect the overlap.
   passwordHash      String?
-  // Second factor is an authenticator app, not an SMS code. The secret is encrypted
-  // rather than hashed because the server must read it back to compute the expected
-  // code. Set only once a first code has been accepted, so an abandoned enrolment
-  // leaves nothing behind.
   totpSecret        String?
   totpEnabledAt     DateTime?
   createdAt         DateTime           @default(now())
@@ -66,100 +109,93 @@ model ServiceCategory {
   isActive    Boolean              @default(true)
   createdAt   DateTime             @default(now())
   technicians TechnicianCategory[]
+  documents   TechnicianDocument[]   // ← new
 
   @@map("service_categories")
 }
 
-enum VerificationStatus {
-  PENDING
-  APPROVED
-  REJECTED
-}
-
-enum TechnicianAvailability {
-  ONLINE
-  OFFLINE
-}
-
-enum TechnicianGender {
-  FEMALE
-  MALE
-  NON_BINARY
-  PREFER_NOT_TO_SAY
-}
-
-enum DocumentType {
-  NATIONAL_ID
-  TVET_CERTIFICATE
-}
-
-enum DocumentStatus {
-  SUBMITTED
-  REVIEWING
-  ACCEPTED
-  DENIED
-}
-
 model TechnicianProfile {
-  id                     String                   @id @default(uuid())
-  userId                 String                   @unique
-  user                   User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  gender                 TechnicianGender?
-  yearsOfExperience      Int?
-  nationalIdEncrypted    String?
-  nationalIdHash         String?                  @unique
-  baseAddress            String?
-  publicLocationLabel    String?
-  baseLatitude           Float?
-  baseLongitude          Float?
-  baseLocation           Unsupported("geography(Point,4326)")?
+  id                      String                   @id @default(uuid())
+  userId                  String                   @unique
+  user                    User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  gender                  TechnicianGender
+  nationalIdEncrypted     String
+  nationalIdHash          String                   @unique
+
+  baseAddress             String
+  publicLocationLabel     String?
+  baseLatitude            Float
+  baseLongitude           Float
+  baseLocation            Unsupported("geography(Point,4326)")?
+
+  paymentMethod           PaymentMethod
+  paymentNumber           String
+
   profilePictureObjectKey String?
-  profilePictureMimeType String?
-  verificationStatus     VerificationStatus       @default(PENDING)
-  availabilityStatus     TechnicianAvailability   @default(OFFLINE)
-  categories             TechnicianCategory[]
-  documents              TechnicianDocument[]
-  createdAt              DateTime                 @default(now())
-  updatedAt              DateTime                 @updatedAt
+  profilePictureMimeType  String?
+
+  verificationStatus      VerificationStatus       @default(PENDING)
+  availabilityStatus      TechnicianAvailability   @default(OFFLINE)
+
+  categories              TechnicianCategory[]
+  documents               TechnicianDocument[]
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
 
   @@index([verificationStatus])
   @@index([availabilityStatus, verificationStatus])
   @@map("technician_profiles")
 }
 
+model TechnicianCategory {
+  id                   String             @id @default(uuid())
+  technicianId         String
+  categoryId           String?
+  customName           String?
+  customNameNormalized String             @default("")
+  yearsOfExperience    Int
+
+  technician           TechnicianProfile  @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  category             ServiceCategory?   @relation(fields: [categoryId], references: [id])
+
+  @@index([categoryId])
+  @@index([technicianId])
+  @@map("technician_categories")
+}
+
+
 model TechnicianDocument {
-  id               String           @id @default(uuid())
-  technicianId     String
-  technician       TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-  type             DocumentType
-  title            String
-  titleNormalized  String
-  objectKey        String
-  mimeType         String
-  originalFileName String
-  sizeBytes        Int
-  status           DocumentStatus   @default(SUBMITTED)
-  reviewNote       String?
-  reviewedById     String?
-  reviewedAt       DateTime?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  id                        String            @id @default(uuid())
+  technicianId              String
+  technician                TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  type                      DocumentType
+  title                     String
+  titleNormalized           String
+
+  // Only meaningful when type = CERTIFICATE.
+  certificateType           CertificateType?
+  categoryId                String?
+  category                  ServiceCategory?  @relation(fields: [categoryId], references: [id])
+  customCategoryName        String?
+  customCategoryNormalized  String?
+
+  objectKey                 String
+  mimeType                  String
+  originalFileName          String
+  sizeBytes                 Int
+  status                    DocumentStatus    @default(SUBMITTED)
+  reviewNote                String?
+  reviewedById              String?
+  reviewedAt                DateTime?
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
 
   @@index([technicianId, status])
   @@index([status])
   @@index([type])
-  @@map("technician_documents")
-}
-
-model TechnicianCategory {
-  technicianId String
-  categoryId   String
-  technician   TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-  category     ServiceCategory   @relation(fields: [categoryId], references: [id])
-
-  @@id([technicianId, categoryId])
   @@index([categoryId])
-  @@map("technician_categories")
+  @@map("technician_documents")
 }
 
 model AuditLog {

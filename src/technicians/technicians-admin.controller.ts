@@ -21,6 +21,7 @@ import { SearchTechniciansDto } from './dto/search-technicians.dto';
 import { UpdateAvailabilityDto } from './dto/update-availability.dto';
 import { UpdateVerificationStatusDto } from './dto/update-verification-status.dto';
 import { TechniciansService } from './technicians.service';
+import { SearchTechniciansByUserDto } from './dto/search-technicians-by-user.dto';
 
 // Protects all technician management operations with the administrator role.
 @Controller('api/v1/admin/technicians')
@@ -45,6 +46,12 @@ export class TechniciansAdminController {
   search(@Query() query: SearchTechniciansDto) {
     return this.technicians.searchByAdmin(query);
   }
+
+  @Get('by-user')
+  searchByUser(@Query() query: SearchTechniciansByUserDto) {
+    return this.technicians.searchByUserDetails(query);
+  }
+
 
   // Changes verification state; non-approved technicians are forced offline.
   @Patch(':id/verification-status')

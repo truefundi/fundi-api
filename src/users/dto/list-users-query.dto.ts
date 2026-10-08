@@ -1,56 +1,28 @@
-import { Transform, Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
 import {
   IsEnum,
-  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
-  Max,
   MaxLength,
-  Min,
 } from 'class-validator';
 import { UserRole, UserStatus } from '@prisma/client';
 import { ApiProperty } from '@nestjs/swagger';
+import { PagedQueryDto } from '../../common/dto/paged-query.dto';
+import { MAX_SEARCH_LENGTH } from '../../common/dto/pagination.constants';
 
-// Shared paging defaults so the query DTO and the service agree on the same limits.
-export const DEFAULT_PAGE = 1;
-export const DEFAULT_PAGE_LIMIT = 20;
-export const MAX_PAGE_LIMIT = 100;
-export const MAX_SEARCH_LENGTH = 200;
+// Re-exported so existing imports keep working from this module.
+export {
+  DEFAULT_PAGE,
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  MAX_SEARCH_LENGTH,
+} from '../../common/dto/pagination.constants';
 
 // Validates the optional query parameters on GET /users. Unknown parameters are
 // rejected by the global ValidationPipe (whitelist + forbidNonWhitelisted).
-export class ListUsersQueryDto {
-  @ApiProperty({
-    required: false,
-    type: 'integer',
-    default: DEFAULT_PAGE,
-    minimum: 1,
-    example: 1,
-    description: 'Page number, 1-based. Defaults to 1.',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page?: number;
-
-  @ApiProperty({
-    required: false,
-    type: 'integer',
-    default: DEFAULT_PAGE_LIMIT,
-    minimum: 1,
-    maximum: MAX_PAGE_LIMIT,
-    example: 20,
-    description: `Rows per page, between 1 and ${MAX_PAGE_LIMIT}. Defaults to ${DEFAULT_PAGE_LIMIT}.`,
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(MAX_PAGE_LIMIT)
-  limit?: number;
-
+// Paging (`page`, `limit`) is inherited from the shared PagedQueryDto.
+export class ListUsersQueryDto extends PagedQueryDto {
   @ApiProperty({
     required: false,
     enum: Object.values(UserRole),

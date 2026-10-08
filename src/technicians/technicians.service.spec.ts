@@ -3,6 +3,7 @@ import {
   Prisma,
   TechnicianAvailability,
   TechnicianGender,
+  UserStatus,
   VerificationStatus,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
@@ -85,6 +86,7 @@ describe('TechniciansService', () => {
     };
     const prisma = {
       technicianProfile: {
+        count: jest.fn().mockResolvedValue(1),
         findMany: jest.fn().mockResolvedValue([baseProfile()]),
         findFirst: jest.fn().mockResolvedValue(baseProfile()),
         findUnique: jest.fn().mockResolvedValue(baseProfile()),
@@ -442,7 +444,7 @@ describe('TechniciansService', () => {
     expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          categories: { some: { categoryId } },
+          AND: [{ categories: { some: { categoryId } } }],
         }),
       }),
     );
@@ -454,6 +456,82 @@ describe('TechniciansService', () => {
     const call = prisma.technicianProfile.findMany.mock.calls[0][0];
     expect(call.where.verificationStatus).toBe(VerificationStatus.APPROVED);
     expect(call.where.availabilityStatus).toBeUndefined();
+  });
+
+  it('pages discovery results with the shared envelope', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.count.mockResolvedValue(7);
+    const result = await service.listAvailable(
+      { page: 2, limit: 3 },
+      'authenticated',
+    );
+
+    expect(prisma.technicianProfile.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          verificationStatus: VerificationStatus.APPROVED,
+          availabilityStatus: TechnicianAvailability.ONLINE,
+        }),
+      }),
+    );
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 3,
+        take: 3,
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      }),
+    );
+    expect(result.pagination).toEqual({
+      page: 2,
+      limit: 3,
+      total: 7,
+      totalPages: 3,
+    });
+  });
+
+  it('adds category name, location, and experience filters to discovery', async () => {
+    const { service, prisma } = createService();
+    await service.listAvailable(
+      {
+        category: 'Plumbing',
+        location: 'kigali',
+        minYearsOfExperience: 4,
+      },
+      'authenticated',
+    );
+    const call = prisma.technicianProfile.findMany.mock.calls[0][0];
+    expect(call.where.AND).toEqual([
+      {
+        categories: {
+          some: {
+            category: {
+              OR: [
+                { name: { equals: 'Plumbing', mode: 'insensitive' } },
+                { slug: { equals: 'Plumbing', mode: 'insensitive' } },
+              ],
+            },
+          },
+        },
+      },
+      { categories: { some: { yearsOfExperience: { gte: 4 } } } },
+      {
+        OR: [
+          { baseAddress: { contains: 'kigali', mode: 'insensitive' } },
+          { publicLocationLabel: { contains: 'kigali', mode: 'insensitive' } },
+        ],
+      },
+    ]);
+    expect(call.where.verificationStatus).toBe(VerificationStatus.APPROVED);
+    expect(call.where.availabilityStatus).toBe(TechnicianAvailability.ONLINE);
+  });
+
+  it('rejects invalid discovery paging before querying', async () => {
+    const { service, prisma } = createService();
+    await expect(
+      service.listAvailable({ page: 0 }, 'authenticated'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.technicianProfile.findMany).not.toHaveBeenCalled();
+    expect(prisma.technicianProfile.count).not.toHaveBeenCalled();
   });
 
   // ─── Redaction by viewer ───────────────────────────────────────────────
@@ -469,7 +547,8 @@ describe('TechniciansService', () => {
   it('redacts payment and national ID for authenticated non-owners', async () => {
     const { service, prisma } = createService();
     prisma.technicianProfile.findMany.mockResolvedValue([baseProfile()]);
-    const [result] = await service.listAvailable({}, 'authenticated');
+    const { data } = await service.listAvailable({}, 'authenticated');
+    const [result] = data;
     expect(result.nationalIdNumber).toBeNull();
     expect(result.paymentMethod).toBeNull();
     expect(result.paymentNumber).toBeNull();
@@ -479,7 +558,8 @@ describe('TechniciansService', () => {
   it('redacts contact, payment, and national ID for anonymous viewers', async () => {
     const { service, prisma } = createService();
     prisma.technicianProfile.findMany.mockResolvedValue([baseProfile()]);
-    const [result] = await service.listPublic({});
+    const { data } = await service.listPublic({});
+    const [result] = data;
     expect(result.user).toEqual({
       id: userId,
       fullName: 'Amina Example',
@@ -547,6 +627,200 @@ describe('TechniciansService', () => {
     expect(result.profilePictureUrl).toBeNull();
   });
 
+  // ─── Admin list: filters + pagination ──────────────────────────────────
+
+  it('pages the admin list and returns the shared envelope', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.count.mockResolvedValue(42);
+    const result = await service.listAllByAdmin({ page: 2, limit: 5 });
+
+    expect(prisma.technicianProfile.count).toHaveBeenCalledWith({ where: {} });
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 5,
+        take: 5,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      }),
+    );
+    expect(result.pagination).toEqual({
+      page: 2,
+      limit: 5,
+      total: 42,
+      totalPages: 9,
+    });
+    expect(result.data).toHaveLength(1);
+  });
+
+  it('defaults the admin list to page 1 and 20 rows', async () => {
+    const { service, prisma } = createService();
+    const result = await service.listAllByAdmin();
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, take: 20 }),
+    );
+    expect(result.pagination).toEqual({
+      page: 1,
+      limit: 20,
+      total: 1,
+      totalPages: 1,
+    });
+  });
+
+  it('counts and fetches the admin list with the same where clause', async () => {
+    const { service, prisma } = createService();
+    await service.listAllByAdmin({
+      verificationStatus: VerificationStatus.PENDING,
+      availabilityStatus: TechnicianAvailability.OFFLINE,
+      status: UserStatus.ACTIVE,
+      minYearsOfExperience: 3,
+    });
+
+    const countWhere = prisma.technicianProfile.count.mock.calls[0][0].where;
+    const findWhere = prisma.technicianProfile.findMany.mock.calls[0][0].where;
+    expect(countWhere).toEqual(findWhere);
+    expect(findWhere).toEqual({
+      AND: [
+        { user: { is: { status: UserStatus.ACTIVE } } },
+        { verificationStatus: VerificationStatus.PENDING },
+        { availabilityStatus: TechnicianAvailability.OFFLINE },
+        { categories: { some: { yearsOfExperience: { gte: 3 } } } },
+      ],
+    });
+  });
+
+  it('matches admin list search against name, phone, and email only', async () => {
+    const { service, prisma } = createService();
+    await service.listAllByAdmin({ search: '  Amina  ' });
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            {
+              OR: [
+                {
+                  user: {
+                    is: {
+                      fullName: {
+                        contains: 'Amina',
+                        mode: 'insensitive',
+                      },
+                    },
+                  },
+                },
+                { user: { is: { phoneNumber: { contains: 'Amina' } } } },
+                {
+                  user: {
+                    is: { email: { contains: 'Amina', mode: 'insensitive' } },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('filters the admin list by location text separately from search', async () => {
+    const { service, prisma } = createService();
+    await service.listAllByAdmin({ location: 'kigali' });
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            {
+              OR: [
+                {
+                  baseAddress: { contains: 'kigali', mode: 'insensitive' },
+                },
+                {
+                  publicLocationLabel: {
+                    contains: 'kigali',
+                    mode: 'insensitive',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('filters the admin list by category name or slug, case-insensitively', async () => {
+    const { service, prisma } = createService();
+    await service.listAllByAdmin({ category: ' Plumbing ' });
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            {
+              categories: {
+                some: {
+                  category: {
+                    OR: [
+                      {
+                        name: { equals: 'Plumbing', mode: 'insensitive' },
+                      },
+                      {
+                        slug: { equals: 'Plumbing', mode: 'insensitive' },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('rejects invalid paging on the admin list before querying', async () => {
+    const { service, prisma } = createService();
+    await expect(service.listAllByAdmin({ page: 0 })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(
+      service.listAllByAdmin({ limit: 101 }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.technicianProfile.findMany).not.toHaveBeenCalled();
+    expect(prisma.technicianProfile.count).not.toHaveBeenCalled();
+  });
+
+  it('rejects a blank search or location before querying', async () => {
+    const { service, prisma } = createService();
+    await expect(
+      service.listAllByAdmin({ search: '   ' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.listAllByAdmin({ location: '' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.technicianProfile.findMany).not.toHaveBeenCalled();
+  });
+
+  it('applies shared list filters and paging to admin search', async () => {
+    const { service, prisma } = createService();
+    await service.searchByAdmin({
+      query: 'Kigali',
+      verificationStatus: VerificationStatus.APPROVED,
+      location: 'kigali',
+      page: 2,
+      limit: 10,
+    });
+
+    const call = prisma.technicianProfile.findMany.mock.calls[0][0];
+    expect(call.skip).toBe(10);
+    expect(call.take).toBe(10);
+    expect(call.where.AND).toEqual(
+      expect.arrayContaining([
+        { verificationStatus: VerificationStatus.APPROVED },
+        expect.objectContaining({ OR: expect.any(Array) }),
+        expect.objectContaining({ OR: expect.any(Array) }),
+      ]),
+    );
+    expect(call.where.AND).toHaveLength(3);
+  });
+
   // ─── Admin search ──────────────────────────────────────────────────────
 
   it('searches admin records across profile and user fields', async () => {
@@ -557,8 +831,8 @@ describe('TechniciansService', () => {
       where: expect.objectContaining({ AND: expect.any(Array) }),
     }),
   );
-  expect(results).toHaveLength(1);
-  expect(results[0].user.phoneNumber).toBe('+250788123456');
+  expect(results.data).toHaveLength(1);
+  expect(results.data[0].user.phoneNumber).toBe('+250788123456');
 });
 
 

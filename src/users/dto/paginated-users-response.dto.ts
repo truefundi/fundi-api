@@ -1,26 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { PaginationMetaDto } from '../../common/dto/pagination-meta.dto';
 import { UserResponseDto } from './user-response.dto';
 
-// Pagination metadata returned alongside every GET /users page.
-export class PaginationMetaDto {
-  @ApiProperty({ example: 1, description: 'Requested page number, 1-based.' })
-  page!: number;
-
-  @ApiProperty({ example: 20, description: 'Requested page size.' })
-  limit!: number;
-
-  @ApiProperty({
-    example: 100,
-    description: 'Total users matching the query across all pages.',
-  })
-  total!: number;
-
-  @ApiProperty({
-    example: 5,
-    description: 'Total pages available for the query.',
-  })
-  totalPages!: number;
-}
+// Re-exported so existing imports keep working from this module.
+export { PaginationMetaDto } from '../../common/dto/pagination-meta.dto';
 
 // Envelope returned by GET /users: one page of users plus pagination metadata.
 export class PaginatedUsersResponseDto {

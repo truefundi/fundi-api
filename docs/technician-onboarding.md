@@ -214,6 +214,51 @@ regardless.
 | `404` | No profile registered yet |
 | `409` | Going `ONLINE` while `PENDING`/`REJECTED`, or while the user is `INACTIVE` |
 
+## Listing, filters, and pagination
+
+Every list endpoint (discovery, public, admin list, and admin search) shares
+the same paging parameters and returns the same envelope as
+[`GET /api/v1/users`](./users.md):
+
+**Response `200`**
+
+```json
+{
+  "data": [],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 0,
+    "totalPages": 0
+  }
+}
+```
+
+`data` holds one page of technician objects (see
+[Field visibility](#field-visibility) for redaction). `total` counts every
+matching technician across all pages. All parameters are optional, combine
+with each other, and are applied inside the database query together with the
+paging:
+
+| Parameter | Values | Default | Description |
+| --- | --- | --- | --- |
+| `page` | integer ≥ 1 | `1` | Page number, 1-based. |
+| `limit` | integer 1–100 | `20` | Rows per page. |
+| `category` | 1–120 characters | — | Service category matched case-insensitively against its **name or slug** — `Plumbing` and `plumbing` are equivalent. |
+| `categoryId` | UUID | — | Service category by ID; combines with `category`. |
+| `location` | 1–200 characters | — | Substring of `baseAddress` or `publicLocationLabel` — an area filter independent of the people search. |
+| `minYearsOfExperience` | integer 0–60 | — | Only technicians with at least that many years of experience in one of their services. |
+
+Per-endpoint text filters and status filters are documented below. Invalid
+parameter values — and any unknown parameter — return `400`.
+
+**Job-matching eligibility.** A technician is eligible for a job when they are
+`verificationStatus=APPROVED`, `availabilityStatus=ONLINE`, account `status=ACTIVE`,
+and list the job's category (plus, later, a service radius). The discovery
+endpoints already enforce the first three conditions server-side; PostGIS
+radius filtering waits until job dispatch is implemented (see the
+[roadmap](./implementation-roadmap.md)).
+
 ## Discovery (any signed-in role)
 
 The next four endpoints serve `CUSTOMER`, `TECHNICIAN`, and `ADMIN` tokens.
@@ -227,21 +272,23 @@ Lists active, approved, online technicians.
 
 Auth: **any signed-in role**.
 
-Optional query parameters:
+Beyond the [shared parameters](#listing-filters-and-pagination):
 
-- `categoryId` — UUID of a service category. Only technicians who list that
-  category appear.
-- `query` — free text; matches user full name, `publicLocationLabel`,
-  `baseAddress`, or a service category name / custom service name.
+- `query` — free text (1–120 characters); matches user full name,
+  `publicLocationLabel`, `baseAddress`, or a service category name / custom
+  service name.
 
-**Response `200`** — an array of technician objects (`200` with `[]` when
-there are no matches).
+Verification and availability are **not** filterable here — the endpoint only
+ever returns technicians who are active, approved, and online.
+
+**Response `200`** — the shared envelope (`data` is `[]` when there are no
+matches).
 
 **Errors**
 
 | Status | When |
 | --- | --- |
-| `400` | `categoryId` present but not a UUID |
+| `400` | Any invalid or unknown query parameter |
 | `401` | No token |
 
 ### `GET /api/v1/technicians/approved`
@@ -251,9 +298,9 @@ and `OFFLINE`).
 
 Auth: **any signed-in role**.
 
-Accepts the same `categoryId` and `query` filters as `GET /api/v1/technicians`.
+Accepts the same parameters as `GET /api/v1/technicians`.
 
-**Response `200`** — array of technician objects.
+**Response `200`** — the shared envelope.
 
 ### `GET /api/v1/technicians/available/:id`
 
@@ -296,9 +343,10 @@ Lists active, approved, online technicians with a privacy-safe projection:
 
 Auth: **none**.
 
-Accepts `categoryId` and `query` filters.
+Accepts the same parameters as `GET /api/v1/technicians` (shared parameters
+plus `query`).
 
-**Response `200`** — array of technician objects.
+**Response `200`** — the shared envelope of technician objects.
 
 ### `GET /api/v1/public/technicians/:id`
 
@@ -369,37 +417,56 @@ request is rejected.
 
 ### `GET /api/v1/admin/technicians`
 
-Lists every technician regardless of status or availability.
+Lists every technician regardless of status or availability, newest first —
+paged with the shared envelope.
 
 Auth: **`ADMIN`**.
 
-**Response `200`** — array of technician objects, newest first.
+Beyond the [shared parameters](#listing-filters-and-pagination):
+
+| Parameter | Values | Description |
+| --- | --- | --- |
+| `search` | 1–200 characters | Substring matched against full name, phone number, and email (name and email are case-insensitive). People search — pair with `location` for area search. |
+| `location` | 1–200 characters | Substring of `baseAddress` / `publicLocationLabel`. |
+| `status` | `ACTIVE`, `INACTIVE` | Account status of the linked user. |
+| `verificationStatus` | `PENDING`, `APPROVED`, `REJECTED` | Verification queue filter — e.g. `PENDING` for "awaiting review". |
+| `availabilityStatus` | `ONLINE`, `OFFLINE` | Dispatch-readiness filter. |
+
+Example — eligible plumbers for a job:
+
+```
+/api/v1/admin/technicians?verificationStatus=APPROVED&availabilityStatus=ONLINE&category=Plumbing&page=1&limit=20
+```
+
+**Response `200`** — the shared envelope (`admin` view of each technician).
+
+**Errors**
+
+| Status | When |
+| --- | --- |
+| `400` | Any invalid or unknown query parameter |
+| `401` / `403` | Missing token or non-admin |
 
 ### `GET /api/v1/admin/technicians/search`
 
-Multi-field search. Returns **every** match, not just the first.
+Multi-field search, paginated. All supplied filters are AND-combined.
 
 Auth: **`ADMIN`**.
 
-Query parameters:
+Accepts every parameter of `GET /api/v1/admin/technicians` plus:
 
 | Name | Type | Matches |
 | --- | --- | --- |
-| `query` | string | user full name, user phone, user email, `baseAddress`, `publicLocationLabel`, service category name, custom service name — and exact numeric `baseLatitude`, `baseLongitude` |
-| `nationalIdNumber` | string | exact match against the keyed digest of the national ID |
-| `categoryId` | UUID | technicians who list this category |
-| `verificationStatus` | enum | `PENDING`, `APPROVED`, `REJECTED` |
-| `availabilityStatus` | enum | `ONLINE`, `OFFLINE` |
-
-All supplied filters are AND-combined.
+| `query` | string, 1–120 | Broader than `search`: user full name, user phone, user email, `baseAddress`, `publicLocationLabel`, service category name, custom service name — and exact numeric `baseLatitude`, `baseLongitude` |
+| `nationalIdNumber` | string | Exact match against the keyed digest of the national ID |
 
 Example:
 
 ```
-/api/v1/admin/technicians/search?query=Kigali&categoryId=e5a4f4d7-0b21-46d8-9a4b-98765d332100
+/api/v1/admin/technicians/search?query=Kigali&verificationStatus=PENDING&categoryId=e5a4f4d7-0b21-46d8-9a4b-98765d332100
 ```
 
-**Response `200`** — array of technician objects (`admin` view).
+**Response `200`** — the shared envelope (`admin` view).
 
 ### `GET /api/v1/admin/technicians/by-user`
 

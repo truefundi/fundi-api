@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { UsersService } from './users.service';
@@ -9,6 +9,8 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { UpdateAccountDto } from './dto/update-account.dto';
+import { ListUsersQueryDto } from './dto/list-users-query.dto';
+import { PaginatedUsersResponseDto } from './dto/paginated-users-response.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import {
   ApiBadRequest,
@@ -71,27 +73,38 @@ export class UsersController {
     return this.usersService.create(body);
   }
 
-  // Lists accounts for administrator review.
+  // Lists accounts for administrator review with paging, filters, and search.
   @Get()
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'List all users (admin only)' })
-  @ApiResponse({ status: 200, description: 'Every user, newest first', type: [UserResponseDto] })
+  @ApiOperation({
+    summary: 'List users with pagination, filters, and search (admin only)',
+    description:
+      'Returns one page of users, newest first, wrapped in a `{ data, pagination }` envelope. ' +
+      'All filters (`role`, `status`, `search`) combine and are applied inside the database query.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'One page of users plus pagination metadata',
+    type: PaginatedUsersResponseDto,
+  })
+  @ApiValidationFailed()
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
-  async findAll() {
-    return this.usersService.findAll();
+  async findAll(@Query() query: ListUsersQueryDto) {
+    return this.usersService.findAll(query);
   }
 
-  // Finds all accounts matching a phone fragment or full-name fragment.
+  // Finds all accounts matching a phone, full-name, or email fragment.
   @Get('search')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Search users by phone number or full name (admin only)',
-    description: 'Matches a substring of either field. Full-name matching is case-insensitive.',
+    summary: 'Search users by phone number, full name, or email (admin only)',
+    description:
+      'Matches a substring of any of the three fields. Full-name and email matching are case-insensitive.',
   })
   @ApiResponse({ status: 200, description: 'Matching user records', type: [UserResponseDto] })
   @ApiBadRequest('The `query` parameter is required and must not be empty.')
@@ -124,10 +137,11 @@ export class UsersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get a user by ID (admin only)' })
   @ApiResponse({ status: 200, description: 'One full user record', type: UserResponseDto })
+  @ApiBadRequest('The `id` path parameter must be a valid UUID.')
   @ApiNotFound('No user was found with that ID.')
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
-  async findById(@Param('id') id: string) {
+  async findById(@Param('id', ParseUUIDPipe) id: string) {
     return this.usersService.getById(id);
   }
 
@@ -161,7 +175,10 @@ export class UsersController {
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
   @ApiValidationFailed()
-  async updateStatus(@Param('id') id: string, @Body() body: UpdateStatusDto) {
+  async updateStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateStatusDto,
+  ) {
     return this.usersService.updateStatus(id, body.status);
   }
 

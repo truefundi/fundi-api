@@ -113,11 +113,17 @@ describe('AppController (e2e)', () => {
   });
 
   // The landing-page technician directory is intentionally public.
-  it('/api/v1/public/technicians (GET) returns an array without authentication', () => {
-    return request(app.getHttpServer())
+  it('/api/v1/public/technicians (GET) returns a paginated envelope without authentication', async () => {
+    const res = await request(app.getHttpServer())
       .get('/api/v1/public/technicians')
-      .expect(200)
-      .expect(Array.isArray);
+      .expect(200);
+
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.pagination).toMatchObject({
+      page: 1,
+      total: expect.any(Number),
+      totalPages: expect.any(Number),
+    });
   });
 
   // Unavailable technicians are not exposed through the public detail route.

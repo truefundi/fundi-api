@@ -67,13 +67,39 @@ Success response (`201`): the created full user record.
 
 ## `GET /api/v1/users` (Admin)
 
-List all accounts. No request body.
+List accounts, newest first. No request body.
 
-Success response (`200`): an array of full user records; if there are no users, the response is `[]`.
+Every parameter is optional, combines with the others, and is applied inside the database query (together with database-level paging):
+
+| Parameter | Values | Default | Description |
+| --- | --- | --- | --- |
+| `page` | integer ≥ 1 | `1` | Page number, 1-based. |
+| `limit` | integer 1–100 | `20` | Users per page. |
+| `role` | `CUSTOMER`, `TECHNICIAN`, `ADMIN` | — | Only users with this role. |
+| `status` | `ACTIVE`, `INACTIVE` | — | Only users with this account status. |
+| `search` | 1–200 characters | — | Substring matched against full name, phone number, and email (name and email are case-insensitive). |
+
+Example: `GET /api/v1/users?search=john&role=TECHNICIAN&status=ACTIVE&page=1&limit=20`
+
+Success response (`200`): one page of users plus pagination metadata; `total` counts every matching user across all pages.
+
+```json
+{
+  "data": [],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 100,
+    "totalPages": 5
+  }
+}
+```
+
+Invalid `page`, `limit`, `role`, `status`, or `search` values — and any unknown parameter — return `400`.
 
 ## `GET /api/v1/users/search?query=Jean` (Admin)
 
-The `query` parameter is required and cannot be empty. Searches phone-number fragments or full-name fragments case-insensitively. All matching users are returned, including users with duplicate names. No request body.
+The `query` parameter is required and cannot be empty. Searches phone-number fragments, full-name fragments (case-insensitive), and email fragments (case-insensitive). All matching users are returned, including users with duplicate names. No request body.
 
 Success response (`200`): an array of full user records.
 
@@ -85,7 +111,7 @@ Success response (`200`): one full user record.
 
 ## `GET /api/v1/users/:id` (Admin)
 
-Replace `:id` with the user's database ID. No request body.
+Replace `:id` with the user's database ID (a valid UUID; a malformed ID returns `400`). If no user exists with that ID the response is `404`. No request body.
 
 Success response (`200`): one full user record.
 
@@ -106,7 +132,7 @@ Success response (`200`): the updated full user record.
 
 ## `PATCH /api/v1/users/:id/status` (Admin)
 
-Replace `:id` with the user's database ID.
+Replace `:id` with the user's database ID (a valid UUID; a malformed ID returns `400`). If no user exists with that ID the response is `404`.
 
 Request:
 
@@ -116,7 +142,7 @@ Request:
 }
 ```
 
-`status` must be `ACTIVE` or `INACTIVE`.
+`status` is required and must be `ACTIVE` or `INACTIVE`; any other value returns `400`.
 
 Success response (`200`): the updated full user record.
 

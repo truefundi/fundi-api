@@ -2,6 +2,6 @@ allowBuilds:
   '@prisma/client': false
   '@prisma/engines': false
   '@scarf/scarf': false
-  bcrypt: false
+  bcrypt: true
   msgpackr-extract: false
   prisma: false

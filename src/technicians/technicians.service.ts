@@ -12,12 +12,18 @@ import {
   VerificationStatus,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
+import {
+  DEFAULT_PAGE,
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+} from '../common/dto/pagination.constants';
 import { PrismaService } from '../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { TechnicianDocumentsService } from './documents/technician-documents.service';
 import { NationalIdCryptoService } from './national-id-crypto.service';
 import { AdminUpdateTechnicianDto } from './dto/admin-update-technician.dto';
 import { CreateTechnicianDto } from './dto/create-technician.dto';
+import { ListTechniciansQueryDto } from './dto/list-technicians-query.dto';
 import { SearchAvailableTechniciansDto } from './dto/search-available-technicians.dto';
 import { SearchTechniciansByUserDto } from './dto/search-technicians-by-user.dto';
 import { SearchTechniciansDto } from './dto/search-technicians.dto';
@@ -84,6 +90,13 @@ export interface TechnicianResponse {
   paymentNumber: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+// Envelope shared by every technician list endpoint: one page of profiles
+// plus pagination metadata — the same shape GET /users returns.
+export interface PaginatedTechnicianList {
+  data: TechnicianResponse[];
+  pagination: { page: number; limit: number; total: number; totalPages: number };
 }
 
 @Injectable()
@@ -197,36 +210,36 @@ export class TechniciansService {
   async listAvailable(
     dto: SearchAvailableTechniciansDto,
     viewer: Viewer,
-  ): Promise<TechnicianResponse[]> {
+  ): Promise<PaginatedTechnicianList> {
     const where: Prisma.TechnicianProfileWhereInput = {
       verificationStatus: VerificationStatus.APPROVED,
       availabilityStatus: TechnicianAvailability.ONLINE,
       user: { is: { status: UserStatus.ACTIVE, role: UserRole.TECHNICIAN } },
+      ...this.combineFilters(this.buildDiscoveryFilters(dto)),
     };
-    this.applyDiscoveryFilters(where, dto);
-    const profiles = await this.prisma.technicianProfile.findMany({
+    return this.findPage(
       where,
-      include: PROFILE_INCLUDE,
-      orderBy: { updatedAt: 'desc' },
-    });
-    return Promise.all(profiles.map((p) => this.toResponse(p, viewer)));
+      dto,
+      [{ updatedAt: 'desc' }, { id: 'asc' }],
+      viewer,
+    );
   }
 
   async listApproved(
     dto: SearchAvailableTechniciansDto,
     viewer: Viewer,
-  ): Promise<TechnicianResponse[]> {
+  ): Promise<PaginatedTechnicianList> {
     const where: Prisma.TechnicianProfileWhereInput = {
       verificationStatus: VerificationStatus.APPROVED,
       user: { is: { status: UserStatus.ACTIVE, role: UserRole.TECHNICIAN } },
+      ...this.combineFilters(this.buildDiscoveryFilters(dto)),
     };
-    this.applyDiscoveryFilters(where, dto);
-    const profiles = await this.prisma.technicianProfile.findMany({
+    return this.findPage(
       where,
-      include: PROFILE_INCLUDE,
-      orderBy: { updatedAt: 'desc' },
-    });
-    return Promise.all(profiles.map((p) => this.toResponse(p, viewer)));
+      dto,
+      [{ updatedAt: 'desc' }, { id: 'asc' }],
+      viewer,
+    );
   }
 
   async getAvailableById(
@@ -268,7 +281,7 @@ export class TechniciansService {
 
   async listPublic(
     dto: SearchAvailableTechniciansDto,
-  ): Promise<TechnicianResponse[]> {
+  ): Promise<PaginatedTechnicianList> {
     return this.listAvailable(dto, 'anonymous');
   }
 
@@ -333,12 +346,16 @@ export class TechniciansService {
     }
   }
 
-  async listAllByAdmin(): Promise<TechnicianResponse[]> {
-    const profiles = await this.prisma.technicianProfile.findMany({
-      include: PROFILE_INCLUDE,
-      orderBy: { createdAt: 'desc' },
-    });
-    return Promise.all(profiles.map((p) => this.toResponse(p, 'admin')));
+  async listAllByAdmin(
+    query: ListTechniciansQueryDto = {},
+  ): Promise<PaginatedTechnicianList> {
+    const where = this.combineFilters(this.buildAdminFilters(query));
+    return this.findPage(
+      where,
+      query,
+      [{ createdAt: 'desc' }, { id: 'asc' }],
+      'admin',
+    );
   }
 
   async getByIdForAdmin(profileId: string): Promise<TechnicianResponse> {
@@ -352,58 +369,24 @@ export class TechniciansService {
 
   async searchByAdmin(
     query: SearchTechniciansDto,
-  ): Promise<TechnicianResponse[]> {
-    const filters: Prisma.TechnicianProfileWhereInput[] = [];
+  ): Promise<PaginatedTechnicianList> {
+    const filters = this.buildAdminFilters(query);
     if (query.query) {
       const term = query.query.trim();
-      const matches: Prisma.TechnicianProfileWhereInput[] = [
-        { user: { is: { fullName: { contains: term, mode: 'insensitive' } } } },
-        { user: { is: { phoneNumber: { contains: term } } } },
-        { user: { is: { email: { contains: term, mode: 'insensitive' } } } },
-        { baseAddress: { contains: term, mode: 'insensitive' } },
-        { publicLocationLabel: { contains: term, mode: 'insensitive' } },
-        {
-          categories: {
-            some: {
-              category: { name: { contains: term, mode: 'insensitive' } },
-            },
-          },
-        },
-        {
-          categories: {
-            some: {
-              customName: { contains: term, mode: 'insensitive' },
-            },
-          },
-        },
-      ];
-      const numeric = Number(term);
-      if (Number.isFinite(numeric)) {
-        matches.push({ baseLatitude: numeric }, { baseLongitude: numeric });
-      }
-      filters.push({ OR: matches });
+      filters.push({ OR: this.buildBroadSearchClauses(term, 'admin') });
     }
     if (query.nationalIdNumber) {
       filters.push({
         nationalIdHash: this.nationalIdCrypto.hash(query.nationalIdNumber),
       });
     }
-    if (query.categoryId) {
-      filters.push({ categories: { some: { categoryId: query.categoryId } } });
-    }
-    if (query.verificationStatus) {
-      filters.push({ verificationStatus: query.verificationStatus });
-    }
-    if (query.availabilityStatus) {
-      filters.push({ availabilityStatus: query.availabilityStatus });
-    }
 
-    const profiles = await this.prisma.technicianProfile.findMany({
-      where: filters.length ? { AND: filters } : {},
-      include: PROFILE_INCLUDE,
-      orderBy: { createdAt: 'desc' },
-    });
-    return Promise.all(profiles.map((p) => this.toResponse(p, 'admin')));
+    return this.findPage(
+      this.combineFilters(filters),
+      query,
+      [{ createdAt: 'desc' }, { id: 'asc' }],
+      'admin',
+    );
   }
 
   async searchByUserDetails(
@@ -502,38 +485,224 @@ export class TechniciansService {
 
   // ─── Private helpers ───────────────────────────────────────────────────
 
-  private applyDiscoveryFilters(
+  // Counts and fetches one page with the same where clause, so pagination
+  // metadata stays accurate. Mirrors the users list implementation.
+  private async findPage(
     where: Prisma.TechnicianProfileWhereInput,
+    query: { page?: number; limit?: number },
+    orderBy: Prisma.TechnicianProfileOrderByWithRelationInput[],
+    viewer: Viewer,
+  ): Promise<PaginatedTechnicianList> {
+    const { page, limit } = this.resolvePaging(query);
+    const [total, profiles] = await Promise.all([
+      this.prisma.technicianProfile.count({ where }),
+      this.prisma.technicianProfile.findMany({
+        where,
+        include: PROFILE_INCLUDE,
+        orderBy,
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+    const data = await Promise.all(
+      profiles.map((p) => this.toResponse(p, viewer)),
+    );
+    return {
+      data,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  // Validates paging input so invalid values fail with a 400 before any query runs.
+  private resolvePaging(query: {
+    page?: number;
+    limit?: number;
+  }): { page: number; limit: number } {
+    const page = query.page ?? DEFAULT_PAGE;
+    const limit = query.limit ?? DEFAULT_PAGE_LIMIT;
+    if (!Number.isInteger(page) || page < DEFAULT_PAGE) {
+      throw new BadRequestException(
+        'The page query parameter must be an integer of 1 or more.',
+      );
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE_LIMIT) {
+      throw new BadRequestException(
+        `The limit query parameter must be an integer between 1 and ${MAX_PAGE_LIMIT}.`,
+      );
+    }
+    return { page, limit };
+  }
+
+  // Rejects blank text filters so invalid values fail with a 400 before any query runs.
+  private assertTextFiltersAreValid(query: {
+    search?: string;
+    query?: string;
+    location?: string;
+    category?: string;
+  }): void {
+    for (const key of ['search', 'query', 'location', 'category'] as const) {
+      const value = query[key];
+      if (value !== undefined && (typeof value !== 'string' || !value.trim())) {
+        throw new BadRequestException(
+          `The ${key} query parameter must not be empty.`,
+        );
+      }
+    }
+  }
+
+  // AND-combines filters; no filters means no extra clause.
+  private combineFilters(
+    filters: Prisma.TechnicianProfileWhereInput[],
+  ): Prisma.TechnicianProfileWhereInput {
+    return filters.length ? { AND: filters } : {};
+  }
+
+  // Applies the optional discovery filters: category (ID or name/slug),
+  // free text, area, and minimum years of experience.
+  private buildDiscoveryFilters(
     dto: SearchAvailableTechniciansDto,
-  ) {
+  ): Prisma.TechnicianProfileWhereInput[] {
+    this.assertTextFiltersAreValid(dto);
+    const filters: Prisma.TechnicianProfileWhereInput[] = [];
     if (dto.categoryId) {
-      where.categories = { some: { categoryId: dto.categoryId } };
+      filters.push({ categories: { some: { categoryId: dto.categoryId } } });
     }
-    if (dto.query) {
-      where.OR = [
-        {
-          user: {
-            is: { fullName: { contains: dto.query, mode: 'insensitive' } },
-          },
-        },
-        { publicLocationLabel: { contains: dto.query, mode: 'insensitive' } },
-        { baseAddress: { contains: dto.query, mode: 'insensitive' } },
-        {
-          categories: {
-            some: {
-              category: { name: { contains: dto.query, mode: 'insensitive' } },
-            },
-          },
-        },
-        {
-          categories: {
-            some: {
-              customName: { contains: dto.query, mode: 'insensitive' },
-            },
-          },
-        },
-      ];
+    const category = dto.category?.trim();
+    if (category) {
+      filters.push({
+        categories: { some: { category: this.buildCategoryNameClause(category) } },
+      });
     }
+    if (dto.minYearsOfExperience !== undefined) {
+      filters.push({
+        categories: {
+          some: { yearsOfExperience: { gte: dto.minYearsOfExperience } },
+        },
+      });
+    }
+    const text = dto.query?.trim();
+    if (text) {
+      filters.push({ OR: this.buildBroadSearchClauses(text, 'discovery') });
+    }
+    const location = dto.location?.trim();
+    if (location) {
+      filters.push({ OR: this.buildLocationClauses(location) });
+    }
+    return filters;
+  }
+
+  // Applies the shared list filters behind both admin list endpoints.
+  private buildAdminFilters(
+    query: ListTechniciansQueryDto,
+  ): Prisma.TechnicianProfileWhereInput[] {
+    this.assertTextFiltersAreValid(query);
+    const filters: Prisma.TechnicianProfileWhereInput[] = [];
+    const search = query.search?.trim();
+    if (search) {
+      filters.push({ OR: this.buildIdentityClauses(search) });
+    }
+    const location = query.location?.trim();
+    if (location) {
+      filters.push({ OR: this.buildLocationClauses(location) });
+    }
+    if (query.status !== undefined) {
+      filters.push({ user: { is: { status: query.status } } });
+    }
+    if (query.verificationStatus !== undefined) {
+      filters.push({ verificationStatus: query.verificationStatus });
+    }
+    if (query.availabilityStatus !== undefined) {
+      filters.push({ availabilityStatus: query.availabilityStatus });
+    }
+    if (query.categoryId) {
+      filters.push({ categories: { some: { categoryId: query.categoryId } } });
+    }
+    const category = query.category?.trim();
+    if (category) {
+      filters.push({
+        categories: { some: { category: this.buildCategoryNameClause(category) } },
+      });
+    }
+    if (query.minYearsOfExperience !== undefined) {
+      filters.push({
+        categories: {
+          some: { yearsOfExperience: { gte: query.minYearsOfExperience } },
+        },
+      });
+    }
+    return filters;
+  }
+
+  // Substring clauses for the `search` parameter (identity fields only).
+  private buildIdentityClauses(
+    term: string,
+  ): Prisma.TechnicianProfileWhereInput[] {
+    return [
+      { user: { is: { fullName: { contains: term, mode: 'insensitive' } } } },
+      { user: { is: { phoneNumber: { contains: term } } } },
+      { user: { is: { email: { contains: term, mode: 'insensitive' } } } },
+    ];
+  }
+
+  // Substring clauses for the `location` parameter (area text only).
+  private buildLocationClauses(
+    term: string,
+  ): Prisma.TechnicianProfileWhereInput[] {
+    return [
+      { baseAddress: { contains: term, mode: 'insensitive' } },
+      { publicLocationLabel: { contains: term, mode: 'insensitive' } },
+    ];
+  }
+
+  // Case-insensitive match of a catalogue category by name or slug, so the
+  // frontend can send "Plumbing" while matching logic can send "plumbing".
+  private buildCategoryNameClause(name: string): Prisma.ServiceCategoryWhereInput {
+    return {
+      OR: [
+        { name: { equals: name, mode: 'insensitive' } },
+        { slug: { equals: name, mode: 'insensitive' } },
+      ],
+    };
+  }
+
+  // Broad free-text clauses for the `query` parameter. The admin sweep also
+  // matches contact details and exact numeric coordinates; discovery matches
+  // only name, area, and service names.
+  private buildBroadSearchClauses(
+    term: string,
+    scope: 'admin' | 'discovery',
+  ): Prisma.TechnicianProfileWhereInput[] {
+    const matches: Prisma.TechnicianProfileWhereInput[] = [
+      { user: { is: { fullName: { contains: term, mode: 'insensitive' } } } },
+    ];
+    if (scope === 'admin') {
+      matches.push(
+        { user: { is: { phoneNumber: { contains: term } } } },
+        { user: { is: { email: { contains: term, mode: 'insensitive' } } } },
+      );
+    }
+    matches.push(
+      ...this.buildLocationClauses(term),
+      {
+        categories: {
+          some: {
+            category: { name: { contains: term, mode: 'insensitive' } },
+          },
+        },
+      },
+      {
+        categories: {
+          some: { customName: { contains: term, mode: 'insensitive' } },
+        },
+      },
+    );
+    if (scope === 'admin') {
+      const numeric = Number(term);
+      if (Number.isFinite(numeric)) {
+        matches.push({ baseLatitude: numeric }, { baseLongitude: numeric });
+      }
+    }
+    return matches;
   }
 
   private async saveProfileFields(

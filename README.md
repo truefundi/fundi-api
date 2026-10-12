@@ -7,33 +7,38 @@ The backend API service for the Fundi platform, built with **NestJS**, **TypeScr
 ## 1. Quick Start Guide
 
 ### Step 1: Install Dependencies
+
 ```bash
 npm install
 ```
 
 ### Step 2: Configure Environment
+
 ```bash
 cp .env.example .env
 ```
 
 ### Step 3: Generate Prisma Client
+
 ```bash
 npm run prisma:generate
 ```
 
 ### Step 4: Run Development Server
+
 ```bash
 npm run start:dev
 ```
 
 To populate the initial service categories in the configured database, run:
+
 ```bash
 npm run prisma:seed
 ```
 
-* **API Base URL:** `http://localhost:3000`
-* **Swagger OpenAPI Documentation:** `http://localhost:3000/api/docs`
-* **Health Check Endpoint:** `http://localhost:3000/api/v1/health`
+- **API Base URL:** `http://localhost:3000`
+- **Swagger OpenAPI Documentation:** `http://localhost:3000/api/docs`
+- **Health Check Endpoint:** `http://localhost:3000/api/v1/health`
 
 ---
 
@@ -76,6 +81,7 @@ backend/
 │   ├── admin-authentication.md # Admin email + password and 2FA endpoint guide
 │   ├── authentication.md     # Phone OTP authentication endpoint guide
 │   ├── implementation-roadmap.md # Ordered daily feature delivery plan
+│   ├── jobs.md               # Customer jobs, technician offers, and admin API guide
 │   ├── service-categories.md # Service catalog endpoint guide
 │   ├── technician-onboarding.md # Technician management API guide
 │   └── users.md              # User management endpoint guide
@@ -120,6 +126,7 @@ Detailed request formats and expected responses are documented separately:
 - [Service categories endpoints](docs/service-categories.md)
 - [Technician management and discovery endpoints](docs/technician-onboarding.md)
 - [User management endpoints](docs/users.md)
+- [Job request, matching, and offer endpoints](docs/jobs.md)
 - [Day-by-day implementation roadmap](docs/implementation-roadmap.md)
 
 These guides include required authentication, request examples, successful response structures, and common errors.

@@ -12,7 +12,7 @@ Lifetimes are settings, not constants: `OTP_TTL_SECONDS` (default `300`, five mi
 
 No authentication required. `email` and `role` are optional. Phone numbers may include a leading `+`; spaces, parentheses, and hyphens are removed.
 
-Request:
+Send this as a JSON request body with `Content-Type: application/json`:
 
 ```json
 {
@@ -22,6 +22,25 @@ Request:
   "phoneNumber": "+250788123456"
 }
 ```
+
+For PowerShell, serialize the object and explicitly set the content type:
+
+```powershell
+$body = @{
+  fullName = "Prince Example"
+  email = "prince@example.com"
+  role = "TECHNICIAN"
+  phoneNumber = "+250788123456"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:3000/api/v1/auth/register" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+In Postman, choose **Body → raw → JSON**. If validation reports that `fullName` and `phoneNumber` are not strings even though they are present in the JSON, verify the request actually sends this body and the `Content-Type: application/json` header; the shown validation error is also returned when those required fields are missing from the parsed body. Public registration is handled by this auth endpoint. `POST /api/v1/users` is a separate, administrator-only account-creation route.
 
 Success response (`200`):
 

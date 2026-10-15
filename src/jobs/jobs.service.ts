@@ -832,6 +832,19 @@ export class JobsService {
     );
   }
 
+  // Counts the jobs the admin dashboard summarises. In-flight jobs are those
+  // still OPEN or ASSIGNED; FAILED, CANCELLED, and COMPLETED are terminal.
+  // Disputes are not modelled yet, so openDisputes is null until that feature lands.
+  async summaryForAdmin() {
+    const [active, completed] = await Promise.all([
+      this.prisma.job.count({
+        where: { status: { in: [JobStatus.OPEN, JobStatus.ASSIGNED] } },
+      }),
+      this.prisma.job.count({ where: { status: JobStatus.COMPLETED } }),
+    ]);
+    return { active, completed, openDisputes: null };
+  }
+
   async getForAdmin(jobId: string) {
     const job = await this.prisma.job.findUnique({
       where: { id: jobId },

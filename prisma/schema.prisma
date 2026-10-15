@@ -1,5 +1,3 @@
-// Fundi Platform Prisma Schema
-
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["postgresqlExtensions"]
@@ -11,6 +9,245 @@ datasource db {
   extensions = [postgis]
 }
 
+model User {
+  id                String             @id @default(uuid())
+  email             String?            @unique
+  phoneNumber       String             @unique
+  fullName          String
+  role              UserRole           @default(CUSTOMER)
+  status            UserStatus         @default(ACTIVE)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  passwordHash      String?
+  totpSecret        String?
+  totpEnabledAt     DateTime?
+  customerJobs      Job[]              @relation("JobCustomer")
+  refreshTokens     RefreshToken[]
+  technicianProfile TechnicianProfile?
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  sessionId String   @unique @default(uuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+model ServiceCategory {
+  id          String               @id @default(uuid())
+  name        String               @unique
+  slug        String               @unique
+  isActive    Boolean              @default(true)
+  createdAt   DateTime             @default(now())
+  jobs        Job[]                @relation("JobServiceCategory")
+  technicians TechnicianCategory[]
+  documents   TechnicianDocument[]
+
+  @@map("service_categories")
+}
+
+model TechnicianProfile {
+  id                      String                    @id @default(uuid())
+  userId                  String                    @unique
+  baseAddress             String
+  baseLatitude            Float
+  baseLongitude           Float
+  verificationStatus      VerificationStatus        @default(PENDING)
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+  gender                  TechnicianGender
+  profilePictureMimeType  String?
+  availabilityStatus      TechnicianAvailability    @default(OFFLINE)
+  baseLocation            Unsupported("geography")?
+  nationalIdEncrypted     String
+  nationalIdHash          String                    @unique
+  publicLocationLabel     String?
+  profilePictureObjectKey String?
+  paymentMethod           PaymentMethod
+  paymentNumber           String
+  jobAssignments          JobAssignmentHistory[]
+  jobOffers               JobOffer[]
+  assignedJobs            Job[]                     @relation("CurrentJobTechnician")
+  categories              TechnicianCategory[]
+  documents               TechnicianDocument[]
+  user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([verificationStatus])
+  @@index([availabilityStatus, verificationStatus])
+  @@map("technician_profiles")
+}
+
+model TechnicianCategory {
+  technicianId         String
+  categoryId           String?
+  customName           String?
+  customNameNormalized String            @default("")
+  id                   String            @id @default(uuid())
+  yearsOfExperience    Int
+  category             ServiceCategory?  @relation(fields: [categoryId], references: [id])
+  technician           TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([categoryId])
+  @@index([technicianId])
+  @@map("technician_categories")
+}
+
+model TechnicianDocument {
+  id                       String            @id @default(uuid())
+  technicianId             String
+  title                    String
+  titleNormalized          String
+  objectKey                String
+  mimeType                 String
+  originalFileName         String
+  sizeBytes                Int
+  status                   DocumentStatus    @default(SUBMITTED)
+  reviewNote               String?
+  reviewedById             String?
+  reviewedAt               DateTime?
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
+  certificateType          CertificateType?
+  categoryId               String?
+  customCategoryName       String?
+  customCategoryNormalized String?
+  type                     DocumentType
+  category                 ServiceCategory?  @relation(fields: [categoryId], references: [id])
+  technician               TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([technicianId, status])
+  @@index([status])
+  @@index([type])
+  @@index([categoryId])
+  @@map("technician_documents")
+}
+
+model Job {
+  id                 String                    @id @default(uuid())
+  customerId         String
+  technicianId       String?
+  serviceCategoryId  String?
+  otherServiceName   String?
+  description        String
+  locationAddress    String
+  latitude           Float
+  longitude          Float
+  location           Unsupported("geography")?
+  offeredAmount      Int
+  currency           String                    @default("RWF")
+  priority           JobPriority               @default(NORMAL)
+  status             JobStatus                 @default(OPEN)
+  dispatchStatus     JobDispatchStatus         @default(PENDING)
+  dispatchRound      Int                       @default(1)
+  customerProgress   JobProgressStatus         @default(PENDING)
+  technicianProgress JobProgressStatus         @default(PENDING)
+  assignedAt         DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+  assignmentHistory  JobAssignmentHistory[]
+  media              JobMedia[]
+  offers             JobOffer[]
+  customer           User                      @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory    ServiceCategory?          @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id])
+  technician         TechnicianProfile?        @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
+
+  @@index([customerId, createdAt])
+  @@index([technicianId, status, updatedAt])
+  @@index([status, dispatchStatus, priority, createdAt])
+  @@index([serviceCategoryId])
+  @@map("jobs")
+}
+
+model JobOffer {
+  id              String            @id @default(uuid())
+  jobId           String
+  technicianId    String
+  round           Int
+  matchScore      Int
+  distanceMeters  Float
+  status          JobOfferStatus    @default(WAITING)
+  offeredAt       DateTime?
+  expiresAt       DateTime?
+  respondedAt     DateTime?
+  rejectionReason String?
+  dropReason      String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  job             Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  technician      TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, technicianId, round])
+  @@index([jobId, round, status, matchScore])
+  @@index([technicianId, status, updatedAt])
+  @@map("job_offers")
+}
+
+model JobMedia {
+  id               String       @id @default(uuid())
+  jobId            String
+  type             JobMediaType
+  objectKey        String       @unique
+  mimeType         String
+  originalFileName String
+  sizeBytes        Int
+  durationSeconds  Float?
+  createdAt        DateTime     @default(now())
+  job              Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt])
+  @@map("job_media")
+}
+
+model JobAssignmentHistory {
+  id             String             @id @default(uuid())
+  jobId          String
+  technicianId   String?
+  technicianName String
+  acceptedAt     DateTime           @default(now())
+  endedAt        DateTime?
+  endReason      String?
+  reason         String?
+  createdAt      DateTime           @default(now())
+  job            Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  technician     TechnicianProfile? @relation(fields: [technicianId], references: [id])
+
+  @@index([jobId, acceptedAt])
+  @@index([technicianId, acceptedAt])
+  @@map("job_assignment_history")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  entityType String
+  entityId   String
+  action     String
+  fromStatus String?
+  toStatus   String?
+  actorId    String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model spatial_ref_sys {
+  srid      Int     @id
+  auth_name String? @db.VarChar(256)
+  auth_srid Int?
+  srtext    String? @db.VarChar(2048)
+  proj4text String? @db.VarChar(2048)
+}
+
 enum UserRole {
   CUSTOMER
   TECHNICIAN
@@ -20,6 +257,7 @@ enum UserRole {
 enum UserStatus {
   ACTIVE
   INACTIVE
+  SUSPENDED
 }
 
 enum VerificationStatus {
@@ -39,8 +277,6 @@ enum TechnicianGender {
   NON_BINARY
   PREFER_NOT_TO_SAY
 }
-
-
 
 enum DocumentType {
   NATIONAL_ID
@@ -108,252 +344,9 @@ enum JobMediaType {
   VIDEO
 }
 
-
-
 enum PaymentMethod {
   MOMO
   BANK_TRANSFER
   CASH
   OTHER
-}
-
-model User {
-  id                String             @id @default(uuid())
-  email             String?            @unique
-  phoneNumber       String             @unique
-  fullName          String
-  role              UserRole           @default(CUSTOMER)
-  status            UserStatus         @default(ACTIVE)
-  passwordHash      String?
-  totpSecret        String?
-  totpEnabledAt     DateTime?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  refreshTokens     RefreshToken[]
-  technicianProfile TechnicianProfile?
-  customerJobs      Job[]              @relation("JobCustomer")
-
-  @@map("users")
-}
-
-model RefreshToken {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  sessionId String   @unique @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  @@map("refresh_tokens")
-}
-
-model ServiceCategory {
-  id          String               @id @default(uuid())
-  name        String               @unique
-  slug        String               @unique
-  isActive    Boolean              @default(true)
-  createdAt   DateTime             @default(now())
-  technicians TechnicianCategory[]
-  documents   TechnicianDocument[]   // ← new
-  jobs        Job[]                  @relation("JobServiceCategory")
-
-  @@map("service_categories")
-}
-
-model TechnicianProfile {
-  id                      String                   @id @default(uuid())
-  userId                  String                   @unique
-  user                    User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  gender                  TechnicianGender
-  nationalIdEncrypted     String
-  nationalIdHash          String                   @unique
-
-  baseAddress             String
-  publicLocationLabel     String?
-  baseLatitude            Float
-  baseLongitude           Float
-  baseLocation            Unsupported("geography(Point,4326)")?
-
-  paymentMethod           PaymentMethod
-  paymentNumber           String
-
-  profilePictureObjectKey String?
-  profilePictureMimeType  String?
-
-  verificationStatus      VerificationStatus       @default(PENDING)
-  availabilityStatus      TechnicianAvailability   @default(OFFLINE)
-
-  categories              TechnicianCategory[]
-  documents               TechnicianDocument[]
-  assignedJobs            Job[]                    @relation("CurrentJobTechnician")
-  jobOffers               JobOffer[]
-  jobAssignments          JobAssignmentHistory[]
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-
-  @@index([verificationStatus])
-  @@index([availabilityStatus, verificationStatus])
-  @@map("technician_profiles")
-}
-
-model TechnicianCategory {
-  id                   String             @id @default(uuid())
-  technicianId         String
-  categoryId           String?
-  customName           String?
-  customNameNormalized String             @default("")
-  yearsOfExperience    Int
-
-  technician           TechnicianProfile  @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-  category             ServiceCategory?   @relation(fields: [categoryId], references: [id])
-
-  @@index([categoryId])
-  @@index([technicianId])
-  @@map("technician_categories")
-}
-
-
-model TechnicianDocument {
-  id                        String            @id @default(uuid())
-  technicianId              String
-  technician                TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-  type                      DocumentType
-  title                     String
-  titleNormalized           String
-
-  // Only meaningful when type = CERTIFICATE.
-  certificateType           CertificateType?
-  categoryId                String?
-  category                  ServiceCategory?  @relation(fields: [categoryId], references: [id])
-  customCategoryName        String?
-  customCategoryNormalized  String?
-
-  objectKey                 String
-  mimeType                  String
-  originalFileName          String
-  sizeBytes                 Int
-  status                    DocumentStatus    @default(SUBMITTED)
-  reviewNote                String?
-  reviewedById              String?
-  reviewedAt                DateTime?
-  createdAt                 DateTime          @default(now())
-  updatedAt                 DateTime          @updatedAt
-
-  @@index([technicianId, status])
-  @@index([status])
-  @@index([type])
-  @@index([categoryId])
-  @@map("technician_documents")
-}
-
-model Job {
-  id                  String              @id @default(uuid())
-  customerId          String
-  customer            User                @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
-  technicianId        String?
-  technician          TechnicianProfile?  @relation("CurrentJobTechnician", fields: [technicianId], references: [id], onDelete: SetNull)
-  serviceCategoryId   String?
-  serviceCategory     ServiceCategory?    @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id], onDelete: SetNull)
-  otherServiceName    String?
-  description         String
-  locationAddress     String
-  latitude            Float
-  longitude           Float
-  location            Unsupported("geography(Point,4326)")?
-  offeredAmount       Int
-  currency            String              @default("RWF")
-  priority            JobPriority         @default(NORMAL)
-  status              JobStatus           @default(OPEN)
-  dispatchStatus      JobDispatchStatus   @default(PENDING)
-  dispatchRound       Int                 @default(1)
-  customerProgress    JobProgressStatus   @default(PENDING)
-  technicianProgress  JobProgressStatus   @default(PENDING)
-  assignedAt          DateTime?
-  completedAt         DateTime?
-  createdAt           DateTime            @default(now())
-  updatedAt           DateTime            @updatedAt
-  media               JobMedia[]
-  offers              JobOffer[]
-  assignmentHistory   JobAssignmentHistory[]
-
-  @@index([customerId, createdAt])
-  @@index([technicianId, status, updatedAt])
-  @@index([status, dispatchStatus, priority, createdAt])
-  @@index([serviceCategoryId])
-  @@map("jobs")
-}
-
-model JobOffer {
-  id            String         @id @default(uuid())
-  jobId         String
-  job           Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  technicianId  String
-  technician    TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
-  round         Int
-  matchScore    Int
-  distanceMeters Float
-  status        JobOfferStatus @default(WAITING)
-  offeredAt     DateTime?
-  expiresAt     DateTime?
-  respondedAt   DateTime?
-  rejectionReason String?
-  dropReason    String?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-
-  @@unique([jobId, technicianId, round])
-  @@index([jobId, round, status, matchScore])
-  @@index([technicianId, status, updatedAt])
-  @@map("job_offers")
-}
-
-model JobMedia {
-  id             String       @id @default(uuid())
-  jobId          String
-  job            Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  type           JobMediaType
-  objectKey      String       @unique
-  mimeType       String
-  originalFileName String
-  sizeBytes      Int
-  durationSeconds Float?
-  createdAt      DateTime     @default(now())
-
-  @@index([jobId, createdAt])
-  @@map("job_media")
-}
-
-model JobAssignmentHistory {
-  id            String            @id @default(uuid())
-  jobId         String
-  job           Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  technicianId  String?
-  technician    TechnicianProfile? @relation(fields: [technicianId], references: [id], onDelete: SetNull)
-  technicianName String
-  acceptedAt    DateTime          @default(now())
-  endedAt       DateTime?
-  endReason     String?
-  reason        String?
-  createdAt     DateTime          @default(now())
-
-  @@index([jobId, acceptedAt])
-  @@index([technicianId, acceptedAt])
-  @@map("job_assignment_history")
-}
-
-model AuditLog {
-  id         String   @id @default(uuid())
-  entityType String
-  entityId   String
-  action     String
-  fromStatus String?
-  toStatus   String?
-  actorId    String?
-  metadata   Json?
-  createdAt  DateTime @default(now())
-
-  @@index([entityType, entityId])
-  @@map("audit_logs")
 }

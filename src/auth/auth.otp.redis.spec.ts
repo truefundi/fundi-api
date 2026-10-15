@@ -157,7 +157,10 @@ describe('AuthService OTP scripts against Redis', () => {
       const stored = await client.hgetall(key);
       const seconds = (Number(stored.expiresAt) - before) / 1000;
       expect(seconds).toBeGreaterThan(295);
-      expect(seconds).toBeLessThanOrEqual(300);
+      // `expiresAt` is stamped inside the async call, after `before` was read,
+      // so the measured delta can exceed 300 by the call's own latency; allow a
+      // small epsilon instead of asserting a hard upper bound.
+      expect(seconds).toBeLessThanOrEqual(302);
     });
 
     itIfRedis('tells the caller how long the code stays usable', async () => {

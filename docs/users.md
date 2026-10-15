@@ -17,7 +17,7 @@ A full user record has this structure:
 }
 ```
 
-`email` is `null` if no email was provided. Roles are `CUSTOMER`, `TECHNICIAN`, and `ADMIN`; statuses are `ACTIVE` and `INACTIVE`.
+`email` is `null` if no email was provided. Roles are `CUSTOMER`, `TECHNICIAN`, and `ADMIN`; statuses are `ACTIVE`, `INACTIVE`, and `SUSPENDED`.
 
 ## `PATCH /api/v1/users/me`
 
@@ -76,7 +76,7 @@ Every parameter is optional, combines with the others, and is applied inside the
 | `page` | integer ≥ 1 | `1` | Page number, 1-based. |
 | `limit` | integer 1–100 | `20` | Users per page. |
 | `role` | `CUSTOMER`, `TECHNICIAN`, `ADMIN` | — | Only users with this role. |
-| `status` | `ACTIVE`, `INACTIVE` | — | Only users with this account status. |
+| `status` | `ACTIVE`, `INACTIVE`, `SUSPENDED` | — | Only users with this account status. |
 | `search` | 1–200 characters | — | Substring matched against full name, phone number, and email (name and email are case-insensitive). |
 
 Example: `GET /api/v1/users?search=john&role=TECHNICIAN&status=ACTIVE&page=1&limit=20`
@@ -142,7 +142,7 @@ Request:
 }
 ```
 
-`status` is required and must be `ACTIVE` or `INACTIVE`; any other value returns `400`.
+`status` is required and must be `ACTIVE`, `INACTIVE`, or `SUSPENDED`; any other value returns `400`. Only `ACTIVE` accounts can log in and keep working sessions, so `INACTIVE` and `SUSPENDED` both block access.
 
 Success response (`200`): the updated full user record.
 

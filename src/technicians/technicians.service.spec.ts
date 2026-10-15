@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import {
   Prisma,
   TechnicianAvailability,
@@ -418,6 +418,80 @@ describe('TechniciansService', () => {
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
+  // ─── Account status ────────────────────────────────────────────────────
+
+  it('suspends a technician: updates the account status, forces offline, and logs it', async () => {
+    const { service, transaction, audit } = createService();
+    await service.setAccountStatusByAdmin(
+      profileId,
+      UserStatus.SUSPENDED,
+      'admin-1',
+    );
+
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: userId },
+      data: { status: UserStatus.SUSPENDED },
+    });
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { availabilityStatus: TechnicianAvailability.OFFLINE },
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityType: 'TechnicianProfile',
+        entityId: profileId,
+        action: 'ACCOUNT_STATUS_UPDATED',
+        fromStatus: 'ACTIVE',
+        toStatus: UserStatus.SUSPENDED,
+        actorId: 'admin-1',
+      }),
+      transaction,
+    );
+  });
+
+  it('re-activating a technician keeps its current availability', async () => {
+    const { service, transaction } = createService();
+    const offlineFreeProfile = {
+      ...baseProfile(),
+      availabilityStatus: TechnicianAvailability.ONLINE,
+      user: { ...baseProfile().user, status: 'INACTIVE' },
+    };
+    transaction.technicianProfile.findUnique.mockResolvedValue(
+      offlineFreeProfile,
+    );
+    transaction.technicianProfile.update.mockResolvedValue(offlineFreeProfile);
+
+    await service.setAccountStatusByAdmin(profileId, UserStatus.ACTIVE, 'admin-1');
+
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: userId },
+      data: { status: UserStatus.ACTIVE },
+    });
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { availabilityStatus: TechnicianAvailability.ONLINE },
+      }),
+    );
+  });
+
+  it('leaves the account untouched when the status is already set', async () => {
+    const { service, transaction } = createService();
+    await service.setAccountStatusByAdmin(profileId, UserStatus.ACTIVE, 'admin-1');
+
+    expect(transaction.user.update).not.toHaveBeenCalled();
+    expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
+  it('throws 404 when the technician profile does not exist', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.setAccountStatusByAdmin(profileId, UserStatus.INACTIVE, 'admin-1'),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   // ─── Discovery ─────────────────────────────────────────────────────────

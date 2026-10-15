@@ -22,6 +22,7 @@ import { ListTechniciansQueryDto } from './dto/list-technicians-query.dto';
 import { PaginatedTechniciansResponseDto } from './dto/paginated-technicians-response.dto';
 import { SearchTechniciansDto } from './dto/search-technicians.dto';
 import { UpdateAvailabilityDto } from './dto/update-availability.dto';
+import { UpdateTechnicianStatusDto } from './dto/update-technician-status.dto';
 import { UpdateVerificationStatusDto } from './dto/update-verification-status.dto';
 import { TechniciansService } from './technicians.service';
 import { SearchTechniciansByUserDto } from './dto/search-technicians-by-user.dto';
@@ -105,6 +106,18 @@ export class TechniciansAdminController {
       dto.availabilityStatus,
       user.id,
     );
+  }
+
+  // Changes the account status behind a technician profile (ACTIVE, INACTIVE,
+  // or SUSPENDED). A non-active status blocks logins and forces the technician
+  // offline; the account keeps its verification and profile data.
+  @Patch(':id/status')
+  updateStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: UpdateTechnicianStatusDto,
+  ) {
+    return this.technicians.setAccountStatusByAdmin(id, dto.status, user.id);
   }
 
   // Returns the full technician account and profile record by profile ID.

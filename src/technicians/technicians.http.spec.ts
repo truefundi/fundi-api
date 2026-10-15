@@ -41,6 +41,7 @@ describe('Technician list endpoints (HTTP)', () => {
     listAvailable: jest.fn(),
     listApproved: jest.fn(),
     listPublic: jest.fn(),
+    setAccountStatusByAdmin: jest.fn(),
   };
 
   // Stand-in for AuthGuard('jwt'): a request carries its role in a test header.
@@ -72,6 +73,9 @@ describe('Technician list endpoints (HTTP)', () => {
     techniciansService.listAvailable.mockResolvedValue(envelope());
     techniciansService.listApproved.mockResolvedValue(envelope());
     techniciansService.listPublic.mockResolvedValue(envelope());
+    techniciansService.setAccountStatusByAdmin.mockResolvedValue({
+      id: technicianId,
+    } as never);
 
     const moduleRef = await Test.createTestingModule({
       controllers: [
@@ -162,7 +166,7 @@ describe('Technician list endpoints (HTTP)', () => {
       ['limit=101', 'an out-of-range limit'],
       ['verificationStatus=SUPERSEDED', 'an unknown verification status'],
       ['availabilityStatus=AWAY', 'an unknown availability status'],
-      ['status=SUSPENDED', 'an unknown account status'],
+      ['status=DORMANT', 'an unknown account status'],
       ['minYearsOfExperience=abc', 'a non-numeric experience filter'],
       ['categoryId=not-a-uuid', 'a malformed category ID'],
       ['search=', 'an empty search'],
@@ -276,6 +280,47 @@ describe('Technician list endpoints (HTTP)', () => {
         data: [],
         pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
       });
+    });
+  });
+
+  describe('PATCH /admin/technicians/:id/status', () => {
+    it('forwards the account status change to the service', async () => {
+      const { body } = await request(app.getHttpServer())
+        .patch(`/api/v1/admin/technicians/${technicianId}/status`)
+        .set(asAdmin())
+        .send({ status: 'SUSPENDED' })
+        .expect(200);
+
+      expect(techniciansService.setAccountStatusByAdmin).toHaveBeenCalledWith(
+        technicianId,
+        'SUSPENDED',
+        technicianId,
+      );
+      expect(body).toEqual({ id: technicianId });
+    });
+
+    it.each([
+      ['PENDING', 'a status outside the user status enum'],
+      ['SUSPENDED!', 'a malformed status'],
+    ])('rejects %s (%s) with a 400 validation envelope', async (value) => {
+      const { body } = await request(app.getHttpServer())
+        .patch(`/api/v1/admin/technicians/${technicianId}/status`)
+        .set(asAdmin())
+        .send({ status: value })
+        .expect(400);
+
+      expect(body.statusCode).toBe(400);
+      expect(Array.isArray(body.message)).toBe(true);
+      expect(techniciansService.setAccountStatusByAdmin).not.toHaveBeenCalled();
+    });
+
+    it('rejects a missing status body with 400', async () => {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/admin/technicians/${technicianId}/status`)
+        .set(asAdmin())
+        .send({})
+        .expect(400);
+      expect(techniciansService.setAccountStatusByAdmin).not.toHaveBeenCalled();
     });
   });
 });

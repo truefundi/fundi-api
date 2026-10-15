@@ -7,7 +7,7 @@ uploads and profile pictures are covered in
 
 Three concepts are kept deliberately separate:
 
-- **`user.status`** — whether the account can authenticate at all (`ACTIVE`, `INACTIVE`).
+- **`user.status`** — whether the account can authenticate at all (`ACTIVE`, `INACTIVE`, `SUSPENDED`).
 - **`verificationStatus`** — the administrator's approval state (`PENDING`, `APPROVED`, `REJECTED`).
 - **`availabilityStatus`** — whether the technician is taking work (`ONLINE`, `OFFLINE`).
 
@@ -212,7 +212,7 @@ regardless.
 | `400` | `availabilityStatus` missing or not a valid enum value |
 | `401` / `403` | Missing token or wrong role |
 | `404` | No profile registered yet |
-| `409` | Going `ONLINE` while `PENDING`/`REJECTED`, or while the user is `INACTIVE` |
+| `409` | Going `ONLINE` while `PENDING`/`REJECTED`, or while the user is not `ACTIVE` (`INACTIVE`/`SUSPENDED`) |
 
 ## Listing, filters, and pagination
 
@@ -428,7 +428,7 @@ Beyond the [shared parameters](#listing-filters-and-pagination):
 | --- | --- | --- |
 | `search` | 1–200 characters | Substring matched against full name, phone number, and email (name and email are case-insensitive). People search — pair with `location` for area search. |
 | `location` | 1–200 characters | Substring of `baseAddress` / `publicLocationLabel`. |
-| `status` | `ACTIVE`, `INACTIVE` | Account status of the linked user. |
+| `status` | `ACTIVE`, `INACTIVE`, `SUSPENDED` | Account status of the linked user. |
 | `verificationStatus` | `PENDING`, `APPROVED`, `REJECTED` | Verification queue filter — e.g. `PENDING` for "awaiting review". |
 | `availabilityStatus` | `ONLINE`, `OFFLINE` | Dispatch-readiness filter. |
 
@@ -582,6 +582,42 @@ Auth: **`ADMIN`**.
 | `400` | Invalid enum value |
 | `404` | Technician not found |
 | `409` | Setting `ONLINE` on an inactive or unapproved technician |
+
+### `PATCH /api/v1/admin/technicians/:id/status`
+
+Changes the account status behind a technician profile — `ACTIVE`, `INACTIVE`,
+or `SUSPENDED`.
+
+Auth: **`ADMIN`**.
+
+**Request**
+
+```json
+{ "status": "SUSPENDED" }
+```
+
+**Behavior**
+
+- `SUSPENDED` and `INACTIVE` block the account from logging in and from using
+  existing sessions (the JWT strategy accepts only `ACTIVE` accounts) and force
+  `availabilityStatus` to `OFFLINE`, so the technician stops appearing in
+  discovery.
+- The profile, verification state, and documents are kept intact, so restoring
+  `ACTIVE` re-enables the account without re-verification.
+- Setting a `SUSPENDED` technician back to `ACTIVE` does **not** bring them
+  online automatically; approval and an explicit online switch are still
+  required.
+- The change is written to the audit log with `ACCOUNT_STATUS_UPDATED`.
+
+**Response `200`** — the updated technician object.
+
+**Errors**
+
+| Status | When |
+| --- | --- |
+| `400` | Invalid or missing `status` |
+| `404` | Technician not found |
+| `401` / `403` | Missing token or non-admin |
 
 ### `DELETE /api/v1/admin/technicians/:id`
 

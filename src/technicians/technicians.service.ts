@@ -1135,7 +1135,13 @@ export class TechniciansService {
         },
         profilePictureUrl,
         nationalIdNumber: profile.nationalIdEncrypted
-          ? this.nationalIdCrypto.decrypt(profile.nationalIdEncrypted)
+          ? (() => {
+              try {
+                return this.nationalIdCrypto.decrypt(profile.nationalIdEncrypted);
+              } catch {
+                return null;
+              }
+            })()
           : null,
         paymentMethod: profile.paymentMethod,
         paymentNumber: profile.paymentNumber,

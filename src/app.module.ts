@@ -12,6 +12,7 @@ import { HealthModule } from './health/health.module';
 import { AuditModule } from './audit/audit.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { TechniciansModule } from './technicians/technicians.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { TechniciansModule } from './technicians/technicians.module';
     AuditModule,
     CatalogModule,
     TechniciansModule,
+    AdminModule,
     HealthModule,
   ],
   controllers: [AppController],

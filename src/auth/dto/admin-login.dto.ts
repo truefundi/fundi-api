@@ -15,7 +15,7 @@ export class AdminLoginDto {
   email!: string;
 
   @ApiProperty({
-    example: 'Fundi#Admin2026',
+    example: 'Admin@123',
     description:
       'At least 8 characters, including at least one uppercase letter, one number, and one non-alphanumeric character. At most 72, because bcrypt ignores anything beyond its 72-byte limit.',
     format: 'password',

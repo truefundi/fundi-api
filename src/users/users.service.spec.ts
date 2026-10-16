@@ -43,6 +43,20 @@ describe('UsersService', () => {
     return { service, prisma };
   };
 
+  // Mirrors of the fields UserResponseDto documents. The service must select
+  // exactly these and never passwordHash or totpSecret, because every route
+  // returns its result straight to the caller.
+  const safeSelect = {
+    id: true,
+    email: true,
+    phoneNumber: true,
+    fullName: true,
+    role: true,
+    status: true,
+    createdAt: true,
+    updatedAt: true,
+  };
+
   // Reads the arguments of the single findMany call a test triggered.
   const findManyArgs = (prisma: ReturnType<typeof createService>['prisma']) =>
     prisma.user.findMany.mock.calls[0][0] as {
@@ -201,6 +215,7 @@ describe('UsersService', () => {
           ],
         },
         orderBy: [{ fullName: 'asc' }, { createdAt: 'desc' }],
+        select: safeSelect,
       });
     });
 
@@ -219,7 +234,10 @@ describe('UsersService', () => {
 
       const result = await service.getById(adminId);
 
-      expect(prisma.user.findUnique).toHaveBeenCalledWith({ where: { id: adminId } });
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: adminId },
+        select: safeSelect,
+      });
       expect(result).toEqual(admin);
     });
 
@@ -238,10 +256,14 @@ describe('UsersService', () => {
 
       const result = await service.updateStatus(adminId, 'ACTIVE');
 
-      expect(prisma.user.findUnique).toHaveBeenCalledWith({ where: { id: adminId } });
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: adminId },
+        select: safeSelect,
+      });
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: adminId },
         data: { status: 'ACTIVE' },
+        select: safeSelect,
       });
       expect(result.status).toBe('ACTIVE');
     });
@@ -255,6 +277,7 @@ describe('UsersService', () => {
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: adminId },
         data: { status: 'INACTIVE' },
+        select: safeSelect,
       });
       expect(result.status).toBe('INACTIVE');
     });
@@ -311,6 +334,58 @@ describe('UsersService', () => {
         BadRequestException,
       );
       expect(prisma.user.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('response field selection', () => {
+    // Every route returns the service result directly, so each Prisma call must
+    // ask for the response-safe fields only. A regression here reopens the leak
+    // where GET /auth/me handed back the bcrypt hash and the TOTP secret.
+    it.each([
+      ['create', (service: UsersService) => service.create({ phoneNumber: '+250788000001', fullName: 'New User' }), 'create'],
+      ['findAll', (service: UsersService) => service.findAll(), 'findMany'],
+      ['search', (service: UsersService) => service.search('alice'), 'findMany'],
+      ['getById', (service: UsersService) => service.getById(adminId), 'findUnique'],
+      ['getByEmail', (service: UsersService) => service.getByEmail('alice@example.com'), 'findUnique'],
+      ['update', (service: UsersService) => service.update(adminId, { fullName: 'Renamed' }), 'update'],
+      ['updateAccount', (service: UsersService) => service.updateAccount(adminId, { fullName: 'Renamed' }), 'update'],
+      ['updateStatus', (service: UsersService) => service.updateStatus(adminId, 'INACTIVE'), 'update'],
+    ])('%s selects only response-safe fields', async (name, run, prismaMethod) => {
+      const { service, prisma } = createService();
+
+      await run(service);
+
+      const call = (prisma.user as Record<string, jest.Mock>)[prismaMethod].mock.calls[0][0];
+      expect(call.select).toEqual(safeSelect);
+    });
+
+    // The three columns the select exists to keep out, stated explicitly so the
+    // intent survives even if someone reshapes the select above.
+    it('never requests passwordHash, totpSecret, or totpEnabledAt', async () => {
+      const { service, prisma } = createService();
+
+      await service.create({ phoneNumber: '+250788000001', fullName: 'New User' });
+      await service.findAll();
+      await service.search('alice');
+      await service.getById(adminId);
+      await service.getByEmail('alice@example.com');
+      await service.update(adminId, { fullName: 'Renamed' });
+      await service.updateAccount(adminId, { fullName: 'Renamed' });
+      await service.updateStatus(adminId, 'INACTIVE');
+
+      const allCalls = [
+        ...prisma.user.create.mock.calls,
+        ...prisma.user.findMany.mock.calls,
+        ...prisma.user.findUnique.mock.calls,
+        ...prisma.user.update.mock.calls,
+      ];
+      expect(allCalls.length).toBeGreaterThan(0);
+      for (const [args] of allCalls) {
+        const selected = Object.keys(args?.select ?? {});
+        expect(selected).not.toContain('passwordHash');
+        expect(selected).not.toContain('totpSecret');
+        expect(selected).not.toContain('totpEnabledAt');
+      }
     });
   });
 });

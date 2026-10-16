@@ -13,6 +13,7 @@ import { AuditModule } from './audit/audit.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { TechniciansModule } from './technicians/technicians.module';
 import { AdminModule } from './admin/admin.module';
+import { ConversationsModule } from './conversations/conversations.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { AdminModule } from './admin/admin.module';
     CatalogModule,
     TechniciansModule,
     AdminModule,
+    ConversationsModule,
     HealthModule,
   ],
   controllers: [AppController],

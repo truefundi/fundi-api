@@ -35,7 +35,7 @@ Request:
 ```json
 {
   "email": "admin@fundi.rw",
-  "password": "Fundi#Admin2026"
+  "password": "Admin@123"
 }
 ```
 

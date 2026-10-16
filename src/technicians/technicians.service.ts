@@ -461,6 +461,59 @@ export class TechniciansService {
     return this.updateByAdmin(profileId, { availabilityStatus }, actorId);
   }
 
+  // Changes the account status behind a technician profile. Anything other
+  // than ACTIVE blocks logins and existing sessions (JWT strategy) and forces
+  // the technician offline so suspended or inactive accounts cannot be found
+  // for jobs. Restoring ACTIVE re-enables access; going online still requires
+  // an APPROVED verification state.
+  async setAccountStatusByAdmin(
+    profileId: string,
+    status: UserStatus,
+    actorId: string,
+  ) {
+    return this.runSerializable(async (tx) => {
+      const current = await tx.technicianProfile.findUnique({
+        where: { id: profileId },
+        include: PROFILE_INCLUDE,
+      });
+      if (!current) throw new NotFoundException('Technician not found.');
+      await this.lockProfile(tx, profileId);
+
+      if (current.user.status === status) {
+        return this.toResponse(current, 'admin');
+      }
+
+      await tx.user.update({
+        where: { id: current.userId },
+        data: { status },
+      });
+
+      const nextAvailability =
+        status === UserStatus.ACTIVE
+          ? current.availabilityStatus
+          : TechnicianAvailability.OFFLINE;
+      const profile = await tx.technicianProfile.update({
+        where: { id: current.id },
+        data: { availabilityStatus: nextAvailability },
+        include: PROFILE_INCLUDE,
+      });
+
+      await this.audit.log(
+        {
+          entityType: 'TechnicianProfile',
+          entityId: current.id,
+          action: 'ACCOUNT_STATUS_UPDATED',
+          fromStatus: current.user.status,
+          toStatus: status,
+          actorId,
+        },
+        tx,
+      );
+
+      return this.toResponse(profile, 'admin');
+    });
+  }
+
   async deleteByAdmin(profileId: string, actorId: string) {
     return this.runSerializable(async (tx) => {
       const profile = await tx.technicianProfile.findUnique({
@@ -1082,7 +1135,13 @@ export class TechniciansService {
         },
         profilePictureUrl,
         nationalIdNumber: profile.nationalIdEncrypted
-          ? this.nationalIdCrypto.decrypt(profile.nationalIdEncrypted)
+          ? (() => {
+              try {
+                return this.nationalIdCrypto.decrypt(profile.nationalIdEncrypted);
+              } catch {
+                return null;
+              }
+            })()
           : null,
         paymentMethod: profile.paymentMethod,
         paymentNumber: profile.paymentNumber,

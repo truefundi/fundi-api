@@ -6,6 +6,7 @@ import { AuthController } from './auth.controller';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminAuthController } from './admin-auth.controller';
 import { TotpCryptoService } from './totp-crypto.service';
+import { DevOnlyGuard } from './dev-only.guard';
 import { JwtStrategy } from './jwt.strategy';
 import { SmsModule } from '../sms/sms.module';
 import { UsersModule } from '../users/users.module';
@@ -18,7 +19,7 @@ import { UsersModule } from '../users/users.module';
     UsersModule,
   ],
   controllers: [AuthController, AdminAuthController],
-  providers: [AuthService, JwtStrategy, AdminAuthService, TotpCryptoService],
+  providers: [AuthService, JwtStrategy, AdminAuthService, TotpCryptoService, DevOnlyGuard],
   exports: [AuthService, JwtStrategy, TotpCryptoService, PassportModule],
 })
 export class AuthModule {}

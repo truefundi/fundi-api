@@ -246,6 +246,7 @@ Successful response:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/admin/jobs` | List all jobs with matching offers and assignment history |
+| `GET` | `/admin/jobs/summary` | Dashboard job counts (active, completed, open disputes) |
 | `GET` | `/admin/jobs/:jobId` | Get full details for a job |
 
 `GET /admin/jobs` returns a JSON array of admin job objects. `GET /admin/jobs/:jobId` returns one admin job object directly. Admin responses include `customer`, `assignmentHistory`, and `offers`, in addition to the common job fields.
@@ -338,6 +339,20 @@ Example admin response:
 ```
 
 Admin listing returns every job without backend pagination; apply UI pagination and filters on the frontend. Admin approval and mutation routes are not part of this feature.
+
+### Dashboard summary
+
+`GET /admin/jobs/summary` returns the counts the admin dashboard shows. It takes no query parameters.
+
+```json
+{
+  "active": 23,
+  "completed": 417,
+  "openDisputes": null
+}
+```
+
+`active` counts jobs that are still in flight (`OPEN` or `ASSIGNED`). `completed` counts jobs with `status: "COMPLETED"`. `FAILED` and `CANCELLED` jobs are terminal and are included in neither. Disputes are not modelled yet, so `openDisputes` is `null`; the dashboard renders a placeholder for a `null` figure instead of a wrong number.
 
 ## Job response
 

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   HttpException,
+  NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -13,6 +14,7 @@ import { authenticator } from 'otplib';
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AdminAuthService } from './admin-auth.service';
+import { AuthService } from './auth.service';
 import { TotpCryptoService } from './totp-crypto.service';
 
 // The password step is exercised against a real bcrypt hash rather than a mock, so the
@@ -118,14 +120,22 @@ describe('AdminAuthService', () => {
         key in overrides ? overrides[key] : fallback,
       ),
     };
+    // The dev-only sign-in borrows the phone OTP store, so only the reused surface is
+    // mocked here; the code check itself is covered in auth.service.spec.ts.
+    const authService = {
+      issueOtpCode: jest.fn().mockResolvedValue('135790'),
+      verifyOtpCode: jest.fn().mockResolvedValue(undefined),
+      otpLifetimeSeconds: jest.fn().mockReturnValue(300),
+    };
     const service = new AdminAuthService(
       jwt as unknown as JwtService,
       config as unknown as ConfigService,
       prisma as unknown as PrismaService,
       { getClient: () => redisClient } as unknown as RedisService,
       totpCrypto as unknown as TotpCryptoService,
+      authService as unknown as AuthService,
     );
-    return { service, prisma, totpCrypto, jwt, redisClient, tx };
+    return { service, prisma, totpCrypto, jwt, redisClient, tx, authService };
   };
 
   // Captures a rejection so both its type and its HTTP status can be asserted.
@@ -634,6 +644,63 @@ describe('AdminAuthService', () => {
       await expect(service.getAdminUser('gone')).rejects.toBeInstanceOf(
         UnauthorizedException,
       );
+    });
+  });
+
+  // The development-only OTP sign-in reuses the phone OTP store but must still
+  // refuse anything that is not an active administrator, and must issue the very
+  // same session the authenticator flow does.
+  describe('dev OTP login', () => {
+    it('returns a code without touching the authenticator', async () => {
+      const { service, authService } = createService();
+      const result = await service.startDevOtpLogin('admin@fundi.rw');
+
+      expect(authService.issueOtpCode).toHaveBeenCalledWith(adminUser.id);
+      expect(result.otp).toBe('135790');
+      expect(result.expiresInSeconds).toBe(300);
+    });
+
+    it('issues a session once the code is accepted', async () => {
+      const { service, prisma, authService, jwt } = createService();
+      const result = await service.verifyDevOtpLogin('admin@fundi.rw', '135790');
+
+      expect(authService.verifyOtpCode).toHaveBeenCalledWith(adminUser.id, '135790');
+      expect(jwt.signAsync).toHaveBeenCalledTimes(2);
+      expect(prisma.refreshToken.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ userId: adminUser.id }) }),
+      );
+      expect(result.tokens).toEqual({
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+      });
+    });
+
+    // A wrong code must not reach the session step.
+    it('refuses and issues nothing when the code is rejected', async () => {
+      const { service, prisma, authService } = createService();
+      authService.verifyOtpCode.mockRejectedValue(
+        new UnauthorizedException('The OTP is incorrect.'),
+      );
+
+      await expect(service.verifyDevOtpLogin('admin@fundi.rw', '000000')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    // The route must not become a way to mint an admin session from a normal account.
+    it.each([
+      ['an unknown address', null],
+      ['a customer account', { ...enrolledAdmin, role: UserRole.CUSTOMER }],
+      ['a disabled account', { ...enrolledAdmin, status: 'INACTIVE' }],
+    ])('refuses %s', async (_label, user) => {
+      const { service, prisma, authService } = createService();
+      prisma.user.findUnique.mockResolvedValue(user);
+
+      await expect(service.startDevOtpLogin('admin@fundi.rw')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(authService.issueOtpCode).not.toHaveBeenCalled();
     });
   });
 });

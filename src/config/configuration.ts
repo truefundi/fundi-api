@@ -50,6 +50,14 @@ export default () => {
     totpWindow: Number(process.env.ADMIN_TOTP_WINDOW) || 1,
     accessExpiresIn: process.env.ADMIN_ACCESS_EXPIRES_IN || '15m',
     refreshExpiresIn: process.env.ADMIN_REFRESH_EXPIRES_IN || '12h',
+    // DEV ONLY. Opens the OTP sign-in that lets a developer reach admin screens
+    // without a password or an authenticator. Defaults to on outside production and
+    // is always refused in production, so it cannot be switched on there by env.
+    // See docs/admin-authentication.md.
+    devOtpEnabled:
+      process.env.ADMIN_DEV_OTP_ENABLED !== undefined
+        ? process.env.ADMIN_DEV_OTP_ENABLED === 'true'
+        : environment !== 'production',
     cookie: {
       // 'none' is only honoured by browsers when secure is also true.
       sameSite: process.env.ADMIN_COOKIE_SAME_SITE || 'lax',

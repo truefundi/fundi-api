@@ -65,7 +65,11 @@ describe('ListTechniciansQueryDto', () => {
     expect(await failedConstraints({ availabilityStatus: 'AWAY' })).toContain(
       'isEnum',
     );
-    expect(await failedConstraints({ status: 'SUSPENDED' })).toContain('isEnum');
+    expect(await failedConstraints({ status: 'DORMANT' })).toContain('isEnum');
+  });
+
+  it('accepts SUSPENDED as a valid account status filter', async () => {
+    expect(await validateQuery({ status: 'SUSPENDED' })).toHaveLength(0);
   });
 
   it('rejects an empty or whitespace-only text filter', async () => {

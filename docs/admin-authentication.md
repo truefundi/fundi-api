@@ -124,6 +124,30 @@ Success response (`200`):
 }
 ```
 
+## Development-only OTP sign-in
+
+A second, deliberately non-production way to sign in exists so a developer can reach admin-only screens without provisioning a password or an authenticator app. It is two routes, off in production, and is meant to be deleted before launch.
+
+It is gated by `ADMIN_DEV_OTP_ENABLED`, which defaults to on whenever `NODE_ENV` is not `production` and is forced off by setting it to `false`. Production refuses the routes whatever the flag says. `DevOnlyGuard` answers `404` rather than `403` when they are closed, so a deployed API looks exactly as though the routes were never there.
+
+`POST /api/v1/auth/admin/dev/otp` — body `{ "email": "admin@fundi.rw" }`. The address must already belong to an active administrator; anything else answers `404`. A six-digit code is stored in the same Redis OTP store the phone login uses and, unlike the phone flow, returned in the response instead of being texted:
+
+```json
+{
+  "message": "Development sign-in. Submit this code to /api/v1/auth/admin/dev/verify.",
+  "expiresInSeconds": 300,
+  "otp": "135790"
+}
+```
+
+The code is also written to the backend log at warn level, for anyone who would rather read the terminal than the response.
+
+`POST /api/v1/auth/admin/dev/verify` — body `{ "email": "admin@fundi.rw", "otp": "135790" }`. Checks and consumes the code, then sets the same `fundi_admin_access` and `fundi_admin_refresh` cookies as `/2fa/verify` and returns the identical body. Everything after sign-in — the cookie flags, the lifetimes, refresh and logout — is the ordinary admin session, not a separate one.
+
+Only an existing, active administrator can be signed in this way, so the route cannot turn an ordinary account into an administrator. A missing, non-admin, or disabled address all answer the same generic `404`.
+
+**Remove these routes before launch.** They exist only to take the bootstrap friction out of local development, not as a production fallback.
+
 ## Creating an administrator
 
 Set the values below and run `npm run prisma:seed-admin`. Re-running it resets the password of an existing administrator rather than creating a duplicate. It refuses to promote an account that already exists with a different role, so an address reused by mistake cannot silently gain administrator rights.

@@ -5,6 +5,7 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -17,6 +18,7 @@ import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { TotpCryptoService } from './totp-crypto.service';
+import { AuthService } from './auth.service';
 import { AdminLoginDto } from './dto/admin-login.dto';
 
 // One message for every credential failure, so the endpoint cannot be used to
@@ -117,6 +119,7 @@ export class AdminAuthService {
     private prisma: PrismaService,
     private redisService: RedisService,
     private totpCrypto: TotpCryptoService,
+    private authService: AuthService,
   ) {
     this.maxLoginAttempts = this.configService.get<number>('adminAuth.maxLoginAttempts', 5);
     this.loginLockoutSeconds = this.configService.get<number>('adminAuth.loginLockoutSeconds', 900);
@@ -250,6 +253,45 @@ export class AdminAuthService {
     }
 
     return this.startSession(challenge.userId);
+  }
+
+  // DEV ONLY. Starts an OTP sign-in for an administrator without the password and
+  // authenticator pair, so a developer can reach admin-only screens from Swagger or
+  // Postman. The code is handed back in the response rather than texted, because the
+  // whole point is to avoid needing an SMS provider or a TOTP app. Reached only
+  // through DevOnlyGuard, which answers 404 outside development.
+  async startDevOtpLogin(email: string) {
+    const user = await this.findDevLoginAdmin(email);
+    const otp = await this.authService.issueOtpCode(user.id);
+    // Logged as well as returned, so a code that is not read from the response can
+    // still be found in the backend terminal during local development.
+    this.logger.warn(`DEV admin OTP sign-in requested for ${user.email}: ${otp}`);
+    return {
+      message: 'Development sign-in. Submit this code to /api/v1/auth/admin/dev/verify.',
+      expiresInSeconds: this.authService.otpLifetimeSeconds(),
+      otp,
+    };
+  }
+
+  // DEV ONLY. Consumes the code and issues the same session the authenticator flow
+  // does, so the dashboard is unchanged apart from how it got there.
+  async verifyDevOtpLogin(email: string, otp: string) {
+    const user = await this.findDevLoginAdmin(email);
+    await this.authService.verifyOtpCode(user.id, otp);
+    return this.startSession(user.id);
+  }
+
+  // DEV ONLY. Only an existing, active administrator can be signed in this way, so
+  // the route cannot be used to mint an admin session from an ordinary account.
+  private async findDevLoginAdmin(email: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, email: true, role: true, status: true },
+    });
+    if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
+      throw new NotFoundException('No active administrator was found for this email.');
+    }
+    return user;
   }
 
   // Exchanges the refresh cookie for a fresh pair, rotating the stored session so the

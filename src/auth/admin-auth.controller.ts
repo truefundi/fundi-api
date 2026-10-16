@@ -8,6 +8,7 @@ import {
   Post,
   Req,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiCookieAuth, ApiExtraModels, ApiOperation, ApiResponse, ApiTags, getSchemaPath } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
@@ -16,6 +17,11 @@ import type { Request, Response } from 'express';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminLoginDto } from './dto/admin-login.dto';
 import { VerifyAdminTwoFactorDto } from './dto/admin-2fa.dto';
+import {
+  AdminDevOtpRequestDto,
+  AdminDevOtpVerifyDto,
+} from './dto/admin-dev-otp.dto';
+import { DevOnlyGuard } from './dev-only.guard';
 import {
   AdminSessionDto,
   AdminTwoFactorEnrollDto,
@@ -35,6 +41,7 @@ import { Auth, CurrentUser, type AuthUser } from '../common/decorators/auth.deco
 import {
   ApiBadRequest,
   ApiForbidden,
+  ApiNotFound,
   ApiServiceUnavailable,
   ApiTokenRequired,
   ApiTooManyRequests,
@@ -132,6 +139,53 @@ export class AdminAuthController {
     );
     response.setHeader('Cache-Control', 'no-store');
     this.clearChallengeCookie(response);
+    this.setSessionCookies(response, result.tokens);
+    return this.sessionBody(result);
+  }
+
+  // DEV ONLY. Step one of an OTP sign-in that exists purely so developers can reach
+  // admin-only screens without provisioning a password or an authenticator. It is not
+  // part of the production sign-in and is removed before launch: DevOnlyGuard answers
+  // 404 unless the server is running outside production with the flag enabled.
+  @Post('dev/otp')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(DevOnlyGuard)
+  @ApiOperation({
+    summary: 'DEV ONLY: start an admin sign-in with an OTP',
+    description:
+      'Returns the code in the response instead of sending it, so no phone is needed. Only the development build serves this route; every other environment answers `404`, as if it did not exist.',
+  })
+  @ApiResponse({ status: 200, description: 'The code to submit to `/dev/verify`' })
+  @ApiValidationFailed()
+  @ApiNotFound('The dev-only sign-in is disabled outside development.')
+  async devOtp(@Body() body: AdminDevOtpRequestDto, @Res({ passthrough: true }) response: Response) {
+    // The body carries the code, so it must not be cached by the browser or a proxy.
+    response.setHeader('Cache-Control', 'no-store');
+    return this.adminAuthService.startDevOtpLogin(body.email);
+  }
+
+  // DEV ONLY. Step two: consumes the code and issues the same session cookies the
+  // authenticator flow does, so the dashboard behaves identically once signed in.
+  @Post('dev/verify')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(DevOnlyGuard)
+  @ApiOperation({
+    summary: 'DEV ONLY: exchange the OTP for an admin session',
+    description:
+      'Issues the `fundi_admin_access` and `fundi_admin_refresh` cookies, exactly as `/2fa/verify` does. Answers `404` outside the development build.',
+  })
+  @ApiResponse({ status: 200, description: 'An authenticated admin session', type: AdminSessionDto })
+  @ApiValidationFailed()
+  @ApiNotFound('The dev-only sign-in is disabled outside development.')
+  @ApiUnauthorized('The code is incorrect or has expired.')
+  @ApiForbidden('The account is no longer an active administrator.')
+  @ApiServiceUnavailable()
+  async devVerify(
+    @Body() body: AdminDevOtpVerifyDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.adminAuthService.verifyDevOtpLogin(body.email, body.otp);
+    response.setHeader('Cache-Control', 'no-store');
     this.setSessionCookies(response, result.tokens);
     return this.sessionBody(result);
   }

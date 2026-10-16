@@ -14,12 +14,12 @@ export class NationalIdCryptoService {
   }
 
   // Decrypts an AES-GCM national-ID value stored in the database.
-  decrypt(value: string): string {
+  decrypt(value: string): string | null {
     const key = this.getKey();
     try {
       return decryptAesGcm(value, key);
     } catch {
-      throw new ServiceUnavailableException('Stored national ID data is invalid.');
+      return null;
     }
   }
 

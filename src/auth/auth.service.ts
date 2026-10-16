@@ -148,29 +148,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) throw new NotFoundException('No account was found for this phone number.');
     this.ensureActive(user.status);
-    const verificationResult = await this.runOtpScript(
-      VERIFY_OTP_SCRIPT,
-      [this.otpKey(user.id), this.otpTriesKey(user.id)],
-      this.hash(otp),
-      String(this.maxOtpVerificationTries),
-      String(Date.now()),
-      String(this.maxOtpVerificationTries),
-      String(this.otpAttemptWindowSeconds),
-    );
-    if (verificationResult === -1) {
-      throw new BadRequestException('No OTP is pending. Request a new login OTP.');
-    }
-    if (verificationResult === -3) {
-      throw new UnauthorizedException('The OTP has expired. Request a new login OTP.');
-    }
-    if (verificationResult === -2) {
-      throw new ForbiddenException(
-        'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
-      );
-    }
-    if (verificationResult === 0) {
-      throw new UnauthorizedException('The OTP is incorrect.');
-    }
+    await this.verifyOtpCode(user.id, otp);
     const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
     const refreshHash = this.hash(tokens.refreshToken);
     const refreshExpiresAt = this.refreshTokenExpiresAt();
@@ -258,6 +236,14 @@ export class AuthService {
 
   // Stores OTP state in Redis with a one-minute TTL and dispatches the code.
   private async issueOtp(userId: string, phoneNumber: string) {
+    const code = await this.issueOtpCode(userId);
+    await this.deliverOtp(userId, phoneNumber, code);
+  }
+
+  // Creates and stores a fresh code without delivering it, so a caller that has its
+  // own channel can hand the code over itself. Reused by the development-only admin
+  // sign-in, which returns the code in the response instead of texting it.
+  async issueOtpCode(userId: string): Promise<string> {
     const code = randomInt(100000, 1000000).toString();
     await this.runOtpScript(
       CREATE_OTP_SCRIPT,
@@ -268,7 +254,42 @@ export class AuthService {
       String(this.otpExpiresAt()),
       String(this.otpKeyTtlSeconds()),
     );
-    await this.deliverOtp(userId, phoneNumber, code);
+    return code;
+  }
+
+  // Checks a code against the pending one and consumes it on a match, raising the
+  // same errors the phone flow does on every kind of failure. Split out so the
+  // development-only admin sign-in reuses this exact logic rather than a copy.
+  async verifyOtpCode(userId: string, otp: string): Promise<void> {
+    const verificationResult = await this.runOtpScript(
+      VERIFY_OTP_SCRIPT,
+      [this.otpKey(userId), this.otpTriesKey(userId)],
+      this.hash(otp),
+      String(this.maxOtpVerificationTries),
+      String(Date.now()),
+      String(this.maxOtpVerificationTries),
+      String(this.otpAttemptWindowSeconds),
+    );
+    if (verificationResult === -1) {
+      throw new BadRequestException('No OTP is pending. Request a new login OTP.');
+    }
+    if (verificationResult === -3) {
+      throw new UnauthorizedException('The OTP has expired. Request a new login OTP.');
+    }
+    if (verificationResult === -2) {
+      throw new ForbiddenException(
+        'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
+      );
+    }
+    if (verificationResult === 0) {
+      throw new UnauthorizedException('The OTP is incorrect.');
+    }
+  }
+
+  // Lifetime of a pending code in seconds. Exposed so the development-only admin
+  // sign-in reports the same window as the phone flow instead of a hardcoded copy.
+  otpLifetimeSeconds(): number {
+    return this.otpTtlSeconds;
   }
 
   // Sends the code and clears its Redis key if delivery fails.

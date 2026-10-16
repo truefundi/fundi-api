@@ -611,7 +611,7 @@ export class TechnicianDocumentsService {
   // Keeps only a plain file name for display; it is never used as a storage path.
   private cleanFileName(name: string) {
     const base = name.split(/[\\/]/).pop() ?? '';
-    // eslint-disable-next-line no-control-regex
+     
     const cleaned = base.replace(/[\u0000-\u001f\u007f]/g, '').trim();
     return cleaned.slice(0, 200) || 'file';
   }

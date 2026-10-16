@@ -29,11 +29,20 @@ export function decryptAesGcm(payload: string, key: Buffer): string {
   ]).toString('utf8');
 }
 
-// Requires a 32-byte hexadecimal secret. Rejects rather than padding, so a
-// misconfigured environment fails loudly instead of silently using a weak key.
+// Requires a 32-byte hexadecimal secret (64 hex chars). Rejects rather than padding,
+// so a misconfigured environment fails loudly instead of silently using a weak key.
 export function encryptionKeyFromHex(value: string | undefined, envVarName: string): Buffer {
-  if (!value || !/^[0-9a-fA-F]{64}$/.test(value)) {
+  const v = value?.trim();
+  if (!v) {
     throw new Error(`${envVarName} must be set to 64 hexadecimal characters.`);
   }
-  return Buffer.from(value, 'hex');
+  // Accept either 64 hex chars (32-byte key) or 128 hex chars (64-byte string in .env sometimes)
+  let hex = v;
+  if (/^[0-9a-fA-F]{128}$/.test(hex)) {
+    hex = hex.slice(0, 64);
+  }
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error(`${envVarName} must be set to 64 hexadecimal characters.`);
+  }
+  return Buffer.from(hex, 'hex');
 }

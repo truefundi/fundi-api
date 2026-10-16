@@ -10,8 +10,11 @@ import { ConversationsService } from './conversations.service';
 // confirms each handler forwards to the service with the caller's id.
 describe('ConversationsController', () => {
   const conversations = {
+    listForUser: jest.fn(),
     open: jest.fn(),
     get: jest.fn(),
+    acceptJobRequest: jest.fn(),
+    declineJobRequest: jest.fn(),
     postMessage: jest.fn(),
     createOffer: jest.fn(),
     acceptOffer: jest.fn(),
@@ -43,6 +46,41 @@ describe('ConversationsController', () => {
       id: 'conv1',
     });
     expect(conversations.open).toHaveBeenCalledWith('user1', 'job1');
+  });
+
+  it('forwards the list request with the caller and query', async () => {
+    conversations.listForUser.mockResolvedValue({ data: [], pagination: {} });
+
+    await controller.list(user, { page: 1 });
+
+    expect(conversations.listForUser).toHaveBeenCalledWith('user1', {
+      page: 1,
+    });
+  });
+
+  it('forwards a job-request acceptance', async () => {
+    conversations.acceptJobRequest.mockResolvedValue({
+      status: 'NEGOTIATING',
+    });
+
+    await controller.acceptJobRequest(user, 'conv1');
+
+    expect(conversations.acceptJobRequest).toHaveBeenCalledWith(
+      'user1',
+      'conv1',
+    );
+  });
+
+  it('forwards a job-request decline with the optional reason', async () => {
+    conversations.declineJobRequest.mockResolvedValue({ status: 'DECLINED' });
+
+    await controller.declineJobRequest(user, 'conv1', { reason: 'Too far' });
+
+    expect(conversations.declineJobRequest).toHaveBeenCalledWith(
+      'user1',
+      'conv1',
+      { reason: 'Too far' },
+    );
   });
 
   it('forwards an offer acceptance', async () => {

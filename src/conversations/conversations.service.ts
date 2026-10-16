@@ -13,6 +13,7 @@ import {
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
+import { JobsService } from '../jobs/jobs.service';
 import {
   CONVERSATION_MAX_OFFERS_PER_SIDE,
   CONVERSATION_MAX_TOTAL_OFFERS,
@@ -70,13 +71,16 @@ export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly jobs: JobsService,
   ) {}
 
   /**
    * Opens the conversation for a job, or returns the existing one. Only the job's
    * customer can open it, and only once the job has an assigned technician to
-   * negotiate with. The service request is posted automatically as the first
-   * message. Idempotent: a second call returns the same conversation.
+   * negotiate with. A new conversation stays PENDING until that technician
+   * accepts or declines the request. If a different technician has since been
+   * assigned (the previous one declined the request), the closed conversation is
+   * reopened for them. Idempotent: a second call returns the same conversation.
    */
   async open(userId: string, jobId: string) {
     const job = await this.prisma.job.findUnique({
@@ -104,12 +108,25 @@ export class ConversationsService {
     }
 
     const existing = await this.findByJobId(jobId);
-    if (existing) return this.toResponse(existing);
+    if (existing) {
+      // A job-request decline returns the job to dispatch. When a different
+      // technician has since been assigned, the closed conversation is
+      // reopened for them; an offer decline (same technician) is left closed.
+      if (existing.status === ConversationStatus.DECLINED) {
+        const decliner = this.jobRequestDecliner(existing);
+        const technicianUserId = job.technician?.userId ?? null;
+        if (decliner && technicianUserId && decliner !== technicianUserId) {
+          await this.reopenForTechnician(existing, userId);
+          return this.get(userId, existing.id);
+        }
+      }
+      return this.toResponse(existing);
+    }
 
     try {
       await this.prisma.$transaction(async (tx) => {
         const conversation = await tx.conversation.create({
-          data: { jobId },
+          data: { jobId, status: ConversationStatus.PENDING },
           select: { id: true },
         });
         await tx.conversationMessage.create({
@@ -132,7 +149,7 @@ export class ConversationsService {
             entityId: conversation.id,
             action: 'CONVERSATION_OPENED',
             actorId: userId,
-            toStatus: ConversationStatus.NEGOTIATING,
+            toStatus: ConversationStatus.PENDING,
             metadata: { jobId },
           },
           tx,
@@ -160,6 +177,117 @@ export class ConversationsService {
     await this.expireStaleOffers(conversationId);
     const refreshed = await this.find(conversationId);
     return this.toResponse(refreshed);
+  }
+
+  /**
+   * Accepts the job request carried by the conversation, opening the price
+   * negotiation. Only the assigned technician may answer, and only while the
+   * conversation is still PENDING. The job itself is already assigned by
+   * job-core's dispatch flow; this records the acceptance and unlocks offers.
+   */
+  async acceptJobRequest(userId: string, conversationId: string) {
+    const conversation = await this.find(conversationId);
+    const role = this.assertParticipant(conversation, userId);
+    this.assertTechnicianResponder(role);
+    this.assertPending(conversation.status);
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const accepted = await tx.conversation.updateMany({
+        where: { id: conversationId, status: ConversationStatus.PENDING },
+        data: { status: ConversationStatus.NEGOTIATING, lastMessageAt: now },
+      });
+      if (!accepted.count) {
+        throw new ConflictException('This job request has already been answered.');
+      }
+      await tx.conversationMessage.create({
+        data: {
+          conversationId,
+          senderId: userId,
+          senderRole: ConversationSender.TECHNICIAN,
+          type: ConversationMessageType.TECHNICIAN_RESPONSE,
+          metadata: { decision: 'ACCEPTED' },
+        },
+      });
+      await this.audit.log(
+        {
+          entityType: 'Conversation',
+          entityId: conversationId,
+          action: 'JOB_REQUEST_ACCEPTED',
+          actorId: userId,
+          fromStatus: ConversationStatus.PENDING,
+          toStatus: ConversationStatus.NEGOTIATING,
+          metadata: { jobId: conversation.jobId },
+        },
+        tx,
+      );
+    });
+
+    return this.get(userId, conversationId);
+  }
+
+  /**
+   * Declines the job request carried by the conversation. The conversation is
+   * closed first, then the existing job-core decline workflow takes over: the
+   * assignment is dropped and the job returns to dispatch for the next
+   * eligible technician. Only the assigned technician may answer.
+   */
+  async declineJobRequest(
+    userId: string,
+    conversationId: string,
+    dto: RespondOfferDto,
+  ) {
+    const conversation = await this.find(conversationId);
+    const role = this.assertParticipant(conversation, userId);
+    this.assertTechnicianResponder(role);
+    this.assertPending(conversation.status);
+
+    const reason = dto.reason ?? null;
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const declined = await tx.conversation.updateMany({
+        where: { id: conversationId, status: ConversationStatus.PENDING },
+        data: {
+          status: ConversationStatus.DECLINED,
+          declinedById: userId,
+          declineReason: reason,
+          lastMessageAt: now,
+          closedAt: now,
+        },
+      });
+      if (!declined.count) {
+        throw new ConflictException('This job request has already been answered.');
+      }
+      await tx.conversationMessage.create({
+        data: {
+          conversationId,
+          senderId: userId,
+          senderRole: ConversationSender.TECHNICIAN,
+          type: ConversationMessageType.TECHNICIAN_RESPONSE,
+          metadata: { decision: 'DECLINED', reason },
+        },
+      });
+      await this.audit.log(
+        {
+          entityType: 'Conversation',
+          entityId: conversationId,
+          action: 'JOB_REQUEST_DECLINED',
+          actorId: userId,
+          fromStatus: ConversationStatus.PENDING,
+          toStatus: ConversationStatus.DECLINED,
+          metadata: { jobId: conversation.jobId, reason },
+        },
+        tx,
+      );
+    });
+
+    // Capture the response while the caller is still a participant: job-core's
+    // drop clears the assignment, which removes the technician from the job.
+    const response = await this.get(userId, conversationId);
+    await this.jobs.dropJob(userId, conversation.jobId, {
+      reason: reason ?? 'Declined the job request in the conversation.',
+    });
+    return response;
   }
 
   /** Posts a short text message inside the negotiation. */
@@ -419,6 +547,41 @@ export class ConversationsService {
     return this.get(userId, conversationId);
   }
 
+  /** Lists the caller's conversations, newest activity first. */
+  async listForUser(userId: string, query: ListConversationsQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+
+    const where: Prisma.ConversationWhereInput = {
+      OR: [
+        { job: { is: { customerId: userId } } },
+        { job: { is: { technician: { is: { userId } } } } },
+      ],
+    };
+    if (query.status) where.status = query.status;
+
+    const [rows, total] = await Promise.all([
+      this.prisma.conversation.findMany({
+        where,
+        include: CONVERSATION_INCLUDE,
+        orderBy: [{ lastMessageAt: 'desc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.conversation.count({ where }),
+    ]);
+
+    return {
+      data: rows.map((row) => this.toResponse(row)),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
   /** Admin list. Read-only; paginated and filterable by status and search. */
   async listForAdmin(query: ListConversationsQueryDto) {
     const page = query.page ?? 1;
@@ -579,9 +742,92 @@ export class ConversationsService {
   }
 
   private assertNegotiating(status: ConversationStatus): void {
+    if (status === ConversationStatus.PENDING) {
+      throw new ConflictException(
+        'The technician has not accepted the job request yet.',
+      );
+    }
     if (status !== ConversationStatus.NEGOTIATING) {
       throw new ConflictException('This negotiation is already closed.');
     }
+  }
+
+  private assertPending(status: ConversationStatus): void {
+    if (status !== ConversationStatus.PENDING) {
+      throw new ConflictException('This job request has already been answered.');
+    }
+  }
+
+  /** Only the assigned technician may accept or decline the job request. */
+  private assertTechnicianResponder(role: ConversationSender): void {
+    if (role !== ConversationSender.TECHNICIAN) {
+      throw new ForbiddenException(
+        'Only the assigned technician can respond to the job request.',
+      );
+    }
+  }
+
+  /**
+   * Finds the technician who declined the job request, if the conversation was
+   * closed by one. Offer declines are ignored: those keep the same technician.
+   */
+  private jobRequestDecliner(
+    conversation: ConversationWithDetails,
+  ): string | null {
+    for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
+      const message = conversation.messages[index];
+      if (message.type !== ConversationMessageType.TECHNICIAN_RESPONSE) {
+        continue;
+      }
+      const metadata = message.metadata as Record<string, unknown> | null;
+      if (metadata?.decision === 'DECLINED') return message.senderId;
+    }
+    return null;
+  }
+
+  /**
+   * Reopens a conversation whose job request a previous technician declined,
+   * once job-core has assigned a new one. A system line records the restart;
+   * the closed history stays intact.
+   */
+  private async reopenForTechnician(
+    conversation: ConversationWithDetails,
+    actorId: string,
+  ): Promise<void> {
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const reopened = await tx.conversation.updateMany({
+        where: { id: conversation.id, status: ConversationStatus.DECLINED },
+        data: {
+          status: ConversationStatus.PENDING,
+          declinedById: null,
+          declineReason: null,
+          closedAt: null,
+          lastMessageAt: now,
+        },
+      });
+      if (!reopened.count) return; // Another caller reopened or answered first.
+      await tx.conversationMessage.create({
+        data: {
+          conversationId: conversation.id,
+          senderRole: ConversationSender.SYSTEM,
+          type: ConversationMessageType.SYSTEM,
+          text: 'The job request was reopened for a new technician.',
+        },
+      });
+      await this.audit.log(
+        {
+          entityType: 'Conversation',
+          entityId: conversation.id,
+          action: 'CONVERSATION_REOPENED',
+          actorId,
+          fromStatus: ConversationStatus.DECLINED,
+          toStatus: ConversationStatus.PENDING,
+          metadata: { jobId: conversation.jobId },
+        },
+        tx,
+      );
+    });
   }
 
   private assertOfferLimit(

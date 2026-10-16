@@ -5,6 +5,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
@@ -16,7 +17,9 @@ import {
 import { ConversationsService } from './conversations.service';
 import { ConversationResponseDto } from './dto/conversation-response.dto';
 import { CreateOfferDto } from './dto/create-offer.dto';
+import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
 import { OpenConversationDto } from './dto/open-conversation.dto';
+import { PaginatedConversationsResponseDto } from './dto/paginated-conversations-response.dto';
 import { PostMessageDto } from './dto/post-message.dto';
 import { RespondOfferDto } from './dto/respond-offer.dto';
 
@@ -25,6 +28,21 @@ import { RespondOfferDto } from './dto/respond-offer.dto';
 @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
 export class ConversationsController {
   constructor(private readonly conversations: ConversationsService) {}
+
+  @Get()
+  @ApiOperation({
+    summary: 'List my conversations (customers and technicians)',
+    description:
+      'Returns the conversations where the caller is the job customer or the ' +
+      'assigned technician, newest activity first.',
+  })
+  @ApiResponse({ status: 200, type: PaginatedConversationsResponseDto })
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query() query: ListConversationsQueryDto,
+  ) {
+    return this.conversations.listForUser(user.id, query);
+  }
 
   @Post()
   @ApiOperation({
@@ -47,6 +65,39 @@ export class ConversationsController {
     @Param('conversationId', ParseUUIDPipe) conversationId: string,
   ) {
     return this.conversations.get(user.id, conversationId);
+  }
+
+  @Post(':conversationId/job-request/accept')
+  @Auth(UserRole.TECHNICIAN)
+  @ApiOperation({
+    summary: 'Accept the job request (assigned technician only)',
+    description:
+      'Records the technician acceptance and opens the price negotiation. ' +
+      'Rejects with 409 if the request was already answered.',
+  })
+  @ApiResponse({ status: 201, type: ConversationResponseDto })
+  acceptJobRequest(
+    @CurrentUser() user: AuthUser,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+  ) {
+    return this.conversations.acceptJobRequest(user.id, conversationId);
+  }
+
+  @Post(':conversationId/job-request/decline')
+  @Auth(UserRole.TECHNICIAN)
+  @ApiOperation({
+    summary: 'Decline the job request (assigned technician only)',
+    description:
+      'Closes the conversation and hands the job back to job-core dispatch ' +
+      'for the next eligible technician.',
+  })
+  @ApiResponse({ status: 201, type: ConversationResponseDto })
+  declineJobRequest(
+    @CurrentUser() user: AuthUser,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Body() dto: RespondOfferDto,
+  ) {
+    return this.conversations.declineJobRequest(user.id, conversationId, dto);
   }
 
   @Post(':conversationId/messages')

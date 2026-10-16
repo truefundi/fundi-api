@@ -241,12 +241,14 @@ model AuditLog {
 }
 
 /// The single price-negotiation phase of a job. Opened when the request is sent
-/// to the chosen technician and closed when the two sides agree, decline, or the
-/// negotiation lapses. Chat is limited to agreeing a price.
+/// to the chosen technician; it stays PENDING until that technician accepts
+/// (negotiation opens) or declines (the job returns to dispatch). Closed when
+/// the two sides agree, decline, or the negotiation lapses. Chat is limited to
+/// agreeing a price.
 model Conversation {
   id            String              @id @default(uuid())
   jobId         String              @unique
-  status        ConversationStatus  @default(NEGOTIATING)
+  status        ConversationStatus  @default(PENDING)
   currency      String              @default("RWF")
   agreedAmount  Int?
   offerCount    Int                 @default(0)
@@ -420,6 +422,9 @@ enum ConversationStatus {
   AGREED
   DECLINED
   EXPIRED
+  // The conversation carries the job request until the assigned technician
+  // accepts (-> NEGOTIATING) or declines (-> DECLINED) it.
+  PENDING
 }
 
 enum ConversationSender {
@@ -433,6 +438,8 @@ enum ConversationMessageType {
   TEXT
   PRICE_OFFER
   SYSTEM
+  // The assigned technician's acceptance or decline of the job request.
+  TECHNICIAN_RESPONSE
 }
 
 enum PriceOfferStatus {

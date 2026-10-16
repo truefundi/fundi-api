@@ -42,6 +42,6 @@ import { TestQueueProcessor } from './test-queue.processor';
     JobMediaController,
   ],
   providers: [TestQueueProcessor, JobDispatchProcessor, JobsService],
-  exports: [BullModule],
+  exports: [BullModule, JobsService],
 })
 export class JobsModule {}

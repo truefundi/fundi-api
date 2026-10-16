@@ -4,12 +4,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  ConversationMessageType,
   ConversationSender,
   ConversationStatus,
   PriceOfferStatus,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
+import { JobsService } from '../jobs/jobs.service';
 import { ConversationsService } from './conversations.service';
 
 // The Prisma mock is intentionally loosely typed so each test can shape only the
@@ -123,10 +125,19 @@ function createService(initialConversation: AnyRecord | null) {
       findMany: jest.fn().mockResolvedValue([]),
       count: jest.fn().mockResolvedValue(0),
       create: jest.fn(() => {
-        stored = buildConversation({ messages: [] });
+        stored = buildConversation({
+          messages: [],
+          status: ConversationStatus.PENDING,
+        });
         return Promise.resolve({ id: 'conv1' });
       }),
       update: jest.fn().mockResolvedValue({}),
+      // Reflects the update on the stored conversation so follow-up reads in
+      // the service see the new status, like the real database would.
+      updateMany: jest.fn().mockImplementation(({ data }: AnyRecord) => {
+        if (stored) Object.assign(stored, data);
+        return Promise.resolve({ count: 1 });
+      }),
     },
     conversationMessage: { create: jest.fn().mockResolvedValue({ id: 'msg' }) },
     priceOffer: {
@@ -143,11 +154,13 @@ function createService(initialConversation: AnyRecord | null) {
       : Promise.all(arg as Promise<unknown>[]),
   );
   const audit = { log: jest.fn().mockResolvedValue(undefined) };
+  const jobs = { dropJob: jest.fn().mockResolvedValue({ message: 'dropped' }) };
   const service = new ConversationsService(
     prisma as unknown as PrismaService,
     audit as unknown as AuditService,
+    jobs as unknown as JobsService,
   );
-  return { service, prisma, audit };
+  return { service, prisma, audit, jobs };
 }
 
 describe('ConversationsService', () => {
@@ -158,7 +171,7 @@ describe('ConversationsService', () => {
       const result = await service.open(CUSTOMER_USER, 'job1');
 
       expect(prisma.conversation.create).toHaveBeenCalledWith({
-        data: { jobId: 'job1' },
+        data: { jobId: 'job1', status: ConversationStatus.PENDING },
         select: { id: true },
       });
       expect(prisma.conversationMessage.create).toHaveBeenCalledWith({
@@ -169,7 +182,7 @@ describe('ConversationsService', () => {
         }),
       });
       expect(result.id).toBe('conv1');
-      expect(result.status).toBe(ConversationStatus.NEGOTIATING);
+      expect(result.status).toBe(ConversationStatus.PENDING);
     });
 
     it('returns the existing conversation without creating another', async () => {
@@ -229,6 +242,189 @@ describe('ConversationsService', () => {
         where: { id: 'offer1', status: PriceOfferStatus.PENDING },
         data: expect.objectContaining({ status: PriceOfferStatus.EXPIRED }),
       });
+    });
+  });
+
+  describe('postMessage', () => {
+    it('refuses chat before the technician accepts the request', async () => {
+      const { service } = createService(
+        buildConversation({ status: ConversationStatus.PENDING }),
+      );
+
+      await expect(
+        service.postMessage(CUSTOMER_USER, 'conv1', { text: 'Hello' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  describe('acceptJobRequest', () => {
+    it('lets the assigned technician accept and opens the negotiation', async () => {
+      const { service, prisma } = createService(
+        buildConversation({ status: ConversationStatus.PENDING }),
+      );
+
+      const result = await service.acceptJobRequest(TECHNICIAN_USER, 'conv1');
+
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
+        where: { id: 'conv1', status: ConversationStatus.PENDING },
+        data: expect.objectContaining({
+          status: ConversationStatus.NEGOTIATING,
+        }),
+      });
+      expect(prisma.conversationMessage.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          senderId: TECHNICIAN_USER,
+          senderRole: ConversationSender.TECHNICIAN,
+          type: ConversationMessageType.TECHNICIAN_RESPONSE,
+          metadata: { decision: 'ACCEPTED' },
+        }),
+      });
+      expect(result.status).toBe(ConversationStatus.NEGOTIATING);
+    });
+
+    it('forbids the customer from accepting', async () => {
+      const { service } = createService(
+        buildConversation({ status: ConversationStatus.PENDING }),
+      );
+
+      await expect(
+        service.acceptJobRequest(CUSTOMER_USER, 'conv1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('rejects an already-answered request', async () => {
+      const { service, prisma } = createService(
+        buildConversation({ status: ConversationStatus.PENDING }),
+      );
+      prisma.conversation.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.acceptJobRequest(TECHNICIAN_USER, 'conv1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('rejects a request that is no longer pending', async () => {
+      const { service } = createService(
+        buildConversation({ status: ConversationStatus.NEGOTIATING }),
+      );
+
+      await expect(
+        service.acceptJobRequest(TECHNICIAN_USER, 'conv1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  describe('declineJobRequest', () => {
+    it('closes the conversation and hands the job back to job-core', async () => {
+      const { service, prisma, jobs } = createService(
+        buildConversation({ status: ConversationStatus.PENDING }),
+      );
+
+      const result = await service.declineJobRequest(
+        TECHNICIAN_USER,
+        'conv1',
+        { reason: 'Too far away' },
+      );
+
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
+        where: { id: 'conv1', status: ConversationStatus.PENDING },
+        data: expect.objectContaining({
+          status: ConversationStatus.DECLINED,
+          declinedById: TECHNICIAN_USER,
+          declineReason: 'Too far away',
+        }),
+      });
+      expect(jobs.dropJob).toHaveBeenCalledWith(TECHNICIAN_USER, 'job1', {
+        reason: 'Too far away',
+      });
+      expect(result.status).toBe(ConversationStatus.DECLINED);
+    });
+
+    it('forbids the customer from declining', async () => {
+      const { service, jobs } = createService(
+        buildConversation({ status: ConversationStatus.PENDING }),
+      );
+
+      await expect(
+        service.declineJobRequest(CUSTOMER_USER, 'conv1', {}),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(jobs.dropJob).not.toHaveBeenCalled();
+    });
+
+    it('rejects an already-answered request', async () => {
+      const { service, prisma, jobs } = createService(
+        buildConversation({ status: ConversationStatus.PENDING }),
+      );
+      prisma.conversation.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.declineJobRequest(TECHNICIAN_USER, 'conv1', {}),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(jobs.dropJob).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('open after a job-request decline', () => {
+    it('reopens the conversation for a newly assigned technician', async () => {
+      const declined = buildConversation({
+        status: ConversationStatus.DECLINED,
+        declinedById: TECHNICIAN_USER,
+        declineReason: 'Too far away',
+        closedAt: new Date('2026-10-16T12:30:00.000Z'),
+        messages: [
+          {
+            id: 'msg-resp',
+            senderId: TECHNICIAN_USER,
+            senderRole: ConversationSender.TECHNICIAN,
+            type: 'TECHNICIAN_RESPONSE',
+            text: null,
+            metadata: { decision: 'DECLINED', reason: 'Too far away' },
+            createdAt: new Date('2026-10-16T12:30:00.000Z'),
+            offer: null,
+          },
+        ],
+      });
+      const { service, prisma } = createService(declined);
+      prisma.job.findUnique.mockResolvedValue(
+        buildJob({ technician: { userId: 'tech-user-2' } }),
+      );
+
+      const result = await service.open(CUSTOMER_USER, 'job1');
+
+      expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
+        where: { id: 'conv1', status: ConversationStatus.DECLINED },
+        data: expect.objectContaining({
+          status: ConversationStatus.PENDING,
+          declinedById: null,
+          declineReason: null,
+          closedAt: null,
+        }),
+      });
+      expect(result.status).toBe(ConversationStatus.PENDING);
+    });
+
+    it('keeps the conversation closed when the same technician is still assigned', async () => {
+      const declined = buildConversation({
+        status: ConversationStatus.DECLINED,
+        messages: [
+          {
+            id: 'msg-resp',
+            senderId: TECHNICIAN_USER,
+            senderRole: ConversationSender.TECHNICIAN,
+            type: 'TECHNICIAN_RESPONSE',
+            text: null,
+            metadata: { decision: 'DECLINED' },
+            createdAt: new Date('2026-10-16T12:30:00.000Z'),
+            offer: null,
+          },
+        ],
+      });
+      const { service, prisma } = createService(declined);
+
+      const result = await service.open(CUSTOMER_USER, 'job1');
+
+      expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
+      expect(result.status).toBe(ConversationStatus.DECLINED);
     });
   });
 
@@ -360,6 +556,36 @@ describe('ConversationsService', () => {
           declinedById: CUSTOMER_USER,
           declineReason: 'Too expensive',
         }),
+      });
+    });
+  });
+
+  describe('listForUser', () => {
+    it('scopes the list to the caller as customer or technician', async () => {
+      const { service, prisma } = createService(buildConversation());
+      prisma.conversation.findMany.mockResolvedValue([buildConversation()]);
+      prisma.conversation.count.mockResolvedValue(1);
+
+      const result = await service.listForUser(CUSTOMER_USER, { page: 1 });
+
+      expect(prisma.conversation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            OR: [
+              { job: { is: { customerId: CUSTOMER_USER } } },
+              { job: { is: { technician: { is: { userId: CUSTOMER_USER } } } } },
+            ],
+          },
+          skip: 0,
+          take: 20,
+        }),
+      );
+      expect(result.data).toHaveLength(1);
+      expect(result.pagination).toEqual({
+        page: 1,
+        limit: 20,
+        total: 1,
+        totalPages: 1,
       });
     });
   });

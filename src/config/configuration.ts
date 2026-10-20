@@ -48,8 +48,8 @@ export default () => {
     // Steps of clock drift tolerated either side of the current one. One step absorbs
     // ordinary server/client clock skew without meaningfully widening the guess space.
     totpWindow: Number(process.env.ADMIN_TOTP_WINDOW) || 1,
-    accessExpiresIn: process.env.ADMIN_ACCESS_EXPIRES_IN || '15m',
-    refreshExpiresIn: process.env.ADMIN_REFRESH_EXPIRES_IN || '12h',
+    accessExpiresIn: process.env.ADMIN_ACCESS_EXPIRES_IN || '1d',
+    refreshExpiresIn: process.env.ADMIN_REFRESH_EXPIRES_IN || '5d',
     // DEV ONLY. Opens the OTP sign-in that lets a developer reach admin screens
     // without a password or an authenticator. Defaults to on outside production and
     // is always refused in production, so it cannot be switched on there by env.

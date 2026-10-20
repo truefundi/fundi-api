@@ -1,0 +1,105 @@
+# Local development services for the Fundi backend.
+#
+#   docker compose up -d                  # Postgres + PostGIS, Redis, MinIO
+#   docker compose up -d minio minio-init # MinIO only (if Postgres/Redis already run)
+#   docker compose ps                     # check health
+#   docker compose down                   # stop, keeping data in named volumes
+#   docker compose down -v                # stop and delete all local data
+#
+# Defaults match .env.example, so a fresh `cp .env.example .env` works with no
+# edits. If a port is already taken on your machine, override it, for example:
+#
+#   POSTGRES_PORT=5433 docker compose up -d postgres
+#
+# The app itself still runs on the host (`npm run start:dev`); this file only
+# provides its dependencies.
+
+name: fundi-api
+
+services:
+  postgres:
+    # The postgis image is the official PostgreSQL image plus the PostGIS
+    # extension the schema needs (technician/job radius matching).
+    image: postgis/postgis:18-3.6
+    container_name: fundi-api-postgres
+    restart: unless-stopped
+    environment:
+      # POSTGRES_USER becomes a superuser, which the first migration needs in
+      # order to run `CREATE EXTENSION postgis`.
+      POSTGRES_USER: fundi_user
+      POSTGRES_PASSWORD: fundi_secure_password_dev
+      POSTGRES_DB: fundi_db
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      # PostgreSQL 18 images keep PGDATA in a versioned subdirectory, so the
+      # volume is mounted one level up from the pre-18 /var/lib/postgresql/data.
+      - fundi-api-postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U fundi_user -d fundi_db']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    # Holds phone OTPs and BullMQ dispatch queues.
+    image: redis:7-alpine
+    container_name: fundi-api-redis
+    restart: unless-stopped
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - fundi-api-redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    # Private S3-compatible object storage for technician documents and job
+    # media. Only used when STORAGE_DRIVER=s3; the default is local disk.
+    # These credentials must match S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY.
+    #
+    # Silo (pgsty) is a drop-in fork of MinIO: same `server` command, same
+    # MINIO_ROOT_* variables, same :9001 console and /minio/health/live probe.
+    # MinIO removed its own community images from Docker Hub in September 2026
+    # and anonymous Quay pulls now fail, so `minio/minio` can no longer be used.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    container_name: fundi-api-minio
+    restart: unless-stopped
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: fundi
+      MINIO_ROOT_PASSWORD: fundi-secret-key
+    ports:
+      - '${MINIO_API_PORT:-9000}:9000' # S3 API — this is S3_ENDPOINT
+      - '${MINIO_CONSOLE_PORT:-9001}:9001' # web console
+    volumes:
+      - fundi-api-minio-data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    # One-shot job: creates the bucket once MinIO is healthy, then exits. The
+    # API only checks that the bucket exists; it never creates it.
+    image: pgsty/mc:RELEASE.2026-10-18T00-00-00Z
+    container_name: fundi-api-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local http://minio:9000 fundi fundi-secret-key &&
+        mc mb --ignore-existing local/fundi-private &&
+        echo 'Bucket fundi-private is ready.'
+
+volumes:
+  fundi-api-postgres-data:
+  fundi-api-redis-data:
+  fundi-api-minio-data:

@@ -50,3 +50,13 @@ temp/
 # Postman local collections/workspaces
 .postman/
 postman/
+
+# Local demo assets: presentation material, not part of the product
+docs/demo-walkthrough.md
+demo-files/
+
+# Local file storage when STORAGE_DRIVER=local (the development default)
+uploads/
+
+# Local scripts that are not part of the product
+scripts/

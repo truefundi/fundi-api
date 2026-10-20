@@ -14,7 +14,8 @@ export class DevOnlyGuard implements CanActivate {
   canActivate(): boolean {
     const environment = this.configService.get<string>('environment');
     const enabled = this.configService.get<boolean>('adminAuth.devOtpEnabled', false);
-    if (environment === 'production' || !enabled) {
+    const isDevEnv = environment == 'development' || environment == 'test';
+    if (!isDevEnv || !enabled) {
       throw new NotFoundException();
     }
     return true;

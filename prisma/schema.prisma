@@ -155,6 +155,7 @@ model Job {
   assignmentHistory  JobAssignmentHistory[]
   media              JobMedia[]
   offers             JobOffer[]
+  conversation       Conversation?
   customer           User                      @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
   serviceCategory    ServiceCategory?          @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id])
   technician         TechnicianProfile?        @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
@@ -237,6 +238,71 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@map("audit_logs")
+}
+
+/// The single price-negotiation phase of a job. Opened when the request is sent
+/// to the chosen technician; it stays PENDING until that technician accepts
+/// (negotiation opens) or declines (the job returns to dispatch). Closed when
+/// the two sides agree, decline, or the negotiation lapses. Chat is limited to
+/// agreeing a price.
+model Conversation {
+  id            String              @id @default(uuid())
+  jobId         String              @unique
+  status        ConversationStatus  @default(PENDING)
+  currency      String              @default("RWF")
+  agreedAmount  Int?
+  offerCount    Int                 @default(0)
+  declinedById  String?
+  declineReason String?
+  startedAt     DateTime            @default(now())
+  lastMessageAt DateTime            @default(now())
+  closedAt      DateTime?
+  job           Job                 @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  messages      ConversationMessage[]
+  offers        PriceOffer[]
+
+  @@index([status, lastMessageAt])
+  @@index([lastMessageAt])
+  @@map("conversations")
+}
+
+/// One entry in a conversation. SERVICE_REQUEST is posted automatically when the
+/// conversation opens; PRICE_OFFER entries carry a PriceOffer.
+model ConversationMessage {
+  id             String                  @id @default(uuid())
+  conversationId String
+  senderId       String?
+  senderRole     ConversationSender
+  type           ConversationMessageType
+  text           String?
+  metadata       Json?
+  createdAt      DateTime                @default(now())
+  conversation   Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  offer          PriceOffer?
+
+  @@index([conversationId, createdAt])
+  @@map("conversation_messages")
+}
+
+/// A price offer or counter-offer. Exactly one offer is PENDING at a time;
+/// posting a new offer supersedes the previous one.
+model PriceOffer {
+  id             String              @id @default(uuid())
+  conversationId String
+  messageId      String              @unique
+  amount         Int
+  currency       String              @default("RWF")
+  senderRole     ConversationSender
+  status         PriceOfferStatus    @default(PENDING)
+  notes          String?
+  expiresAt      DateTime?
+  respondedAt    DateTime?
+  createdAt      DateTime            @default(now())
+  conversation   Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message        ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, status])
+  @@map("price_offers")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -349,4 +415,37 @@ enum PaymentMethod {
   BANK_TRANSFER
   CASH
   OTHER
+}
+
+enum ConversationStatus {
+  NEGOTIATING
+  AGREED
+  DECLINED
+  EXPIRED
+  // The conversation carries the job request until the assigned technician
+  // accepts (-> NEGOTIATING) or declines (-> DECLINED) it.
+  PENDING
+}
+
+enum ConversationSender {
+  CUSTOMER
+  TECHNICIAN
+  SYSTEM
+}
+
+enum ConversationMessageType {
+  SERVICE_REQUEST
+  TEXT
+  PRICE_OFFER
+  SYSTEM
+  // The assigned technician's acceptance or decline of the job request.
+  TECHNICIAN_RESPONSE
+}
+
+enum PriceOfferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  SUPERSEDED
+  EXPIRED
 }

@@ -21,7 +21,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "prisma db seed",
-    "prisma:seed-admin": "ts-node prisma/seed-admin.ts"
+    "prisma:seed-admin": "ts-node prisma/seed-admin.ts",
+    "prisma:seed-test-data": "ts-node prisma/seed-test-data.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",

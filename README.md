@@ -40,6 +40,42 @@ npm run prisma:seed
 - **Swagger OpenAPI Documentation:** `http://localhost:3000/api/docs`
 - **Health Check Endpoint:** `http://localhost:3000/api/v1/health`
 
+### Local Services with Docker Compose
+
+PostgreSQL + PostGIS, Redis, and an S3-compatible object store are defined in
+`docker-compose.yml`:
+
+```bash
+docker compose up -d      # start all services
+docker compose ps         # wait for "healthy"
+```
+
+| Service | Address | Credentials | `.env` key |
+| --- | --- | --- | --- |
+| PostgreSQL + PostGIS | `localhost:5432` | `fundi_user` / `fundi_secure_password_dev`, db `fundi_db` | `DATABASE_URL` |
+| Redis 7 | `localhost:6379` | none | `REDIS_URL` |
+| S3 storage (Silo) | `localhost:9000`, console `:9001` | `fundi` / `fundi-secret-key` | `S3_*` keys |
+
+The credentials match `.env.example`, so no edits are needed. Apply the schema
+and seed data once the database is healthy:
+
+```bash
+npm run prisma:migrate
+npm run prisma:seed
+```
+
+Object storage is only used when `STORAGE_DRIVER=s3`; the default is local disk
+and needs nothing extra. If you already run PostgreSQL or Redis locally, start
+just what you need (`docker compose up -d minio minio-init`) and override any
+clashing host port, for example `POSTGRES_PORT=5433 docker compose up -d postgres`.
+
+> The official `minio/minio` images were removed from Docker Hub in September
+> 2026 and anonymous Quay pulls now fail, so this stack uses `pgsty/minio`
+> (Silo), an actively maintained drop-in fork with the same `server` command,
+> `MINIO_ROOT_*` variables, console port and health endpoint. The `minio-init`
+> service creates the `fundi-private` bucket, because the API checks that the
+> bucket exists but never creates it.
+
 ---
 
 ## 2. API Scripts & Commands
@@ -84,6 +120,7 @@ backend/
 │   ├── jobs.md               # Customer jobs, technician offers, and admin API guide
 │   ├── service-categories.md # Service catalog endpoint guide
 │   ├── technician-onboarding.md # Technician management API guide
+│   ├── technician-documents.md # Document upload, review, and verification guide
 │   └── users.md              # User management endpoint guide
 ├── test/                     # End-to-end (E2E) integration tests
 ├── .env.example              # Environment variables template

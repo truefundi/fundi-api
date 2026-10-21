@@ -1,0 +1,2926 @@
+# =============================================================================
+# Fundi API — shared contract 
+# =============================================================================
+openapi: 3.1.0
+info:
+  title: Fundi API
+  version: 0.2.0-draft
+  license:
+    name: Proprietary
+  description: |
+    Shared openapi contract for Fundi mobile, web, and backend. 
+x-fundi-open-decisions:
+  - id: job-status-model
+    summary: >-
+      The frontends use one flat 19-value `status` (REQUESTED..DISPUTED).
+      The backend stores `status` (OPEN/ASSIGNED/COMPLETED/FAILED),
+      `dispatchStatus`, `customerProgress`, and `technicianProgress`.
+    proposal: >-
+      Keep the backend's granular fields as the source of truth and have the
+      server RETURN a derived `status` using the frontends' 19-value vocabulary.
+      Frontends render `status`; they stop inventing lifecycle states locally.
+  - id: job-create-transport
+    summary: Backend `POST /jobs` is multipart/form-data; frontends expect JSON.
+    proposal: >-
+      Move to JSON with uploaded media referenced by id/URL (see `JobCreate`),
+      using the existing `/uploads` flow, OR keep multipart and document it as
+      the one exception. Pick one.
+  - id: field-naming
+    summary: >-
+      Mobile/web say `problem` and `location.label`; backend persists
+      `description` and `location.address`.
+    proposal: Adopt `description` and `location.address` on the wire; map in clients.
+  - id: urgency-vs-priority
+    summary: >-
+      Frontends use urgency `Emergency|Today|Schedule`; backend uses priority
+      `LOW|NORMAL|HIGH|URGENT`.
+    proposal: Keep `priority` on the wire; map Emergency->URGENT, Today->HIGH, Schedule->NORMAL.
+  - id: worker-route-names
+    summary: >-
+      Mobile proposed `/worker/*`; backend implemented `/technicians/*` and
+      `/jobs/technician/*`.
+    proposal: Keep the backend's `/technicians/*` + `/jobs/technician/*` names.
+  - id: customer-job-route-names
+    summary: >-
+      Mobile proposed customer actions as `/jobs/{jobId}/accept` etc.; the
+      backend already ships `/jobs/mine/:jobId/...`.
+    proposal: >-
+      Keep customer job routes under `/jobs/mine/{jobId}/...` (used in this
+      contract). It stays consistent with the shipped API and avoids ambiguity
+      with `/jobs/{jobId}`.
+  - id: pagination
+    summary: >-
+      Three conventions exist: backend arrays (`/jobs/mine`), backend
+      `{data,pagination}`, and the mobile `{items,nextCursor}` / web
+      `{items,total,page,pageSize}`.
+    proposal: >-
+      One envelope `{ items, page, pageSize, total, nextCursor? }` on every list
+      endpoint, including `/jobs/mine`, `/admin/jobs`, and notifications.
+  - id: error-body
+    summary: >-
+      Mobile proposed RFC7807 (`type/title/status/detail/fieldErrors/requestId`);
+      backend returns `statusCode/timestamp/path/message`.
+    proposal: >-
+      Keep the backend shape (already shipped) and add optional `fieldErrors`
+      and `requestId` to it. Frontends read `message`.
+  - id: mobile-registration-role
+    summary: >-
+      MOBILE_BACKEND_INTEGRATION.md register example omits `role`, but the
+      backend defaults to CUSTOMER, so technicians cannot self-register.
+    proposal: 'Mobile must send `role: "TECHNICIAN"` when a technician signs up.'
+servers:
+  - url: /api/v1
+    description: Versioned API path. Set the client base URL to the origin only.
+tags:
+  - name: Health
+    description: Liveness and dependency checks.
+  - name: Auth
+    description: Phone + OTP authentication for customers and technicians (bearer JWTs).
+  - name: AuthAdmin
+    description: Administrator email + password + TOTP authentication (httpOnly cookie session).
+  - name: Users
+    description: Account records and the current user's profile.
+  - name: Catalog
+    description: Service categories used by job requests and technician services.
+  - name: Technicians
+    description: Technician profiles, verification, documents, discovery, and admin management.
+  - name: Jobs
+    description: Customer service requests and their lifecycle actions.
+  - name: TechnicianJobs
+    description: Offers and assigned work for technicians.
+  - name: AdminJobs
+    description: Administrator job oversight.
+  - name: AdminDashboard
+    description: Dashboard aggregates.
+  - name: Notifications
+    description: User notifications. Proposed.
+  - name: Payments
+    description: Payments and invoices. Proposed.
+  - name: Uploads
+    description: Generic presigned upload flow. Proposed.
+security: []
+
+paths:
+  # ---------------------------------------------------------------------------
+  # Health
+  # ---------------------------------------------------------------------------
+  /health:
+    get:
+      tags: [Health]
+      operationId: healthCheck
+      summary: API, database, and Redis health
+      security: []
+      x-fundi-status: implemented
+      responses:
+        "200":
+          description: Health status. `status` is `ok` or `degraded`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthStatus" }
+
+  # ---------------------------------------------------------------------------
+  # Auth — phone + OTP (customers, technicians)
+  # ---------------------------------------------------------------------------
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: Start registration; returns a message and sends an OTP
+      security: []
+      x-fundi-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "200":
+          description: OTP generated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageWithUser" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Start login verification by phone number
+      security: []
+      x-fundi-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PhoneRequest" }
+      responses:
+        "200":
+          description: OTP generated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /auth/resend-otp:
+    post:
+      tags: [Auth]
+      operationId: resendOtp
+      summary: Resend the pending OTP (max 3 times)
+      security: []
+      x-fundi-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PhoneRequest" }
+      responses:
+        "200":
+          description: OTP resent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageResponse" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+  /auth/verify-otp:
+    post:
+      tags: [Auth]
+      operationId: verifyOtp
+      summary: Verify the 6-digit OTP and receive a token pair
+      security: []
+      x-fundi-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyOtpRequest" }
+      responses:
+        "200":
+          description: Verified.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refresh
+      summary: Exchange a single-use refresh token for a new pair
+      security: []
+      x-fundi-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshRequest" }
+      responses:
+        "200":
+          description: Refreshed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Revoke the refresh session
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshRequest" }
+      responses:
+        "200":
+          description: Logged out.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/me:
+    get:
+      tags: [Auth]
+      operationId: getMe
+      summary: Read the authenticated account
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The current user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ---------------------------------------------------------------------------
+  # Auth — admin (email + password + TOTP, cookie session)
+  # ---------------------------------------------------------------------------
+  /auth/admin/login:
+    post:
+      tags: [AuthAdmin]
+      operationId: adminLogin
+      summary: Step one — verify email and password, set the 2FA challenge cookie
+      security: []
+      x-fundi-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminLoginRequest" }
+      responses:
+        "200":
+          description: Challenge created. Send the TOTP code to `/auth/admin/2fa/verify`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminLoginChallenge" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+  /auth/admin/2fa/verify:
+    post:
+      tags: [AuthAdmin]
+      operationId: adminVerify2fa
+      summary: Step two — verify the authenticator code, set session cookies
+      security: []
+      x-fundi-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: "^[0-9]{6}$" }
+      responses:
+        "200":
+          description: Session established as httpOnly cookies (no tokens in the body).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/admin/refresh:
+    post:
+      tags: [AuthAdmin]
+      operationId: adminRefresh
+      summary: Rotate the admin session cookies
+      security: []
+      x-fundi-status: implemented
+      responses:
+        "200":
+          description: Refreshed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/admin/logout:
+    post:
+      tags: [AuthAdmin]
+      operationId: adminLogout
+      summary: Revoke the admin session and clear cookies
+      security: []
+      x-fundi-status: implemented
+      responses:
+        "200": { description: "Always 200, even with no session." }
+  /auth/admin/me:
+    get:
+      tags: [AuthAdmin]
+      operationId: adminMe
+      summary: Read the signed-in administrator
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      responses:
+        "200":
+          description: The current admin.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminIdentity" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ---------------------------------------------------------------------------
+  # Users
+  # ---------------------------------------------------------------------------
+  /users/me:
+    get:
+      tags: [Users]
+      operationId: getMyUser
+      summary: Read my user record
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The current user.
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+    patch:
+      tags: [Users]
+      operationId: updateMyUser
+      summary: Update my profile (bearer only, never the admin cookie)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateUserRequest" }
+      responses:
+        "200":
+          description: Updated user.
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+    delete:
+      tags: [Users]
+      operationId: deleteMyUser
+      summary: Delete my account
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Deleted.
+          content: { application/json: { schema: { $ref: "#/components/schemas/MessageResponse" } } }
+  /users:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: List accounts (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: role
+          in: query
+          schema: { $ref: "#/components/schemas/Role" }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/AccountStatus" }
+        - name: search
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        "200":
+          description: One page of users.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfUser" }
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Create an account (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: Created.
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+  /users/search:
+    get:
+      tags: [Users]
+      operationId: searchUsers
+      summary: Search users by phone/name/email (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Matching users.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/User" } }
+  /users/by-email:
+    get:
+      tags: [Users]
+      operationId: getUserByEmail
+      summary: Find one user by email (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - name: email
+          in: query
+          required: true
+          schema: { type: string, format: email }
+      responses:
+        "200":
+          description: The user.
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+  /users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: Get a user by ID (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      responses:
+        "200":
+          description: The user.
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+    patch:
+      tags: [Users]
+      operationId: updateUser
+      summary: Update a user (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUpdateUserRequest" }
+      responses:
+        "200":
+          description: Updated user.
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+    delete:
+      tags: [Users]
+      operationId: deleteUser
+      summary: Delete a user (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      responses:
+        "200":
+          description: Deleted.
+          content: { application/json: { schema: { $ref: "#/components/schemas/MessageResponse" } } }
+  /users/{id}/status:
+    patch:
+      tags: [Users]
+      operationId: setUserStatus
+      summary: Set a user's account status (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/AccountStatus" }
+      responses:
+        "200":
+          description: Updated user.
+          content: { application/json: { schema: { $ref: "#/components/schemas/User" } } }
+
+  # ---------------------------------------------------------------------------
+  # Catalog
+  # ---------------------------------------------------------------------------
+  /catalog/categories:
+    get:
+      tags: [Catalog]
+      operationId: listCategories
+      summary: List active service categories (public)
+      security: []
+      x-fundi-status: implemented
+      responses:
+        "200":
+          description: Active categories.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/ServiceCategory" } }
+    post:
+      tags: [Catalog]
+      operationId: createCategory
+      summary: Create a category (admin)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CategoryWrite" }
+      responses:
+        "201":
+          description: Created.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ServiceCategoryFull" } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /catalog/categories/search:
+    get:
+      tags: [Catalog]
+      operationId: searchCategories
+      summary: Search active categories by name (public)
+      security: []
+      x-fundi-status: implemented
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Matching categories.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/ServiceCategory" } }
+  /catalog/categories/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CategoryId"
+    get:
+      tags: [Catalog]
+      operationId: getCategory
+      summary: Get an active category (public)
+      security: []
+      x-fundi-status: implemented
+      responses:
+        "200":
+          description: The category.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ServiceCategory" } } }
+    patch:
+      tags: [Catalog]
+      operationId: updateCategory
+      summary: Update a category (admin)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CategoryWrite" }
+      responses:
+        "200":
+          description: Updated.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ServiceCategoryFull" } } }
+    delete:
+      tags: [Catalog]
+      operationId: deactivateCategory
+      summary: Deactivate a category (admin)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Deactivated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  category: { $ref: "#/components/schemas/ServiceCategoryFull" }
+  /catalog/admin/categories:
+    get:
+      tags: [Catalog]
+      operationId: listAllCategories
+      summary: List active and inactive categories (admin)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: All categories.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/ServiceCategoryFull" } }
+  /catalog/admin/categories/{id}:
+    get:
+      tags: [Catalog]
+      operationId: getAnyCategory
+      summary: Get any category including inactive (admin)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/CategoryId"
+      responses:
+        "200":
+          description: The category.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ServiceCategoryFull" } } }
+  /catalog/admin/categories/by-name:
+    get:
+      tags: [Catalog]
+      operationId: getCategoryByName
+      summary: Find a category by exact name (admin)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The category.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ServiceCategoryFull" } } }
+
+  # ---------------------------------------------------------------------------
+  # Technicians — self-service
+  # ---------------------------------------------------------------------------
+  /technicians/profile:
+    get:
+      tags: [Technicians]
+      operationId: getMyTechnicianProfile
+      summary: Read my technician profile
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: My profile.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Technicians]
+      operationId: createMyTechnicianProfile
+      summary: Register my technician profile (first time)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TechnicianProfileCreate" }
+      responses:
+        "201":
+          description: 'Created with `verificationStatus: PENDING`, `availabilityStatus: OFFLINE`.'
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+    put:
+      tags: [Technicians]
+      operationId: updateMyTechnicianProfile
+      summary: Update my technician profile
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TechnicianProfileUpdate" }
+      responses:
+        "200":
+          description: Updated profile.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+  /technicians/availability:
+    patch:
+      tags: [Technicians]
+      operationId: setMyAvailability
+      summary: Go online/offline (online requires APPROVED + ACTIVE)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [availabilityStatus]
+              properties:
+                availabilityStatus: { $ref: "#/components/schemas/AvailabilityStatus" }
+      responses:
+        "200":
+          description: Updated profile.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /technicians/profile/picture:
+    put:
+      tags: [Technicians]
+      operationId: uploadProfilePicture
+      summary: Upload/replace the profile picture
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Updated profile.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+    delete:
+      tags: [Technicians]
+      operationId: deleteProfilePicture
+      summary: Remove the profile picture
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Updated profile.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+  /technicians/profile/documents:
+    get:
+      tags: [Technicians]
+      operationId: listMyDocuments
+      summary: List my verification documents
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: My documents.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Document" } }
+    post:
+      tags: [Technicians]
+      operationId: uploadDocument
+      summary: Upload a National ID or certificate document
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, type, title]
+              properties:
+                file: { type: string, format: binary }
+                type: { $ref: "#/components/schemas/DocumentType" }
+                title: { type: string }
+                certificateType: { $ref: "#/components/schemas/CertificateType" }
+                categoryId: { type: string, format: uuid }
+                customCategoryName: { type: string }
+      responses:
+        "201":
+          description: Created document.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Document" } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /technicians/profile/documents/{documentId}:
+    delete:
+      tags: [Technicians]
+      operationId: deleteMyDocument
+      summary: Delete a SUBMITTED or DENIED document of mine
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Deleted.
+          content: { application/json: { schema: { $ref: "#/components/schemas/MessageResponse" } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /technicians/profile/documents/{documentId}/download:
+    get:
+      tags: [Technicians]
+      operationId: downloadMyDocument
+      summary: Download one of my documents (file bytes)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: The file bytes.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+  /technicians/profile/verification-checklist:
+    get:
+      tags: [Technicians]
+      operationId: getMyVerificationChecklist
+      summary: What is still missing before approval
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The checklist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerificationChecklist" }
+
+  # ---------------------------------------------------------------------------
+  # Technicians — discovery
+  # ---------------------------------------------------------------------------
+  /technicians:
+    get:
+      tags: [Technicians]
+      operationId: listAvailableTechnicians
+      summary: List active, approved, online technicians
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Category"
+        - $ref: "#/components/parameters/CategoryIdQuery"
+        - $ref: "#/components/parameters/Location"
+        - $ref: "#/components/parameters/MinYears"
+        - $ref: "#/components/parameters/TechnicianQueryText"
+      responses:
+        "200":
+          description: One page of technicians.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfTechnician" }
+  /technicians/approved:
+    get:
+      tags: [Technicians]
+      operationId: listApprovedTechnicians
+      summary: List active, approved technicians (online or offline)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Category"
+        - $ref: "#/components/parameters/CategoryIdQuery"
+        - $ref: "#/components/parameters/Location"
+        - $ref: "#/components/parameters/MinYears"
+        - $ref: "#/components/parameters/TechnicianQueryText"
+      responses:
+        "200":
+          description: One page of technicians.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfTechnician" }
+  /technicians/approved/{id}:
+    get:
+      tags: [Technicians]
+      operationId: getApprovedTechnician
+      summary: Get one approved technician
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TechnicianId"
+      responses:
+        "200":
+          description: The technician.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+  /technicians/available/{id}:
+    get:
+      tags: [Technicians]
+      operationId: getAvailableTechnician
+      summary: Get one approved, online technician
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TechnicianId"
+      responses:
+        "200":
+          description: The technician.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+  /public/technicians:
+    get:
+      tags: [Technicians]
+      operationId: listPublicTechnicians
+      summary: Public list of available technicians (privacy-safe)
+      security: []
+      x-fundi-status: implemented
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Category"
+        - $ref: "#/components/parameters/CategoryIdQuery"
+        - $ref: "#/components/parameters/Location"
+        - $ref: "#/components/parameters/MinYears"
+        - $ref: "#/components/parameters/TechnicianQueryText"
+      responses:
+        "200":
+          description: One page of technicians.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfTechnician" }
+  /public/technicians/{id}:
+    get:
+      tags: [Technicians]
+      operationId: getPublicTechnician
+      summary: Public technician detail (privacy-safe)
+      security: []
+      x-fundi-status: implemented
+      parameters:
+        - $ref: "#/components/parameters/TechnicianId"
+      responses:
+        "200":
+          description: The technician.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+
+  # ---------------------------------------------------------------------------
+  # Technicians — admin management
+  # ---------------------------------------------------------------------------
+  /admin/technicians:
+    get:
+      tags: [Technicians]
+      operationId: adminListTechnicians
+      summary: List every technician (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Category"
+        - $ref: "#/components/parameters/CategoryIdQuery"
+        - $ref: "#/components/parameters/Location"
+        - $ref: "#/components/parameters/MinYears"
+        - name: search
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/AccountStatus" }
+        - name: verificationStatus
+          in: query
+          schema: { $ref: "#/components/schemas/VerificationStatus" }
+        - name: availabilityStatus
+          in: query
+          schema: { $ref: "#/components/schemas/AvailabilityStatus" }
+      responses:
+        "200":
+          description: One page of technicians.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfTechnician" }
+    post:
+      tags: [Technicians]
+      operationId: adminCreateTechnician
+      summary: Create a technician user + profile (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminTechnicianCreate" }
+      responses:
+        "201":
+          description: Created.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /admin/technicians/search:
+    get:
+      tags: [Technicians]
+      operationId: adminSearchTechnicians
+      summary: Multi-field technician search (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: query
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 120 }
+        - name: nationalIdNumber
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/Category"
+        - $ref: "#/components/parameters/CategoryIdQuery"
+        - $ref: "#/components/parameters/Location"
+        - $ref: "#/components/parameters/MinYears"
+      responses:
+        "200":
+          description: One page of technicians.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfTechnician" }
+  /admin/technicians/by-user:
+    get:
+      tags: [Technicians]
+      operationId: adminGetTechnicianByUser
+      summary: Find technicians by linked user attributes (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: phoneNumber
+          in: query
+          schema: { type: string }
+        - name: email
+          in: query
+          schema: { type: string, format: email }
+        - name: fullName
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matching technicians.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/TechnicianProfile" } }
+  /admin/technicians/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TechnicianId"
+    get:
+      tags: [Technicians]
+      operationId: adminGetTechnician
+      summary: Get one technician (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      responses:
+        "200":
+          description: The technician.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+    patch:
+      tags: [Technicians]
+      operationId: adminUpdateTechnician
+      summary: Update user, profile, services, and status (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TechnicianProfileUpdate" }
+      responses:
+        "200":
+          description: Updated.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Technicians]
+      operationId: adminDeleteTechnician
+      summary: Delete a technician (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      responses:
+        "200":
+          description: Deleted.
+          content: { application/json: { schema: { $ref: "#/components/schemas/MessageResponse" } } }
+  /admin/technicians/{id}/verification-status:
+    patch:
+      tags: [Technicians]
+      operationId: adminSetVerificationStatus
+      summary: Set verification status (admin; APPROVED needs the checklist)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TechnicianId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verificationStatus]
+              properties:
+                verificationStatus: { $ref: "#/components/schemas/VerificationStatus" }
+      responses:
+        "200":
+          description: Updated.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+        "400": { $ref: "#/components/responses/ValidationError" }
+  /admin/technicians/{id}/availability-status:
+    patch:
+      tags: [Technicians]
+      operationId: adminSetAvailabilityStatus
+      summary: Set availability status (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TechnicianId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [availabilityStatus]
+              properties:
+                availabilityStatus: { $ref: "#/components/schemas/AvailabilityStatus" }
+      responses:
+        "200":
+          description: Updated.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+  /admin/technicians/{id}/status:
+    patch:
+      tags: [Technicians]
+      operationId: adminSetTechnicianAccountStatus
+      summary: Set the account status behind a technician (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TechnicianId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/AccountStatus" }
+      responses:
+        "200":
+          description: Updated.
+          content: { application/json: { schema: { $ref: "#/components/schemas/TechnicianProfile" } } }
+  /admin/technicians/{id}/documents:
+    get:
+      tags: [Technicians]
+      operationId: adminListTechnicianDocuments
+      summary: List a technician's documents (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TechnicianId"
+      responses:
+        "200":
+          description: Documents.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Document" } }
+  /admin/technicians/{id}/verification-checklist:
+    get:
+      tags: [Technicians]
+      operationId: adminGetVerificationChecklist
+      summary: Check whether a technician is ready for approval (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/TechnicianId"
+      responses:
+        "200":
+          description: The checklist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerificationChecklist" }
+  /admin/technician-documents/{documentId}/download:
+    get:
+      tags: [Technicians]
+      operationId: adminDownloadDocument
+      summary: Download any technician document (admin, file bytes)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: The file bytes.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+  /admin/technician-documents/{documentId}/review:
+    patch:
+      tags: [Technicians]
+      operationId: adminReviewDocument
+      summary: Move a document through review (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: "#/components/schemas/DocumentStatus" }
+                reviewNote: { type: string }
+      responses:
+        "200":
+          description: Updated document.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Document" } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ---------------------------------------------------------------------------
+  # Jobs — customer (currently /jobs/mine*)
+  # ---------------------------------------------------------------------------
+  /jobs:
+    post:
+      tags: [Jobs]
+      operationId: createJob
+      summary: Create a service request
+      description: >
+        TARGET shape is JSON with pre-uploaded media (see `JobCreate`).
+        IMPORTANT `needs-decision`: the live backend currently accepts
+        `multipart/form-data` with `serviceCategoryId`, `otherServiceName`,
+        `description`, `locationAddress`, `latitude`, `longitude`,
+        `offeredAmount`, `priority`, plus `photos`/`video` file fields. The
+        frontends want JSON. Pick one and update this operation.
+      x-fundi-status: needs-decision
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        description: >
+          `needs-decision`: the target shape is JSON (above). The live backend
+          accepts multipart/form-data today, so both are documented until the
+          team picks one.
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JobCreate" }
+          multipart/form-data:
+            schema: { $ref: "#/components/schemas/JobCreateLegacyMultipart" }
+      responses:
+        "201":
+          description: Created job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /jobs/mine:
+    get:
+      tags: [Jobs]
+      operationId: listMyJobs
+      summary: List my jobs
+      description: >
+        `needs-decision`: the live backend returns a bare array here. The agreed
+        pagination envelope is `PageOfJob`. Align the response.
+      x-fundi-status: partial
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: status
+          in: query
+          description: Filter by derived status, or `active` / `completed`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfJob" }
+  /jobs/mine/{jobId}:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    get:
+      tags: [Jobs]
+      operationId: getMyJob
+      summary: Read one of my jobs
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Jobs]
+      operationId: updateMyJob
+      summary: Edit an open, unassigned job
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JobUpdate" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+    delete:
+      tags: [Jobs]
+      operationId: cancelMyOpenJob
+      summary: Cancel an open, unassigned job
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The resulting job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/progress:
+    patch:
+      tags: [Jobs]
+      operationId: updateMyJobProgress
+      summary: Update my side's progress
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProgressUpdate" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/retry-dispatch:
+    post:
+      tags: [Jobs]
+      operationId: retryDispatch
+      summary: Retry matching after the offer list is exhausted
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/media:
+    post:
+      tags: [Jobs]
+      operationId: addMyJobMedia
+      summary: Add attachments to an open job
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                photos:
+                  type: array
+                  items: { type: string, format: binary }
+                video: { type: string, format: binary }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/media/{mediaId}:
+    delete:
+      tags: [Jobs]
+      operationId: removeMyJobMedia
+      summary: Remove an attachment from an open job
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/MediaId"
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/{jobId}/media/{mediaId}:
+    get:
+      tags: [Jobs]
+      operationId: downloadJobMedia
+      summary: Download job media (file bytes)
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/MediaId"
+      responses:
+        "200":
+          description: The file bytes.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+
+  # ---------------------------------------------------------------------------
+  # Jobs — lifecycle actions the mobile UI needs (proposed)
+  # ---------------------------------------------------------------------------
+  /jobs/mine/{jobId}/accept:
+    post:
+      tags: [Jobs]
+      operationId: acceptTechnicianOffer
+      summary: Customer accepts a technician offer
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/cancel:
+    post:
+      tags: [Jobs]
+      operationId: cancelJob
+      summary: Cancel a job with a reason
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/visit-fee:
+    post:
+      tags: [Jobs]
+      operationId: payVisitFee
+      summary: Pay the diagnostic/visit fee
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VisitFeePaymentRequest" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/quote/approve:
+    post:
+      tags: [Jobs]
+      operationId: approveQuote
+      summary: Approve the technician's repair quote
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/quote/decline:
+    post:
+      tags: [Jobs]
+      operationId: declineQuote
+      summary: Decline the repair quote
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/additional-work/approve:
+    post:
+      tags: [Jobs]
+      operationId: approveAdditionalWork
+      summary: Approve additional work
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/additional-work/decline:
+    post:
+      tags: [Jobs]
+      operationId: declineAdditionalWork
+      summary: Decline additional work
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/settlement/start:
+    post:
+      tags: [Jobs]
+      operationId: startSettlement
+      summary: Start settlement
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/settlement/report:
+    post:
+      tags: [Jobs]
+      operationId: reportSettlement
+      summary: Report how the repair was settled
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SettlementReportRequest" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/rating:
+    post:
+      tags: [Jobs]
+      operationId: submitRating
+      summary: Submit or update the customer rating
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Rating" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/mine/{jobId}/events:
+    get:
+      tags: [Jobs]
+      operationId: listJobEvents
+      summary: Job status events / timeline
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfJobEvent" }
+  /jobs/mine/{jobId}/tracking:
+    get:
+      tags: [Jobs]
+      operationId: getJobTracking
+      summary: Technician location/ETA while en route
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Tracking snapshot.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Tracking" } } }
+  /jobs/mine/{jobId}/invoice:
+    get:
+      tags: [Payments]
+      operationId: getJobInvoice
+      summary: Itemized invoice for a job
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: The invoice.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Invoice" } } }
+
+  # ---------------------------------------------------------------------------
+  # Technician job actions
+  # ---------------------------------------------------------------------------
+  /jobs/technician/offers:
+    get:
+      tags: [TechnicianJobs]
+      operationId: listMyOffers
+      summary: List current offers and my offer history
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Offers.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfOffer" }
+  /jobs/technician/offers/{offerId}/accept:
+    post:
+      tags: [TechnicianJobs]
+      operationId: acceptOffer
+      summary: Accept the current offer
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/OfferId"
+      responses:
+        "200":
+          description: The assigned job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/technician/offers/{offerId}/reject:
+    post:
+      tags: [TechnicianJobs]
+      operationId: rejectOffer
+      summary: Reject the current offer
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/OfferId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200":
+          description: Rejected.
+          content: { application/json: { schema: { $ref: "#/components/schemas/MessageResponse" } } }
+  /jobs/technician/mine:
+    get:
+      tags: [TechnicianJobs]
+      operationId: listTechnicianJobs
+      summary: List my assigned and past jobs
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfJob" }
+  /jobs/technician/mine/{jobId}:
+    get:
+      tags: [TechnicianJobs]
+      operationId: getTechnicianJob
+      summary: Get a job assigned to me
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: The job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/technician/mine/{jobId}/progress:
+    patch:
+      tags: [TechnicianJobs]
+      operationId: updateTechnicianJobProgress
+      summary: Update my side's progress
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProgressUpdate" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/technician/mine/{jobId}/drop:
+    post:
+      tags: [TechnicianJobs]
+      operationId: dropAssignedJob
+      summary: Drop an assigned job with a reason
+      x-fundi-status: implemented
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200":
+          description: Dropped.
+          content: { application/json: { schema: { $ref: "#/components/schemas/MessageResponse" } } }
+  /jobs/technician/mine/{jobId}/arrived:
+    post:
+      tags: [TechnicianJobs]
+      operationId: markArrived
+      summary: Mark arrival on site
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/technician/mine/{jobId}/diagnosis:
+    post:
+      tags: [TechnicianJobs]
+      operationId: submitDiagnosis
+      summary: Submit diagnosis and quote
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Quote" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /jobs/technician/mine/{jobId}/completed:
+    post:
+      tags: [TechnicianJobs]
+      operationId: markRepairCompleted
+      summary: Mark repair progress/completion
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /technicians/earnings:
+    get:
+      tags: [TechnicianJobs]
+      operationId: getMyEarnings
+      summary: My earnings for a period
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Earnings summary.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Earnings" } } }
+
+  # ---------------------------------------------------------------------------
+  # Admin — jobs and dashboard
+  # ---------------------------------------------------------------------------
+  /admin/stats:
+    get:
+      tags: [AdminDashboard]
+      operationId: getAdminStats
+      summary: Platform-wide account counts
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      responses:
+        "200":
+          description: Stats.
+          content: { application/json: { schema: { $ref: "#/components/schemas/AdminStats" } } }
+  /admin/jobs:
+    get:
+      tags: [AdminJobs]
+      operationId: adminListJobs
+      summary: List all jobs
+      description: >
+        `needs-decision`: the live backend returns a bare array. The dashboard
+        expects `{ items, total, page, pageSize }`. Align on `PageOfJob`.
+      x-fundi-status: partial
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: One page of jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfJob" }
+    post:
+      tags: [AdminJobs]
+      operationId: adminCreateJob
+      summary: Create a job on behalf of a customer (admin)
+      x-fundi-status: proposed
+      security: [{ adminCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JobCreate" }
+      responses:
+        "201":
+          description: Created job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /admin/jobs/summary:
+    get:
+      tags: [AdminJobs]
+      operationId: adminJobSummary
+      summary: Dashboard job counts
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      responses:
+        "200":
+          description: Summary.
+          content: { application/json: { schema: { $ref: "#/components/schemas/JobSummary" } } }
+  /admin/jobs/{jobId}:
+    parameters:
+      - $ref: "#/components/parameters/JobId"
+    get:
+      tags: [AdminJobs]
+      operationId: adminGetJob
+      summary: Get full job details (admin)
+      x-fundi-status: implemented
+      security: [{ adminCookie: [] }]
+      responses:
+        "200":
+          description: The job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+    patch:
+      tags: [AdminJobs]
+      operationId: adminUpdateJob
+      summary: Edit a job (admin)
+      x-fundi-status: proposed
+      security: [{ adminCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JobUpdate" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+    delete:
+      tags: [AdminJobs]
+      operationId: adminDeleteJob
+      summary: Delete a mistaken/duplicate job (admin)
+      x-fundi-status: proposed
+      security: [{ adminCookie: [] }]
+      responses:
+        "200":
+          description: Deleted.
+          content: { application/json: { schema: { $ref: "#/components/schemas/MessageResponse" } } }
+  /admin/jobs/{jobId}/cancel:
+    post:
+      tags: [AdminJobs]
+      operationId: adminCancelJob
+      summary: Cancel a job as admin
+      x-fundi-status: proposed
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReasonRequest" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /admin/jobs/{jobId}/reassign:
+    post:
+      tags: [AdminJobs]
+      operationId: adminReassignJob
+      summary: Reassign/set the technician on a job (admin)
+      x-fundi-status: proposed
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [technicianId]
+              properties:
+                technicianId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+  /admin/jobs/{jobId}/rating:
+    post:
+      tags: [AdminJobs]
+      operationId: adminSubmitRating
+      summary: Record a rating on a job (admin)
+      x-fundi-status: proposed
+      security: [{ adminCookie: [] }]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Rating" }
+      responses:
+        "200":
+          description: Updated job.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } }
+
+  # ---------------------------------------------------------------------------
+  # Notifications
+  # ---------------------------------------------------------------------------
+  /notifications:
+    get:
+      tags: [Notifications]
+      operationId: listNotifications
+      summary: List my notifications
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Notifications.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfNotification" }
+  /notifications/{notificationId}/read:
+    post:
+      tags: [Notifications]
+      operationId: markNotificationRead
+      summary: Mark a notification read
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated notification.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Notification" } } }
+
+  # ---------------------------------------------------------------------------
+  # Payments
+  # ---------------------------------------------------------------------------
+  /payments:
+    get:
+      tags: [Payments]
+      operationId: listMyPayments
+      summary: My payment history
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Payments.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PageOfPayment" }
+
+  # ---------------------------------------------------------------------------
+  # Uploads (generic presigned flow)
+  # ---------------------------------------------------------------------------
+  /uploads/presign:
+    post:
+      tags: [Uploads]
+      operationId: presignUpload
+      summary: Request a presigned upload target
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PresignRequest" }
+      responses:
+        "200":
+          description: Upload target.
+          content: { application/json: { schema: { $ref: "#/components/schemas/PresignResponse" } } }
+  /uploads/complete:
+    post:
+      tags: [Uploads]
+      operationId: completeUpload
+      summary: Confirm an uploaded object and get a stable media reference
+      x-fundi-status: proposed
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UploadCompleteRequest" }
+      responses:
+        "200":
+          description: Stored media reference.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Media" } } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Customer/technician access token from `/auth/verify-otp`.
+    adminCookie:
+      type: apiKey
+      in: cookie
+      name: fundi_admin_access
+      description: >
+        Administrator session cookie set by `/auth/admin/2fa/verify`. Requires
+        `credentials: include` on the browser and an HTTPS origin in production.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TechnicianId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CategoryId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema: { type: string }
+    OfferId:
+      name: offerId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MediaId:
+      name: mediaId
+      in: path
+      required: true
+      schema: { type: string }
+    DocumentId:
+      name: documentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Category:
+      name: category
+      in: query
+      schema: { type: string, minLength: 1, maxLength: 120 }
+    CategoryIdQuery:
+      name: categoryId
+      in: query
+      schema: { type: string, format: uuid }
+    Location:
+      name: location
+      in: query
+      schema: { type: string, minLength: 1, maxLength: 200 }
+    MinYears:
+      name: minYearsOfExperience
+      in: query
+      schema: { type: integer, minimum: 0, maximum: 60 }
+    TechnicianQueryText:
+      name: query
+      in: query
+      schema: { type: string, minLength: 1, maxLength: 120 }
+
+  responses:
+    ValidationError:
+      description: Validation failed (400/422).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing, invalid, or expired credentials.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Wrong role or inactive account.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Duplicate or conflicting state.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooManyRequests:
+      description: Rate limited.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServiceUnavailable:
+      description: Dependency unavailable (e.g. Redis).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    # --- Shared -------------------------------------------------------------
+    Error:
+      type: object
+      required: [statusCode, message]
+      properties:
+        statusCode: { type: integer }
+        timestamp: { type: string, format: date-time }
+        path: { type: string }
+        message:
+          description: Human-readable text, or an array for validation failures.
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+        fieldErrors:
+          description: Optional. Proposed additive field for per-field form errors.
+          type: object
+          additionalProperties: { type: string }
+        requestId:
+          description: Optional. Proposed additive field for support correlation.
+          type: string
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+    MessageWithUser:
+      type: object
+      properties:
+        message: { type: string }
+        user: { $ref: "#/components/schemas/AuthUser" }
+    PaginationMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        totalPages: { type: integer }
+        nextCursor: { type: [string, "null"] }
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        timestamp: { type: string, format: date-time }
+        services:
+          type: object
+          properties:
+            api: { type: string, enum: [up, down] }
+            database: { type: string, enum: [up, down] }
+            redis: { type: string, enum: [up, down] }
+    Money:
+      type: object
+      description: Integer RWF, major units.
+      required: [amount, currency]
+      properties:
+        amount: { type: integer }
+        currency: { type: string, examples: [RWF] }
+
+    # --- Enums --------------------------------------------------------------
+    Role:
+      type: string
+      enum: [CUSTOMER, TECHNICIAN, ADMIN]
+    AccountStatus:
+      type: string
+      enum: [ACTIVE, INACTIVE, SUSPENDED]
+    VerificationStatus:
+      type: string
+      enum: [PENDING, APPROVED, REJECTED]
+    AvailabilityStatus:
+      type: string
+      enum: [ONLINE, OFFLINE]
+    Gender:
+      type: string
+      enum: [FEMALE, MALE, NON_BINARY, PREFER_NOT_TO_SAY]
+    TechnicianPaymentMethod:
+      type: string
+      enum: [MOMO, BANK_TRANSFER, CASH, OTHER]
+    Priority:
+      type: string
+      enum: [LOW, NORMAL, HIGH, URGENT]
+    DispatchStatus:
+      type: string
+      enum: [PENDING, OFFERED, EXHAUSTED, STOPPED]
+    ProgressStatus:
+      type: string
+      enum: [PENDING, STARTED, IN_PROGRESS, COMPLETED, FAILED]
+    JobStatus:
+      type: string
+      description: >
+        The AGREED frontend status vocabulary (mobile + web). The backend derives
+        this from `dispatchStatus` + `customerProgress` + `technicianProgress`.
+      enum:
+        - REQUESTED
+        - MATCHING
+        - OFFERED
+        - ACCEPTED
+        - VISIT_PAID
+        - EN_ROUTE
+        - ARRIVED
+        - DIAGNOSING
+        - DIAGNOSIS_COMPLETE
+        - QUOTE_PENDING
+        - QUOTE_APPROVED
+        - REPAIR_IN_PROGRESS
+        - ADDITIONAL_APPROVAL_REQUIRED
+        - REPAIR_COMPLETED
+        - PAYMENT_PENDING
+        - PAYMENT_REPORTED
+        - COMPLETED
+        - CANCELLED
+        - DISPUTED
+    CustomerPaymentMethod:
+      type: string
+      description: Proposed; not modelled by the backend yet.
+      enum: [CARD, MOBILE_MONEY, FUNDI_WALLET]
+    SettlementMethod:
+      type: string
+      enum: [FUNDI_GATEWAY, CASH, E_TRANSFER, OTHER]
+    DocumentType:
+      type: string
+      enum: [NATIONAL_ID, CERTIFICATE]
+    CertificateType:
+      type: string
+      enum: [TVET_CERTIFICATE, DIPLOMA, ADVANCED_DIPLOMA, DEGREE, SHORT_COURSE, OTHER]
+    DocumentStatus:
+      type: string
+      enum: [SUBMITTED, REVIEWING, ACCEPTED, DENIED]
+    MediaType:
+      type: string
+      enum: [PHOTO, VIDEO]
+    NotificationType:
+      type: string
+      description: Proposed; extend as needed.
+      enum: [JOB_UPDATE, OFFER, PAYMENT, VERIFICATION, SYSTEM]
+
+    # --- Auth ---------------------------------------------------------------
+    AuthUser:
+      type: object
+      properties:
+        id: { type: string }
+        fullName: { type: string }
+        phoneNumber: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+    AuthSession:
+      type: object
+      required: [user, accessToken, refreshToken]
+      properties:
+        user: { $ref: "#/components/schemas/AuthUser" }
+        accessToken: { type: string }
+        refreshToken: { type: string }
+    RegisterRequest:
+      type: object
+      required: [fullName, phoneNumber]
+      properties:
+        fullName: { type: string }
+        phoneNumber: { type: string, examples: ["+250788123456"] }
+        email: { type: [string, "null"], format: email }
+        role:
+          allOf: [{ $ref: "#/components/schemas/Role" }]
+          description: Mobile MUST send TECHNICIAN for technician sign-up; defaults to CUSTOMER.
+    PhoneRequest:
+      type: object
+      required: [phoneNumber]
+      properties:
+        phoneNumber: { type: string }
+    VerifyOtpRequest:
+      type: object
+      required: [phoneNumber, otp]
+      properties:
+        phoneNumber: { type: string }
+        otp: { type: string, pattern: "^[0-9]{6}$" }
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+    AdminLoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+    AdminLoginChallenge:
+      type: object
+      required: [enrollmentRequired]
+      properties:
+        message: { type: string }
+        enrollmentRequired: { type: boolean }
+        expiresInSeconds: { type: integer }
+        otpauthUri: { type: string }
+        secret: { type: string }
+    AdminIdentity:
+      type: object
+      properties:
+        id: { type: string }
+        fullName: { type: string }
+        email: { type: string, format: email }
+        role: { type: string, enum: [ADMIN] }
+    AdminSession:
+      type: object
+      properties:
+        user: { $ref: "#/components/schemas/AdminIdentity" }
+        expiresInSeconds: { type: integer }
+
+    # --- Users --------------------------------------------------------------
+    User:
+      type: object
+      required: [id, fullName, phoneNumber, role, status]
+      properties:
+        id: { type: string }
+        email: { type: [string, "null"], format: email }
+        phoneNumber: { type: string }
+        fullName: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        status: { $ref: "#/components/schemas/AccountStatus" }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateUserRequest:
+      type: object
+      required: [fullName, phoneNumber]
+      properties:
+        fullName: { type: string }
+        phoneNumber: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/Role" }
+        status: { $ref: "#/components/schemas/AccountStatus" }
+    UpdateUserRequest:
+      type: object
+      properties:
+        fullName: { type: string }
+        phoneNumber: { type: string }
+        email: { type: string, format: email }
+    AdminUpdateUserRequest:
+      type: object
+      properties:
+        fullName: { type: string }
+        phoneNumber: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: "#/components/schemas/Role" }
+        status: { $ref: "#/components/schemas/AccountStatus" }
+    PageOfUser:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/User" } }
+        pagination: { $ref: "#/components/schemas/PaginationMeta" }
+
+    # --- Catalog ------------------------------------------------------------
+    ServiceCategory:
+      type: object
+      required: [id, name, slug]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+    ServiceCategoryFull:
+      allOf:
+        - $ref: "#/components/schemas/ServiceCategory"
+        - type: object
+          properties:
+            isActive: { type: boolean }
+            createdAt: { type: string, format: date-time }
+    CategoryWrite:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        isActive: { type: boolean }
+
+    # --- Technicians --------------------------------------------------------
+    ServiceExperience:
+      type: object
+      properties:
+        categoryId: { type: [string, "null"], format: uuid }
+        category:
+          oneOf:
+            - { $ref: "#/components/schemas/ServiceCategory" }
+            - { type: "null" }
+        customName: { type: [string, "null"] }
+        yearsOfExperience: { type: integer }
+    TechnicianUser:
+      type: object
+      properties:
+        id: { type: string }
+        fullName: { type: string }
+        role: { type: string, enum: [TECHNICIAN] }
+        phoneNumber: { type: [string, "null"] }
+        email: { type: [string, "null"], format: email }
+        status: { type: [string, "null"], enum: [ACTIVE, INACTIVE, SUSPENDED, null] }
+        createdAt: { type: [string, "null"], format: date-time }
+        updatedAt: { type: [string, "null"], format: date-time }
+    TechnicianLocation:
+      type: object
+      properties:
+        address: { type: [string, "null"] }
+        publicLocationLabel: { type: [string, "null"] }
+        latitude: { type: [number, "null"] }
+        longitude: { type: [number, "null"] }
+    TechnicianProfile:
+      type: object
+      required: [id, user, verificationStatus, availabilityStatus]
+      properties:
+        id: { type: string, format: uuid }
+        user: { $ref: "#/components/schemas/TechnicianUser" }
+        gender: { oneOf: [{ $ref: "#/components/schemas/Gender" }, { type: "null" }] }
+        yearsOfExperience: { type: integer }
+        serviceExperiences:
+          type: array
+          items: { $ref: "#/components/schemas/ServiceExperience" }
+        verificationStatus: { $ref: "#/components/schemas/VerificationStatus" }
+        availabilityStatus: { $ref: "#/components/schemas/AvailabilityStatus" }
+        location: { $ref: "#/components/schemas/TechnicianLocation" }
+        profilePictureUrl: { type: [string, "null"] }
+        nationalIdNumber: { type: [string, "null"] }
+        paymentMethod:
+          oneOf: [{ $ref: "#/components/schemas/TechnicianPaymentMethod" }, { type: "null" }]
+        paymentNumber: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    TechnicianProfileCreate:
+      type: object
+      required:
+        [gender, nationalIdNumber, baseAddress, baseLatitude, baseLongitude, paymentMethod, paymentNumber, serviceExperiences]
+      properties:
+        fullName: { type: string }
+        phoneNumber: { type: string }
+        email: { type: string, format: email }
+        gender: { $ref: "#/components/schemas/Gender" }
+        nationalIdNumber: { type: string }
+        baseAddress: { type: string }
+        publicLocationLabel: { type: string }
+        baseLatitude: { type: number }
+        baseLongitude: { type: number }
+        paymentMethod: { $ref: "#/components/schemas/TechnicianPaymentMethod" }
+        paymentNumber: { type: string }
+        serviceExperiences:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { $ref: "#/components/schemas/ServiceExperienceInput" }
+    ServiceExperienceInput:
+      type: object
+      required: [yearsOfExperience]
+      properties:
+        categoryId: { type: string, format: uuid }
+        customName: { type: string }
+        yearsOfExperience: { type: integer }
+    TechnicianProfileUpdate:
+      type: object
+      description: >
+        Any subset. Also accepts `availabilityStatus` and (admin only)
+        `verificationStatus`. `serviceExperiences` replaces the whole list.
+      properties:
+        fullName: { type: string }
+        phoneNumber: { type: string }
+        email: { type: string, format: email }
+        gender: { $ref: "#/components/schemas/Gender" }
+        nationalIdNumber: { type: string }
+        baseAddress: { type: string }
+        publicLocationLabel: { type: string }
+        baseLatitude: { type: number }
+        baseLongitude: { type: number }
+        paymentMethod: { $ref: "#/components/schemas/TechnicianPaymentMethod" }
+        paymentNumber: { type: string }
+        serviceExperiences:
+          type: array
+          items: { $ref: "#/components/schemas/ServiceExperienceInput" }
+        availabilityStatus: { $ref: "#/components/schemas/AvailabilityStatus" }
+        verificationStatus: { $ref: "#/components/schemas/VerificationStatus" }
+    AdminTechnicianCreate:
+      type: object
+      required: [user, profile]
+      properties:
+        user:
+          type: object
+          required: [fullName, phoneNumber]
+          properties:
+            fullName: { type: string }
+            phoneNumber: { type: string }
+            email: { type: string, format: email }
+        profile: { $ref: "#/components/schemas/TechnicianProfileCreate" }
+    PageOfTechnician:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/TechnicianProfile" } }
+        pagination: { $ref: "#/components/schemas/PaginationMeta" }
+    Document:
+      type: object
+      properties:
+        id: { type: string }
+        technicianId: { type: string }
+        type: { $ref: "#/components/schemas/DocumentType" }
+        title: { type: string }
+        certificateType: { oneOf: [{ $ref: "#/components/schemas/CertificateType" }, { type: "null" }] }
+        categoryId: { type: [string, "null"] }
+        category:
+          oneOf: [{ $ref: "#/components/schemas/ServiceCategory" }, { type: "null" }]
+        customCategoryName: { type: [string, "null"] }
+        mimeType: { type: string }
+        originalFileName: { type: string }
+        sizeBytes: { type: integer }
+        status: { $ref: "#/components/schemas/DocumentStatus" }
+        reviewNote: { type: [string, "null"] }
+        reviewedAt: { type: [string, "null"], format: date-time }
+        reviewedById: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    VerificationChecklist:
+      type: object
+      properties:
+        complete: { type: boolean }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string, enum: [PROFILE_PICTURE, NATIONAL_ID, CERTIFICATE] }
+              label: { type: string }
+              satisfied: { type: boolean }
+              detail: { type: string }
+
+    # --- Jobs ---------------------------------------------------------------
+    Media:
+      type: object
+      properties:
+        id: { type: string }
+        type: { $ref: "#/components/schemas/MediaType" }
+        mimeType: { type: string }
+        fileName: { type: string }
+        sizeBytes: { type: integer }
+        durationSeconds: { type: [integer, "null"] }
+        createdAt: { type: string, format: date-time }
+        downloadPath: { type: string }
+        url: { type: [string, "null"] }
+    QuoteLine:
+      type: object
+      required: [label, quantity, unitPrice]
+      properties:
+        label: { type: string }
+        quantity: { type: integer }
+        unitPrice: { type: integer }
+    Quote:
+      type: object
+      required: [diagnosis, parts, labour]
+      properties:
+        diagnosis: { type: string }
+        parts: { type: array, items: { $ref: "#/components/schemas/QuoteLine" } }
+        labour: { type: integer }
+        currency: { type: string, default: RWF }
+    AdditionalWork:
+      type: object
+      properties:
+        reason: { type: string }
+        parts: { type: array, items: { $ref: "#/components/schemas/QuoteLine" } }
+        labour: { type: integer }
+    Rating:
+      type: object
+      required: [overall, quality, professionalism, arrival, communication, value]
+      properties:
+        overall: { type: number }
+        quality: { type: integer }
+        professionalism: { type: integer }
+        arrival: { type: integer }
+        communication: { type: integer }
+        value: { type: integer }
+        comment: { type: string }
+    Payment:
+      type: object
+      properties:
+        id: { type: string }
+        jobId: { type: string }
+        kind: { type: string, enum: [VISIT_FEE, REPAIR_SETTLEMENT] }
+        amount: { $ref: "#/components/schemas/Money" }
+        method: { type: string }
+        status: { type: string, enum: [PENDING, REPORTED, PAID, FAILED, REFUNDED] }
+        reference: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+    JobEvent:
+      type: object
+      properties:
+        id: { type: string }
+        status: { $ref: "#/components/schemas/JobStatus" }
+        title: { type: string }
+        text: { type: string }
+        at: { type: string, format: date-time }
+    JobTechnicianRef:
+      type: object
+      description: Public/professional subset of a technician attached to a job.
+      properties:
+        id: { type: string }
+        fullName: { type: string }
+        yearsOfExperience: { type: integer }
+        profilePictureUrl: { type: [string, "null"] }
+    JobCustomerRef:
+      type: object
+      properties:
+        id: { type: string }
+        fullName: { type: string }
+        phoneNumber: { type: [string, "null"] }
+        email: { type: [string, "null"] }
+    JobLocation:
+      type: object
+      properties:
+        address: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+    JobAssignment:
+      type: object
+      properties:
+        technicianId: { type: string }
+        technicianName: { type: string }
+        acceptedAt: { type: [string, "null"], format: date-time }
+        endedAt: { type: [string, "null"], format: date-time }
+        endReason: { type: [string, "null"] }
+        reason: { type: [string, "null"] }
+    Offer:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [OFFERED, ACCEPTED, REJECTED, EXPIRED, DROPPED] }
+        round: { type: integer }
+        matchScore: { type: number }
+        distanceMeters: { type: integer }
+        offeredAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        respondedAt: { type: [string, "null"], format: date-time }
+        rejectionReason: { type: [string, "null"] }
+        dropReason: { type: [string, "null"] }
+        job: { $ref: "#/components/schemas/Job" }
+    Job:
+      type: object
+      required: [id, status, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        reference: { type: string, examples: ["FND-4821"] }
+        service: { type: string, description: "Display name; mirrors serviceCategory/custom." }
+        serviceCategory:
+          oneOf: [{ $ref: "#/components/schemas/ServiceCategory" }, { type: "null" }]
+        otherServiceName: { type: [string, "null"] }
+        description: { type: string, description: "web/mobile call this `problem`." }
+        location: { $ref: "#/components/schemas/JobLocation" }
+        offeredAmount: { type: integer }
+        currency: { type: string, default: RWF }
+        priority: { $ref: "#/components/schemas/Priority" }
+        status:
+          allOf: [{ $ref: "#/components/schemas/JobStatus" }]
+          description: Derived by the server from the progress/dispatch fields.
+        statusSince: { type: string, format: date-time }
+        dispatchStatus: { $ref: "#/components/schemas/DispatchStatus" }
+        customerProgress: { $ref: "#/components/schemas/ProgressStatus" }
+        technicianProgress: { $ref: "#/components/schemas/ProgressStatus" }
+        assignedAt: { type: [string, "null"], format: date-time }
+        completedAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        visitFee:
+          oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }]
+        media: { type: array, items: { $ref: "#/components/schemas/Media" } }
+        currentTechnician:
+          oneOf: [{ $ref: "#/components/schemas/JobTechnicianRef" }, { type: "null" }]
+        customer:
+          oneOf: [{ $ref: "#/components/schemas/JobCustomerRef" }, { type: "null" }]
+        assignmentHistory:
+          type: array
+          items: { $ref: "#/components/schemas/JobAssignment" }
+        offers:
+          description: Admin view only.
+          type: array
+          items: { $ref: "#/components/schemas/Offer" }
+        quote:
+          oneOf: [{ $ref: "#/components/schemas/Quote" }, { type: "null" }]
+        additionalWork:
+          oneOf: [{ $ref: "#/components/schemas/AdditionalWork" }, { type: "null" }]
+        additionalWorkApproved: { type: [boolean, "null"] }
+        settlementMethod:
+          oneOf: [{ $ref: "#/components/schemas/SettlementMethod" }, { type: "null" }]
+        rating:
+          oneOf: [{ $ref: "#/components/schemas/Rating" }, { type: "null" }]
+        payments:
+          type: array
+          items: { $ref: "#/components/schemas/Payment" }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/JobEvent" }
+    JobCreate:
+      type: object
+      required: [description, location, priority]
+      properties:
+        serviceCategoryId: { type: string, format: uuid }
+        otherServiceName: { type: string, minLength: 2, maxLength: 80 }
+        description: { type: string, minLength: 10, maxLength: 5000 }
+        location: { $ref: "#/components/schemas/JobLocation" }
+        priority: { $ref: "#/components/schemas/Priority" }
+        offeredAmount: { type: integer, minimum: 1 }
+        scheduledFor: { type: [string, "null"], format: date-time }
+        mediaIds:
+          description: IDs returned by `/uploads/complete` (replaces inline file upload).
+          type: array
+          items: { type: string }
+        customerId:
+          description: Admin onboarding only.
+          type: string
+          format: uuid
+    JobUpdate:
+      type: object
+      properties:
+        serviceCategoryId: { type: string, format: uuid }
+        otherServiceName: { type: string }
+        description: { type: string }
+        location: { $ref: "#/components/schemas/JobLocation" }
+        priority: { $ref: "#/components/schemas/Priority" }
+        offeredAmount: { type: integer }
+    JobCreateLegacyMultipart:
+      type: object
+      description: The live backend shape. Kept for reference during the decision.
+      properties:
+        serviceCategoryId: { type: string }
+        otherServiceName: { type: string }
+        description: { type: string }
+        locationAddress: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+        offeredAmount: { type: integer }
+        priority: { $ref: "#/components/schemas/Priority" }
+        photos: { type: array, items: { type: string, format: binary } }
+        video: { type: string, format: binary }
+    ProgressUpdate:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: "#/components/schemas/ProgressStatus" }
+    ReasonRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string }
+    VisitFeePaymentRequest:
+      type: object
+      required: [paymentMethod]
+      properties:
+        paymentMethod: { $ref: "#/components/schemas/CustomerPaymentMethod" }
+        paymentReference: { type: string }
+    SettlementReportRequest:
+      type: object
+      required: [method, amount]
+      properties:
+        method: { $ref: "#/components/schemas/SettlementMethod" }
+        amount: { type: integer }
+        reference: { type: [string, "null"] }
+    PageOfJob:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Job" } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+        nextCursor: { type: [string, "null"] }
+    PageOfOffer:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Offer" } }
+        nextCursor: { type: [string, "null"] }
+    PageOfJobEvent:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/JobEvent" } }
+        nextCursor: { type: [string, "null"] }
+    JobSummary:
+      type: object
+      properties:
+        active: { type: integer }
+        completed: { type: integer }
+        openDisputes: { type: [integer, "null"] }
+    AdminStats:
+      type: object
+      properties:
+        totalUsers: { type: integer }
+        totalCustomers: { type: integer }
+        totalTechnicians: { type: integer }
+        pendingVerifications: { type: integer }
+        suspendedAccounts: { type: integer }
+
+    # --- Notifications / tracking / payments / uploads ----------------------
+    Notification:
+      type: object
+      properties:
+        id: { type: string }
+        type: { $ref: "#/components/schemas/NotificationType" }
+        title: { type: string }
+        body: { type: string }
+        readAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+        jobId: { type: [string, "null"] }
+    PageOfNotification:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Notification" } }
+        nextCursor: { type: [string, "null"] }
+    Tracking:
+      type: object
+      properties:
+        jobId: { type: string }
+        technicianId: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+        distanceKm: { type: number }
+        etaMinutes: { type: integer }
+        updatedAt: { type: string, format: date-time }
+    Earnings:
+      type: object
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        currency: { type: string, default: RWF }
+        totalEarned: { type: integer }
+        jobsCompleted: { type: integer }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              jobId: { type: string }
+              reference: { type: string }
+              amount: { type: integer }
+              settledAt: { type: string, format: date-time }
+    Invoice:
+      type: object
+      properties:
+        jobId: { type: string }
+        reference: { type: string }
+        currency: { type: string, default: RWF }
+        visitFee:
+          oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }]
+        repairTotal:
+          oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }]
+        total:
+          oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }]
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              label: { type: string }
+              quantity: { type: integer }
+              unitPrice: { type: integer }
+              amount: { type: integer }
+        issuedAt: { type: string, format: date-time }
+    PageOfPayment:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Payment" } }
+        nextCursor: { type: [string, "null"] }
+    PresignRequest:
+      type: object
+      required: [purpose, fileName, contentType, sizeBytes]
+      properties:
+        purpose: { type: string, enum: [job-photo, job-video, profile-picture, technician-document] }
+        fileName: { type: string }
+        contentType: { type: string }
+        sizeBytes: { type: integer }
+    PresignResponse:
+      type: object
+      properties:
+        uploadId: { type: string }
+        uploadUrl: { type: string }
+        method: { type: string, default: PUT }
+        headers: { type: object, additionalProperties: { type: string } }
+        expiresInSeconds: { type: integer }
+    UploadCompleteRequest:
+      type: object
+      required: [uploadId, storageKey]
+      properties:
+        uploadId: { type: string }
+        storageKey: { type: string }

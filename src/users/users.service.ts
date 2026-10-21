@@ -11,6 +11,23 @@ import {
   MAX_PAGE_LIMIT,
 } from './dto/list-users-query.dto';
 
+// The only user fields any API response may carry. passwordHash, totpSecret, and
+// totpEnabledAt are deliberately absent: every route here returns the service
+// result directly, so a query without this select would hand the password hash
+// and the second-factor secret to whoever called the endpoint. Listed one field
+// at a time so a new column on the user table is excluded by default rather
+// than leaked until someone remembers to strip it.
+const USER_RESPONSE_SELECT = {
+  id: true,
+  email: true,
+  phoneNumber: true,
+  fullName: true,
+  role: true,
+  status: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.UserSelect;
+
 @Injectable()
 export class UsersService {
   constructor(private prisma: PrismaService) {}
@@ -26,6 +43,7 @@ export class UsersService {
           role: input.role || UserRole.CUSTOMER,
           status: input.status || UserStatus.ACTIVE,
         },
+        select: USER_RESPONSE_SELECT,
       });
     } catch (error) {
       this.handleWriteError(error);
@@ -48,6 +66,7 @@ export class UsersService {
         orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
         skip: (page - 1) * limit,
         take: limit,
+        select: USER_RESPONSE_SELECT,
       }),
     ]);
 
@@ -68,19 +87,20 @@ export class UsersService {
     return this.prisma.user.findMany({
       where: { OR: this.buildSearchClauses(query.trim()) },
       orderBy: [{ fullName: 'asc' }, { createdAt: 'desc' }],
+      select: USER_RESPONSE_SELECT,
     });
   }
 
   // Finds a user by ID and returns a clear not-found response when absent.
   async getById(id: string) {
-    const user = await this.prisma.user.findUnique({ where: { id } });
+    const user = await this.prisma.user.findUnique({ where: { id }, select: USER_RESPONSE_SELECT });
     if (!user) throw new NotFoundException(`User with ID ${id} was not found.`);
     return user;
   }
 
   // Finds a user by unique email and returns a clear not-found response.
   async getByEmail(email: string) {
-    const user = await this.prisma.user.findUnique({ where: { email } });
+    const user = await this.prisma.user.findUnique({ where: { email }, select: USER_RESPONSE_SELECT });
     if (!user) throw new NotFoundException(`User with email ${email} was not found.`);
     return user;
   }
@@ -98,6 +118,7 @@ export class UsersService {
           ...(input.role !== undefined && { role: input.role }),
           ...(input.status !== undefined && { status: input.status }),
         },
+        select: USER_RESPONSE_SELECT,
       });
     } catch (error) {
       this.handleWriteError(error);
@@ -114,6 +135,7 @@ export class UsersService {
           ...(input.phoneNumber !== undefined && { phoneNumber: input.phoneNumber }),
           ...(input.email !== undefined && { email: input.email || null }),
         },
+        select: USER_RESPONSE_SELECT,
       });
     } catch (error) {
       this.handleWriteError(error);
@@ -128,7 +150,11 @@ export class UsersService {
       );
     }
     await this.getById(id);
-    return this.prisma.user.update({ where: { id }, data: { status } });
+    return this.prisma.user.update({
+      where: { id },
+      data: { status },
+      select: USER_RESPONSE_SELECT,
+    });
   }
 
   // Deletes a user's account and cascades associated OTP and refresh records.

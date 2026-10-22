@@ -170,6 +170,7 @@ describe('Technician list endpoints (HTTP)', () => {
       ['minYearsOfExperience=abc', 'a non-numeric experience filter'],
       ['categoryId=not-a-uuid', 'a malformed category ID'],
       ['search=', 'an empty search'],
+      ['nationalIdNumber=ID123456', 'a removed technician profile field'],
       ['bogus=1', 'an unknown parameter'],
     ])('rejects %s (%s) with a 400 validation envelope', async (query) => {
       const { body } = await request(app.getHttpServer())
@@ -190,16 +191,28 @@ describe('Technician list endpoints (HTTP)', () => {
       await request(app.getHttpServer())
         .get(
           '/api/v1/admin/technicians/search' +
-            '?query=%20Kigali%20&nationalIdNumber=%20id123-456%20&page=1&limit=10',
+            '?query=%20Kigali%20&page=1&limit=10',
         )
         .set(asAdmin())
         .expect(200);
 
       expect(techniciansService.searchByAdmin).toHaveBeenCalledWith({
         query: 'Kigali',
-        nationalIdNumber: 'ID123456',
         page: 1,
         limit: 10,
+      });
+    });
+
+    describe('technician profile input', () => {
+      it('rejects nationalIdNumber because it is no longer a profile field', async () => {
+        const { body } = await request(app.getHttpServer())
+          .post('/api/v1/technicians/profile')
+          .set('x-test-role', 'TECHNICIAN')
+          .send({ nationalIdNumber: 'ID123456' })
+          .expect(400);
+
+        expect(body.statusCode).toBe(400);
+        expect(body.message).toContain('property nationalIdNumber should not exist');
       });
     });
 

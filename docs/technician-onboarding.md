@@ -34,7 +34,6 @@ some values are redacted depending on who is asking.
 
 | Field | Owner / Admin | Signed-in non-owner | Anonymous |
 | --- | --- | --- | --- |
-| `nationalIdNumber` | ✅ value | `null` | `null` |
 | `paymentMethod` | ✅ value | `null` | `null` |
 | `paymentNumber` | ✅ value | `null` | `null` |
 | `user.phoneNumber` | ✅ value | ✅ value | `null` |
@@ -76,7 +75,6 @@ The following fields are **required** and their absence produces a single
 `400` listing every missing field:
 
 - `gender`
-- `nationalIdNumber`
 - `baseAddress`
 - `baseLatitude` and `baseLongitude` (as a pair)
 - `paymentMethod`
@@ -89,6 +87,9 @@ Optional at registration: `publicLocationLabel`, `fullName`, `phoneNumber`,
 
 Profile picture upload is a **separate** call — see
 [`technician-documents.md`](./technician-documents.md).
+The technician profile does not collect a national ID number. Identity
+verification is handled by uploading a National ID document separately; see
+[`technician-documents.md`](./technician-documents.md).
 
 **Request**
 
@@ -98,7 +99,6 @@ Profile picture upload is a **separate** call — see
   "phoneNumber": "+250788123456",
   "email": "amina@example.com",
   "gender": "FEMALE",
-  "nationalIdNumber": "ID123456",
   "baseAddress": "Kigali, Rwanda",
   "publicLocationLabel": "Kigali, Rwanda",
   "baseLatitude": -1.95,
@@ -129,7 +129,7 @@ A full technician object with `verificationStatus: "PENDING"` and
 | `401` | Missing or invalid token |
 | `403` | Caller is not a `TECHNICIAN` |
 | `409` | A profile already exists for this user — use `PUT` |
-| `409` | `phoneNumber`, `email`, or `nationalIdNumber` already used |
+| `409` | `phoneNumber` or `email` already used |
 
 ### `GET /api/v1/technicians/profile`
 
@@ -160,7 +160,6 @@ Send only the fields you want to change. At least one field is required.
 
 - If `serviceExperiences` is present, it **replaces** the current list.
 - `baseLatitude`/`baseLongitude` must be sent as a pair.
-- `nationalIdNumber` cannot be cleared once set.
 
 **Request** — any subset of the fields accepted by `POST`, plus:
 
@@ -180,10 +179,9 @@ Send only the fields you want to change. At least one field is required.
 | Status | When |
 | --- | --- |
 | `400` | Empty body, or the same per-field rules as `POST` |
-| `400` | `nationalIdNumber` sent empty |
 | `401` / `403` | Missing token or wrong role |
 | `404` | No profile registered yet |
-| `409` | `phoneNumber`, `email`, or `nationalIdNumber` collides with another user |
+| `409` | `phoneNumber` or `email` collides with another user |
 | `409` | Tried to go `ONLINE` while not `APPROVED` |
 | `409` | Concurrent update — retry |
 
@@ -338,8 +336,8 @@ Auth: **any signed-in role**.
 
 Lists active, approved, online technicians with a privacy-safe projection:
 `user` contains only `id`, `fullName`, and `role`; `phoneNumber`, `email`,
-`status`, `createdAt`, `updatedAt`, `nationalIdNumber`, `paymentMethod`, and
-`paymentNumber` are `null`.
+`status`, `createdAt`, `updatedAt`, `paymentMethod`, and `paymentNumber` are
+`null`.
 
 Auth: **none**.
 
@@ -372,8 +370,8 @@ Creates a technician `User` and profile in one transaction.
 
 Required: `user.fullName`, `user.phoneNumber`, and — inside `profile` — the
 same required fields as the self-service `POST /profile`:
-`gender`, `nationalIdNumber`, `baseAddress`, `baseLatitude`,
-`baseLongitude`, `paymentMethod`, `paymentNumber`, `serviceExperiences`.
+`gender`, `baseAddress`, `baseLatitude`, `baseLongitude`, `paymentMethod`,
+`paymentNumber`, `serviceExperiences`.
 
 New technicians always start `verificationStatus: "PENDING"` and
 `availabilityStatus: "OFFLINE"`. `availabilityStatus: "ONLINE"` in the
@@ -390,7 +388,6 @@ request is rejected.
   },
   "profile": {
     "gender": "FEMALE",
-    "nationalIdNumber": "ID123456",
     "baseAddress": "Kigali, Rwanda",
     "publicLocationLabel": "Kigali, Rwanda",
     "baseLatitude": -1.95,
@@ -413,7 +410,7 @@ request is rejected.
 | `400` | Missing user identity or profile required fields |
 | `400` | Same per-field rules as self-registration |
 | `401` / `403` | Missing token or non-admin |
-| `409` | `phoneNumber`, `email`, or `nationalIdNumber` already used |
+| `409` | `phoneNumber` or `email` already used |
 
 ### `GET /api/v1/admin/technicians`
 
@@ -458,7 +455,6 @@ Accepts every parameter of `GET /api/v1/admin/technicians` plus:
 | Name | Type | Matches |
 | --- | --- | --- |
 | `query` | string, 1–120 | Broader than `search`: user full name, user phone, user email, `baseAddress`, `publicLocationLabel`, service category name, custom service name — and exact numeric `baseLatitude`, `baseLongitude` |
-| `nationalIdNumber` | string | Exact match against the keyed digest of the national ID |
 
 Example:
 
@@ -518,7 +514,7 @@ Updates any combination of user, profile, service experiences, and status
 fields. Body fields are the union of:
 
 - `fullName`, `phoneNumber`, `email`
-- `gender`, `nationalIdNumber`, `baseAddress`, `publicLocationLabel`, `baseLatitude`, `baseLongitude`
+- `gender`, `baseAddress`, `publicLocationLabel`, `baseLatitude`, `baseLongitude`
 - `paymentMethod`, `paymentNumber`
 - `serviceExperiences`
 - `availabilityStatus`
@@ -683,7 +679,6 @@ than omitted, so clients can rely on a stable key set.
     "longitude": 30.06
   },
   "profilePictureUrl": "https://storage.example.com/signed-url",
-  "nationalIdNumber": "ID123456",
   "paymentMethod": "MOMO",
   "paymentNumber": "+250788123456",
   "createdAt": "2026-10-01T10:00:00.000Z",

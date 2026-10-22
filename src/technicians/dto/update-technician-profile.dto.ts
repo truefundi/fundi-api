@@ -24,13 +24,6 @@ export class UpdateTechnicianProfileDto {
   @IsOptional() @IsEnum(TechnicianGender)
   gender?: TechnicianGender;
 
-  @IsOptional()
-  @Transform(({ value }) => typeof value === 'string'
-    ? value.normalize('NFKC').trim().replace(/[\s-]/g, '').toUpperCase()
-    : value)
-  @IsString() @MinLength(4) @MaxLength(64) @Matches(/^[A-Z0-9]+$/)
-  nationalIdNumber?: string;
-
   @IsOptional() @IsString() @MaxLength(255)
   baseAddress?: string;
 

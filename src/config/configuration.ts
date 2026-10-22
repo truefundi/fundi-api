@@ -69,7 +69,6 @@ export default () => {
     },
   },
   security: {
-    nationalIdEncryptionKey: process.env.NATIONAL_ID_ENCRYPTION_KEY,
     totpEncryptionKey: process.env.ADMIN_TOTP_ENCRYPTION_KEY,
   },
   cors: {

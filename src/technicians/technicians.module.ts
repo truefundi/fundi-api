@@ -5,7 +5,6 @@ import { TechniciansController } from './technicians.controller';
 import { TechniciansAdminController } from './technicians-admin.controller';
 import { TechniciansService } from './technicians.service';
 import { TechniciansPublicController } from './technicians-public.controller';
-import { NationalIdCryptoService } from './national-id-crypto.service';
 import { TechnicianDocumentsController } from './documents/technician-documents.controller';
 import { TechnicianDocumentsAdminController } from './documents/technician-documents-admin.controller';
 import { TechnicianDocumentsService } from './documents/technician-documents.service';
@@ -22,7 +21,6 @@ import { TechnicianDocumentsService } from './documents/technician-documents.ser
   ],
   providers: [
     TechniciansService,
-    NationalIdCryptoService,
     TechnicianDocumentsService,
   ],
   exports: [TechniciansService],

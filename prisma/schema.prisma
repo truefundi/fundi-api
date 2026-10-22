@@ -66,8 +66,6 @@ model TechnicianProfile {
   profilePictureMimeType  String?
   availabilityStatus      TechnicianAvailability    @default(OFFLINE)
   baseLocation            Unsupported("geography")?
-  nationalIdEncrypted     String
-  nationalIdHash          String                    @unique
   publicLocationLabel     String?
   profilePictureObjectKey String?
   paymentMethod           PaymentMethod

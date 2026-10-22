@@ -109,6 +109,18 @@ interface OfferDispatchData {
 export class JobsService {
   private readonly logger = new Logger(JobsService.name);
 
+  static shouldRetainSingleMatchOffer(waitingOfferCount: number): boolean {
+    return waitingOfferCount === 1;
+  }
+
+  static selectOfferForDispatch<T extends { id: string }>(waitingOffers: T[]): T | null {
+    if (!waitingOffers.length) return null;
+    if (JobsService.shouldRetainSingleMatchOffer(waitingOffers.length)) {
+      return waitingOffers[0];
+    }
+    return waitingOffers[0];
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
@@ -1134,7 +1146,7 @@ export class JobsService {
         select: { id: true },
       });
       if (active) return null;
-      const offer = await tx.jobOffer.findFirst({
+      const waitingOffers = await tx.jobOffer.findMany({
         where: {
           jobId,
           round: job.dispatchRound,
@@ -1169,12 +1181,21 @@ export class JobsService {
           { id: 'asc' },
         ],
       });
+      const singleEligibleMatch = JobsService.shouldRetainSingleMatchOffer(
+        waitingOffers.length,
+      );
+      const offer = waitingOffers[0];
       if (!offer) {
         await tx.job.update({
           where: { id: jobId },
           data: { dispatchStatus: JobDispatchStatus.EXHAUSTED },
         });
         return null;
+      }
+      if (singleEligibleMatch) {
+        // A lone matching technician stays pinned to this job offer for the full
+        // expiration window; rotation only applies when multiple technicians have
+        // matched and remain eligible for the same round.
       }
       const now = new Date();
       const expiresAt = new Date(

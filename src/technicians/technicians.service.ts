@@ -20,7 +20,6 @@ import {
 import { PrismaService } from '../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { TechnicianDocumentsService } from './documents/technician-documents.service';
-import { NationalIdCryptoService } from './national-id-crypto.service';
 import { AdminUpdateTechnicianDto } from './dto/admin-update-technician.dto';
 import { CreateTechnicianDto } from './dto/create-technician.dto';
 import { ListTechniciansQueryDto } from './dto/list-technicians-query.dto';
@@ -85,7 +84,6 @@ export interface TechnicianResponse {
     longitude: number;
   };
   profilePictureUrl: string | null;
-  nationalIdNumber?: string | null;
   paymentMethod: string | null;
   paymentNumber: string | null;
   createdAt: Date;
@@ -104,7 +102,6 @@ export class TechniciansService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    private readonly nationalIdCrypto: NationalIdCryptoService,
     private readonly storage: StorageService,
     private readonly documents: TechnicianDocumentsService,
   ) {}
@@ -375,12 +372,6 @@ export class TechniciansService {
       const term = query.query.trim();
       filters.push({ OR: this.buildBroadSearchClauses(term, 'admin') });
     }
-    if (query.nationalIdNumber) {
-      filters.push({
-        nationalIdHash: this.nationalIdCrypto.hash(query.nationalIdNumber),
-      });
-    }
-
     return this.findPage(
       this.combineFilters(filters),
       query,
@@ -809,13 +800,10 @@ export class TechniciansService {
       await tx.user.update({ where: { id: current.userId }, data: userData });
     }
 
-    const nationalIdFields = this.encodeNationalId(dto.nationalIdNumber);
-
     await tx.technicianProfile.update({
       where: { id: current.id },
       data: {
         ...(dto.gender !== undefined && { gender: dto.gender }),
-        ...nationalIdFields,
         ...(dto.baseAddress !== undefined && {
           baseAddress: dto.baseAddress.trim(),
         }),
@@ -940,12 +928,9 @@ export class TechniciansService {
     dto: UpdateTechnicianProfileDto,
   ): Prisma.TechnicianProfileCreateInput {
     this.assertRequiredProfileFieldsForCreate(dto);
-    const nationalIdFields = this.encodeNationalId(dto.nationalIdNumber);
     return {
       user: { connect: { id: userId } },
       gender: dto.gender!,
-      nationalIdEncrypted: nationalIdFields.nationalIdEncrypted!,
-      nationalIdHash: nationalIdFields.nationalIdHash!,
       baseAddress: dto.baseAddress!.trim(),
       publicLocationLabel: dto.publicLocationLabel?.trim() || null,
       baseLatitude: dto.baseLatitude!,
@@ -962,7 +947,6 @@ export class TechniciansService {
   ) {
     const missing: string[] = [];
     if (!dto.gender) missing.push('gender');
-    if (!dto.nationalIdNumber) missing.push('nationalIdNumber');
     if (!dto.baseAddress?.trim()) missing.push('baseAddress');
     if (dto.baseLatitude === undefined || dto.baseLatitude === null) {
       missing.push('baseLatitude');
@@ -1068,19 +1052,6 @@ export class TechniciansService {
       WHERE "id" = ${profileId}`;
   }
 
-  private encodeNationalId(value: string | null | undefined) {
-    if (value === undefined) return {};
-    if (value === null || value.trim() === '') {
-      throw new BadRequestException(
-        'nationalIdNumber is required and cannot be cleared.',
-      );
-    }
-    return {
-      nationalIdEncrypted: this.nationalIdCrypto.encrypt(value),
-      nationalIdHash: this.nationalIdCrypto.hash(value),
-    };
-  }
-
   private async profilePictureUrl(
     profile: Pick<ProfileWithDetails, 'profilePictureObjectKey'>,
   ): Promise<string | null> {
@@ -1134,15 +1105,6 @@ export class TechniciansService {
           longitude: profile.baseLongitude,
         },
         profilePictureUrl,
-        nationalIdNumber: profile.nationalIdEncrypted
-          ? (() => {
-              try {
-                return this.nationalIdCrypto.decrypt(profile.nationalIdEncrypted);
-              } catch {
-                return null;
-              }
-            })()
-          : null,
         paymentMethod: profile.paymentMethod,
         paymentNumber: profile.paymentNumber,
         createdAt: profile.createdAt,
@@ -1150,7 +1112,7 @@ export class TechniciansService {
       };
     }
 
-    // ─── Authenticated non-owner: contact visible, payment + NID hidden
+    // ─── Authenticated non-owner: contact visible, payment hidden
     if (viewer === 'authenticated') {
       return {
         id: profile.id,
@@ -1176,7 +1138,6 @@ export class TechniciansService {
           longitude: profile.baseLongitude,
         },
         profilePictureUrl,
-        nationalIdNumber: null,
         paymentMethod: null,
         paymentNumber: null,
         createdAt: profile.createdAt,
@@ -1209,7 +1170,6 @@ export class TechniciansService {
         longitude: profile.baseLongitude,
       },
       profilePictureUrl,
-      nationalIdNumber: null,
       paymentMethod: null,
       paymentNumber: null,
       createdAt: profile.createdAt,
@@ -1228,11 +1188,6 @@ export class TechniciansService {
         }
         if (target.includes('email')) {
           throw new ConflictException('A user with this email already exists.');
-        }
-        if (target.includes('nationalIdHash')) {
-          throw new ConflictException(
-            'This national ID is already registered to a technician.',
-          );
         }
         if (target.includes('customNameNormalized')) {
           throw new ConflictException(

@@ -6,6 +6,15 @@ S3-compatible storage (RustFS, MinIO, or AWS S3). The database keeps only
 metadata and an internal object key, and the object key is never returned by
 the API. These are three separate concepts:
 
+For local MinIO, configure `STORAGE_DRIVER=s3`, `S3_BUCKET=fundi-private`,
+`S3_ENDPOINT=http://localhost:9000`, and matching
+`S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` values in `.env`. Use
+`S3_PUBLIC_ENDPOINT=http://localhost:9000` when the API clients run on the
+same machine. Port `9000` is the S3 API; port `9001` is the MinIO web console
+and must not be used as the S3 endpoint. Restart the API after changing these
+settings. Technician profile pictures and documents use the same storage
+service; job media also uses this configured driver.
+
 - **Profile picture** is a single image shown on the technician's profile.
   Uploading a new one replaces the old one.
 - **Documents** are verification files. A document is either a
@@ -465,7 +474,6 @@ picture as `profilePictureUrl` instead of a base64 data URL.
     "longitude": 30.06
   },
   "profilePictureUrl": "https://storage.example.com/signed-url",
-  "nationalIdNumber": "ID123456",
   "paymentMethod": "MOMO",
   "paymentNumber": "+250788123456",
   "createdAt": "2026-10-01T10:00:00.000Z",
@@ -477,9 +485,11 @@ picture as `profilePictureUrl` instead of a base64 data URL.
 when there is no picture, or when `STORAGE_DRIVER=local`. Request a fresh
 technician object to get a new link.
 
-Field visibility depends on the caller: `nationalIdNumber`, `paymentMethod`,
-and `paymentNumber` are only returned to the technician and to administrators;
-they are `null` for other signed-in users and for anonymous callers. See
+Field visibility depends on the caller: `paymentMethod` and `paymentNumber`
+are only returned to the technician and to administrators; they are `null`
+for other signed-in users and for anonymous callers. The technician profile
+does not store or return a national ID number; identity verification is
+handled by the uploaded National ID document. See
 [`technician-onboarding.md`](./technician-onboarding.md) for the full
 redaction matrix.
 

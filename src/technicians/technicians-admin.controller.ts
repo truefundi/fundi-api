@@ -63,7 +63,7 @@ export class TechniciansAdminController {
     summary: 'Search technicians across profile, identity, and category fields (admin only)',
     description:
       'Accepts every list filter plus a broad `query` sweep (name, contacts, addresses, service names, exact coordinates) ' +
-      'and an exact `nationalIdNumber` digest lookup. Results are paginated in a `{ data, pagination }` envelope.',
+      'Results are paginated in a `{ data, pagination }` envelope.',
   })
   @ApiResponse({
     status: 200,

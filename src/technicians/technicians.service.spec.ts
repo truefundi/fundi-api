@@ -10,7 +10,6 @@ import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { TechnicianDocumentsService } from './documents/technician-documents.service';
-import { NationalIdCryptoService } from './national-id-crypto.service';
 import { TechniciansService } from './technicians.service';
 
 // Tests technician profile integrity, per-service experience, discovery and storage-backed images.
@@ -27,8 +26,6 @@ describe('TechniciansService', () => {
     id: profileId,
     userId,
     gender: TechnicianGender.FEMALE,
-    nationalIdEncrypted: 'encrypted:ID123456',
-    nationalIdHash: 'hash:ID123456',
     baseAddress: 'Kigali, Rwanda',
     publicLocationLabel: 'Kigali, Rwanda',
     baseLatitude: -1.95,
@@ -97,11 +94,6 @@ describe('TechniciansService', () => {
       ),
     };
     const audit = { log: jest.fn().mockResolvedValue(undefined) };
-    const nationalIdCrypto = {
-      encrypt: jest.fn((value: string) => `encrypted:${value}`),
-      decrypt: jest.fn((value: string) => value.replace('encrypted:', '')),
-      hash: jest.fn((value: string) => `hash:${value}`),
-    };
     const storage = { getDownloadUrl: jest.fn().mockResolvedValue(signedUrl) };
     const documents = {
       assertReadyForApproval: jest.fn().mockResolvedValue(undefined),
@@ -110,14 +102,12 @@ describe('TechniciansService', () => {
       service: new TechniciansService(
         prisma as unknown as PrismaService,
         audit as unknown as AuditService,
-        nationalIdCrypto as unknown as NationalIdCryptoService,
         storage as unknown as StorageService,
         documents as unknown as TechnicianDocumentsService,
       ),
       prisma,
       transaction,
       audit,
-      nationalIdCrypto,
       storage,
       documents,
     };
@@ -128,7 +118,6 @@ describe('TechniciansService', () => {
     fullName: 'Amina Example',
     phoneNumber: '+250788123456',
     gender: TechnicianGender.FEMALE,
-    nationalIdNumber: 'ID123456',
     baseAddress: 'Kigali, Rwanda',
     publicLocationLabel: 'Kigali, Rwanda',
     baseLatitude: -1.95,
@@ -314,35 +303,6 @@ describe('TechniciansService', () => {
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(transaction.technicianCategory.createMany).not.toHaveBeenCalled();
-  });
-
-  it('encrypts and hashes a national ID before persisting', async () => {
-    const { service, transaction, nationalIdCrypto } = createService();
-    await service.updateMyProfile(userId, { nationalIdNumber: 'ID-123456' });
-    expect(nationalIdCrypto.encrypt).toHaveBeenCalledWith('ID-123456');
-    expect(nationalIdCrypto.hash).toHaveBeenCalledWith('ID-123456');
-    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          nationalIdEncrypted: 'encrypted:ID-123456',
-          nationalIdHash: 'hash:ID-123456',
-        }),
-      }),
-    );
-  });
-
-  it('returns conflict when the national ID is already taken', async () => {
-    const { service, transaction } = createService();
-    transaction.technicianProfile.update.mockRejectedValue(
-      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-        code: 'P2002',
-        clientVersion: 'test',
-        meta: { target: ['nationalIdHash'] },
-      }),
-    );
-    await expect(
-      service.updateMyProfile(userId, { nationalIdNumber: 'ID-123456' }),
-    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('prevents going online before approval', async () => {
@@ -610,26 +570,26 @@ describe('TechniciansService', () => {
 
   // ─── Redaction by viewer ───────────────────────────────────────────────
 
-  it('returns national ID and payment fields to the owner', async () => {
+  it('returns payment fields but no national ID field to the owner', async () => {
     const { service } = createService();
     const result = await service.getMyProfile(userId);
-    expect(result).toHaveProperty('nationalIdNumber');
+    expect(result).not.toHaveProperty('nationalIdNumber');
     expect(result).toHaveProperty('paymentMethod');
     expect(result).toHaveProperty('paymentNumber');
   });
 
-  it('redacts payment and national ID for authenticated non-owners', async () => {
+  it('redacts payment and omits national ID for authenticated non-owners', async () => {
     const { service, prisma } = createService();
     prisma.technicianProfile.findMany.mockResolvedValue([baseProfile()]);
     const { data } = await service.listAvailable({}, 'authenticated');
     const [result] = data;
-    expect(result.nationalIdNumber).toBeNull();
+    expect(result).not.toHaveProperty('nationalIdNumber');
     expect(result.paymentMethod).toBeNull();
     expect(result.paymentNumber).toBeNull();
     expect(result.user.phoneNumber).toBe('+250788123456');
   });
 
-  it('redacts contact, payment, and national ID for anonymous viewers', async () => {
+  it('redacts contact and payment for anonymous viewers', async () => {
     const { service, prisma } = createService();
     prisma.technicianProfile.findMany.mockResolvedValue([baseProfile()]);
     const { data } = await service.listPublic({});
@@ -646,7 +606,7 @@ describe('TechniciansService', () => {
     });
     expect(result.paymentMethod).toBeNull();
     expect(result.paymentNumber).toBeNull();
-    expect(result.nationalIdNumber).toBeNull();
+    expect(result).not.toHaveProperty('nationalIdNumber');
   });
 
   // ─── Derived experience + picture ──────────────────────────────────────
@@ -910,17 +870,6 @@ describe('TechniciansService', () => {
 });
 
 
-
-  it('filters national-ID search by keyed digest, not plaintext', async () => {
-    const { service, prisma, nationalIdCrypto } = createService();
-    await service.searchByAdmin({ nationalIdNumber: 'ID123456' });
-    expect(nationalIdCrypto.hash).toHaveBeenCalledWith('ID123456');
-    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { AND: [{ nationalIdHash: 'hash:ID123456' }] },
-      }),
-    );
-  });
 
   it('requires at least one identifier in searchByUserDetails', async () => {
     const { service, prisma } = createService();

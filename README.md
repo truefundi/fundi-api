@@ -158,6 +158,8 @@ Open `http://localhost:3000/api/docs` in a browser to explore the generated Open
 
 Detailed request formats and expected responses are documented separately:
 
+- [Postman endpoint testing guide](docs/postman-testing.md)
+- [Importable Postman collection](docs/fundi-api.postman_collection.json)
 - [Phone authentication and OTP endpoints](docs/authentication.md)
 - [Admin dashboard authentication and two-factor endpoints](docs/admin-authentication.md)
 - [Service categories endpoints](docs/service-categories.md)

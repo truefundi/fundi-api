@@ -47,3 +47,25 @@ describe('JobsService.summaryForAdmin', () => {
     });
   });
 });
+
+describe('JobsService single-match retention rule', () => {
+  it('keeps the only eligible technician when the queue contains a single match', () => {
+    expect(JobsService.shouldRetainSingleMatchOffer(1)).toBe(true);
+    expect(JobsService.selectOfferForDispatch([{ id: 'offer-1' }])).toEqual({
+      id: 'offer-1',
+    });
+  });
+
+  it('still selects the highest-ranked technician when multiple eligible technicians remain', () => {
+    const offers = [
+      { id: 'offer-2', matchScore: 60 },
+      { id: 'offer-1', matchScore: 90 },
+    ];
+
+    expect(JobsService.shouldRetainSingleMatchOffer(2)).toBe(false);
+    expect(JobsService.selectOfferForDispatch(offers)).toEqual({
+      id: 'offer-2',
+      matchScore: 60,
+    });
+  });
+});

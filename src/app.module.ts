@@ -14,6 +14,7 @@ import { CatalogModule } from './catalog/catalog.module';
 import { TechniciansModule } from './technicians/technicians.module';
 import { AdminModule } from './admin/admin.module';
 import { ConversationsModule } from './conversations/conversations.module';
+import { DisputesModule } from './disputes/disputes.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ConversationsModule } from './conversations/conversations.module';
     TechniciansModule,
     AdminModule,
     ConversationsModule,
+    DisputesModule,
     HealthModule,
   ],
   controllers: [AppController],

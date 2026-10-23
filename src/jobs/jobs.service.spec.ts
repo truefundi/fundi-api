@@ -3,7 +3,7 @@ import { PrismaService } from '../database/prisma.service';
 import { JobsService } from './jobs.service';
 
 // Covers the dashboard counts: only OPEN and ASSIGNED jobs are active, COMPLETED
-// is terminal, and disputes are not modelled yet so the count is null.
+// is terminal, and a dispute counts as open until it is resolved.
 describe('JobsService.summaryForAdmin', () => {
   const createService = () => {
     const jobCount = jest
@@ -13,7 +13,11 @@ describe('JobsService.summaryForAdmin', () => {
           ? Promise.resolve(417)
           : Promise.resolve(23),
       );
-    const prisma = { job: { count: jobCount } };
+    const disputeCount = jest.fn().mockResolvedValue(2);
+    const prisma = {
+      job: { count: jobCount },
+      dispute: { count: disputeCount },
+    };
     const service = new JobsService(
       prisma as unknown as PrismaService,
       undefined as unknown as never,
@@ -21,21 +25,21 @@ describe('JobsService.summaryForAdmin', () => {
       undefined as unknown as never,
       undefined as unknown as never,
     );
-    return { service, jobCount };
+    return { service, jobCount, disputeCount };
   };
 
-  it('returns active, completed, and a null dispute count', async () => {
+  it('returns active, completed, and unresolved dispute counts', async () => {
     const { service } = createService();
 
     await expect(service.summaryForAdmin()).resolves.toEqual({
       active: 23,
       completed: 417,
-      openDisputes: null,
+      openDisputes: 2,
     });
   });
 
   it('counts active jobs as OPEN or ASSIGNED and completed jobs separately', async () => {
-    const { service, jobCount } = createService();
+    const { service, jobCount, disputeCount } = createService();
 
     await service.summaryForAdmin();
 
@@ -44,6 +48,9 @@ describe('JobsService.summaryForAdmin', () => {
     });
     expect(jobCount).toHaveBeenCalledWith({
       where: { status: JobStatus.COMPLETED },
+    });
+    expect(disputeCount).toHaveBeenCalledWith({
+      where: { resolvedAt: null },
     });
   });
 });

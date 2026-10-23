@@ -651,6 +651,18 @@ export class ConversationsService {
   }
 
   /**
+   * Admin read of the conversation attached to a job, or null when the job never
+   * opened one. Used by dispute review, where the chat is the evidence.
+   */
+  async getForAdminByJobId(jobId: string) {
+    const conversation = await this.findByJobId(jobId);
+    if (!conversation) return null;
+    await this.expireStaleOffers(conversation.id);
+    const refreshed = await this.find(conversation.id);
+    return this.toResponse(refreshed);
+  }
+
+  /**
    * Flips offers whose expiry has passed to EXPIRED and records a system line,
    * so lapsed offers never count as outstanding. Called before reads and writes.
    */

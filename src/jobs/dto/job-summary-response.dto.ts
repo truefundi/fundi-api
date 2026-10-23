@@ -12,11 +12,9 @@ export class JobSummaryResponseDto {
   completed!: number;
 
   @ApiProperty({
-    example: null,
-    nullable: true,
+    example: 2,
     description:
-      'Disputes that are open. Always null until the disputes feature lands; ' +
-      'the dashboard shows a placeholder for a null figure.',
+      'Disputes that have no resolution yet. A resolved dispute no longer counts.',
   })
-  openDisputes!: number | null;
+  openDisputes!: number;
 }

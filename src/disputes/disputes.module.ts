@@ -4,13 +4,14 @@ import { ConversationsModule } from '../conversations/conversations.module';
 import { DatabaseModule } from '../database/database.module';
 import { JobsModule } from '../jobs/jobs.module';
 import { AdminDisputesController } from './admin-disputes.controller';
+import { DisputesController } from './disputes.controller';
 import { DisputesService } from './disputes.service';
 
-// Admin-side dispute review. Disputes belong to jobs; this module only adds the
-// list/detail/resolve endpoints and delegates job and chat reads to their owners.
+// Dispute lifecycle: the parties open a dispute on a job, the admin reviews and
+// decides it. Disputes belong to jobs; the modules above own the job and chat reads.
 @Module({
   imports: [DatabaseModule, AuditModule, JobsModule, ConversationsModule],
-  controllers: [AdminDisputesController],
+  controllers: [AdminDisputesController, DisputesController],
   providers: [DisputesService],
 })
 export class DisputesModule {}

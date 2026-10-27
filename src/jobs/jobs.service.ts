@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -8,6 +9,8 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
+  ConversationMessageType,
+  ConversationSender,
   ConversationStatus,
   JobDispatchStatus,
   JobMediaType,
@@ -16,6 +19,7 @@ import {
   JobProgressStatus,
   JobStatus,
   Prisma,
+  PriceOfferStatus,
   TechnicianAvailability,
   UserRole,
   UserStatus,
@@ -27,6 +31,7 @@ import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { EventsGateway } from '../websockets/events.gateway';
+import { canRespondToOffer, isOfferExpired } from '../conversations/negotiation.util';
 import {
   JOB_MATCH_RADIUS_METERS,
   JOB_OFFER_RESPONSE_SECONDS,
@@ -85,6 +90,22 @@ type MatchCandidate = {
   matchScore: number;
   distanceMeters: number;
 };
+
+// The slice of a conversation a customer-facing action needs: the running messages
+// (each carrying the offer it answered, when there was one) so the outstanding
+// offer can be resolved. Job state itself is read from the job row.
+const CUSTOMER_JOB_CONVERSATION_INCLUDE = {
+  messages: {
+    orderBy: { createdAt: 'asc' as const },
+    include: { offer: true },
+  },
+} satisfies Prisma.ConversationInclude;
+
+type CustomerConversation = Prisma.ConversationGetPayload<{
+  include: typeof CUSTOMER_JOB_CONVERSATION_INCLUDE;
+}>;
+type CustomerMessage = CustomerConversation['messages'][number];
+type CustomerOffer = NonNullable<CustomerMessage['offer']>;
 
 interface MediaInput {
   upload: JobUpload;
@@ -266,6 +287,123 @@ export class JobsService {
   }
 
   /**
+   * Customer accepts the technician's outstanding price offer, which agrees the
+   * price and closes the negotiation. The dispatch-time technician acceptance (the
+   * job assignment itself) is a separate step; this closes the money conversation
+   * the technician opened with their offer.
+   */
+  async acceptTechnicianOffer(customerId: string, jobId: string) {
+    const job = await this.findJob(jobId);
+    this.assertCustomerOwnsJob(job, customerId);
+
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { jobId },
+      include: CUSTOMER_JOB_CONVERSATION_INCLUDE,
+    });
+    if (!conversation) {
+      throw new ConflictException('No negotiation is open for this job.');
+    }
+    if (conversation.status === ConversationStatus.PENDING) {
+      throw new ConflictException(
+        'The technician has not accepted the job request yet.',
+      );
+    }
+    if (conversation.status !== ConversationStatus.NEGOTIATING) {
+      throw new ConflictException('This negotiation is already closed.');
+    }
+
+    const offer = this.outstandingOffer(conversation);
+    if (!offer) {
+      throw new ConflictException(
+        'There is no outstanding price offer to accept.',
+      );
+    }
+    // The responder check comes first: a customer cannot accept an offer the
+    // customer made themselves, and the refusal should not depend on the
+    // offer's expiry.
+    if (!canRespondToOffer(offer.senderRole, ConversationSender.CUSTOMER)) {
+      throw new ForbiddenException('You cannot respond to your own offer.');
+    }
+    const now = new Date();
+    if (isOfferExpired(offer.expiresAt)) {
+      await this.prisma.$transaction(async (tx) => {
+        const expired = await tx.priceOffer.updateMany({
+          where: { id: offer.id, status: PriceOfferStatus.PENDING },
+          data: { status: PriceOfferStatus.EXPIRED, respondedAt: now },
+        });
+        if (!expired.count) {
+          return;
+        }
+        await tx.conversationMessage.create({
+          data: {
+            conversationId: conversation.id,
+            senderRole: ConversationSender.SYSTEM,
+            type: ConversationMessageType.SYSTEM,
+            text: 'A price offer expired.',
+          },
+        });
+        await tx.conversation.update({
+          where: { id: conversation.id },
+          data: { lastMessageAt: now },
+        });
+        await this.audit.log(
+          {
+            entityType: 'Conversation',
+            entityId: conversation.id,
+            action: 'PRICE_OFFER_EXPIRED',
+            metadata: { offerId: offer.id },
+          },
+          tx,
+        );
+      });
+      throw new ConflictException('This offer has expired.');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const accepted = await tx.priceOffer.updateMany({
+        where: { id: offer.id, status: PriceOfferStatus.PENDING },
+        data: { status: PriceOfferStatus.ACCEPTED, respondedAt: now },
+      });
+      if (!accepted.count) {
+        throw new ConflictException(
+          'This offer is no longer awaiting a response.',
+        );
+      }
+      await tx.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          status: ConversationStatus.AGREED,
+          agreedAmount: offer.amount,
+          lastMessageAt: now,
+          closedAt: now,
+        },
+      });
+      await tx.conversationMessage.create({
+        data: {
+          conversationId: conversation.id,
+          senderRole: ConversationSender.SYSTEM,
+          type: ConversationMessageType.SYSTEM,
+          text: `Agreed at ${offer.amount} ${offer.currency}.`,
+        },
+      });
+      await this.audit.log(
+        {
+          entityType: 'Conversation',
+          entityId: conversation.id,
+          action: 'CONVERSATION_AGREED',
+          actorId: customerId,
+          fromStatus: ConversationStatus.NEGOTIATING,
+          toStatus: ConversationStatus.AGREED,
+          metadata: { offerId: offer.id, amount: offer.amount },
+        },
+        tx,
+      );
+    });
+
+    return this.getCustomerJob(customerId, jobId);
+  }
+
+  /**
    * Admin edit. An unassigned open job is updated and re-dispatched exactly like
    * the customer flow. Once a technician is assigned the job keeps its technician
    * and is not re-matched, but the admin can still correct every field (the
@@ -301,30 +439,44 @@ export class JobsService {
           dto.otherServiceName,
         )
       : {};
-    await this.prisma.job.update({
-      where: { id: jobId },
-      data: {
-        ...selection,
-        ...(dto.description !== undefined && {
-          description: dto.description.trim(),
-        }),
-        ...(dto.locationAddress !== undefined && {
-          locationAddress: dto.locationAddress.trim(),
-        }),
-        ...(dto.latitude !== undefined && { latitude: dto.latitude }),
-        ...(dto.longitude !== undefined && { longitude: dto.longitude }),
-        ...(dto.offeredAmount !== undefined && {
-          offeredAmount: dto.offeredAmount,
-        }),
-        ...(dto.priority !== undefined && { priority: dto.priority }),
-      },
-    });
-    await this.audit.log({
-      entityType: 'Job',
-      entityId: jobId,
-      action: 'JOB_UPDATED',
-      actorId: adminId,
-      metadata: { changedFields: Object.keys(dto) },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.job.update({
+        where: { id: jobId },
+        data: {
+          ...selection,
+          ...(dto.description !== undefined && {
+            description: dto.description.trim(),
+          }),
+          ...(dto.locationAddress !== undefined && {
+            locationAddress: dto.locationAddress.trim(),
+          }),
+          ...(dto.latitude !== undefined && { latitude: dto.latitude }),
+          ...(dto.longitude !== undefined && { longitude: dto.longitude }),
+          ...(dto.offeredAmount !== undefined && {
+            offeredAmount: dto.offeredAmount,
+          }),
+          ...(dto.priority !== undefined && { priority: dto.priority }),
+        },
+      });
+      if (dto.latitude !== undefined && dto.longitude !== undefined) {
+        await tx.$executeRaw`
+          UPDATE "jobs"
+          SET "location" = ST_SetSRID(
+            ST_MakePoint(${dto.longitude}::double precision, ${dto.latitude}::double precision),
+            4326
+          )::geography
+          WHERE "id" = ${jobId}`;
+      }
+      await this.audit.log(
+        {
+          entityType: 'Job',
+          entityId: jobId,
+          action: 'JOB_UPDATED',
+          actorId: adminId,
+          metadata: { changedFields: Object.keys(dto) },
+        },
+        tx,
+      );
     });
     return this.getForAdmin(jobId);
   }
@@ -674,6 +826,33 @@ export class JobsService {
           dropReason: 'REASSIGNED_BY_ADMIN',
         },
       });
+      await tx.jobOffer.upsert({
+        where: {
+          jobId_technicianId_round: {
+            jobId,
+            technicianId: technician.id,
+            round: job.dispatchRound,
+          },
+        },
+        create: {
+          jobId,
+          technicianId: technician.id,
+          round: job.dispatchRound,
+          matchScore: 0,
+          distanceMeters: 0,
+          status: JobOfferStatus.ACCEPTED,
+          offeredAt: now,
+          respondedAt: now,
+        },
+        update: {
+          status: JobOfferStatus.ACCEPTED,
+          offeredAt: now,
+          expiresAt: null,
+          respondedAt: now,
+          rejectionReason: null,
+          dropReason: null,
+        },
+      });
       await tx.jobAssignmentHistory.updateMany({
         where: { jobId, endedAt: null },
         data: { endedAt: now, endReason: 'REASSIGNED' },
@@ -708,9 +887,12 @@ export class JobsService {
    */
   async adminDelete(jobId: string, adminId: string) {
     const job = await this.findJob(jobId);
-    if (job.status === JobStatus.ASSIGNED || job.status === JobStatus.COMPLETED) {
+    if (
+      job.status !== JobStatus.OPEN &&
+      job.status !== JobStatus.CANCELLED
+    ) {
       throw new ConflictException(
-        'Cancel the job before deleting it; assigned or completed jobs keep their record.',
+        'Only open or cancelled jobs can be deleted.',
       );
     }
     const objectKeys = job.media.map((item) => item.objectKey);
@@ -729,7 +911,15 @@ export class JobsService {
         },
         tx,
       );
-      await tx.job.delete({ where: { id: jobId } });
+      const deleted = await tx.job.deleteMany({
+        where: {
+          id: jobId,
+          status: { in: [JobStatus.OPEN, JobStatus.CANCELLED] },
+        },
+      });
+      if (!deleted.count) {
+        throw new ConflictException('This job can no longer be deleted.');
+      }
     });
     await this.deleteStoredFiles(objectKeys);
     return { message: 'Job deleted.' };
@@ -1971,6 +2161,16 @@ export class JobsService {
   private assertCustomerOwnsJob(job: JobWithDetails, customerId: string) {
     if (job.customerId !== customerId)
       throw new NotFoundException('Job not found.');
+  }
+
+  private outstandingOffer(
+    conversation: CustomerConversation,
+  ): CustomerOffer | null {
+    for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
+      const offer = conversation.messages[index].offer;
+      if (offer?.status === PriceOfferStatus.PENDING) return offer;
+    }
+    return null;
   }
 
   private assertEditable(job: JobWithDetails) {

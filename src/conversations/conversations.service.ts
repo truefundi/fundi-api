@@ -420,12 +420,15 @@ export class ConversationsService {
     if (offer.status !== PriceOfferStatus.PENDING) {
       throw new ConflictException('This offer is no longer awaiting a response.');
     }
+    // The responder check comes first: an invalid responder must be refused for the
+    // reason that applies to them, not masked behind an expiry the offer may no
+    // longer be in.
+    if (!canRespondToOffer(offer.senderRole, role)) {
+      throw new ForbiddenException('You cannot respond to your own offer.');
+    }
     if (isOfferExpired(offer.expiresAt)) {
       await this.expireStaleOffers(conversationId);
       throw new ConflictException('This offer has expired.');
-    }
-    if (!canRespondToOffer(offer.senderRole, role)) {
-      throw new ForbiddenException('You cannot respond to your own offer.');
     }
 
     const now = new Date();
@@ -490,12 +493,15 @@ export class ConversationsService {
     if (offer.status !== PriceOfferStatus.PENDING) {
       throw new ConflictException('This offer is no longer awaiting a response.');
     }
+    // The responder check comes first: an invalid responder must be refused for the
+    // reason that applies to them, not masked behind an expiry the offer may no
+    // longer be in.
+    if (!canRespondToOffer(offer.senderRole, role)) {
+      throw new ForbiddenException('You cannot respond to your own offer.');
+    }
     if (isOfferExpired(offer.expiresAt)) {
       await this.expireStaleOffers(conversationId);
       throw new ConflictException('This offer has expired.');
-    }
-    if (!canRespondToOffer(offer.senderRole, role)) {
-      throw new ForbiddenException('You cannot respond to your own offer.');
     }
 
     const now = new Date();

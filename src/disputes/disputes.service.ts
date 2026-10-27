@@ -1,3 +1,4 @@
+import { DisputeOpenedBy, Prisma } from '@prisma/client';
 import {
   ConflictException,
   Injectable,
@@ -7,13 +8,11 @@ import { AuditService } from '../audit/audit.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { PrismaService } from '../database/prisma.service';
 import { JobsService } from '../jobs/jobs.service';
-import { ResolveDisputeDto } from './dto/dispute.dto';
+import { OpenDisputeDto, ResolveDisputeDto } from './dto/dispute.dto';
 
 /**
- * Admin view of customer/technician disputes. The jobs service owns the job
- * response shape, so disputes reuse its admin reader instead of duplicating the
- * job include and mapping. Opening and answering a dispute happens in the apps;
- * the admin only lists, inspects, and decides.
+ * Customer and technician dispute intake plus admin review. The jobs service
+ * owns job response shapes, and conversations provide the evidence for review.
  */
 @Injectable()
 export class DisputesService {
@@ -42,6 +41,86 @@ export class DisputesService {
       job,
       chat: await this.conversations.getForAdminByJobId(jobId),
     };
+  }
+
+  /**
+   * Opens a dispute on a job. Either party may open one: the customer on a job they
+   * own, or the technician assigned to it. One dispute may exist per job; once
+   * opened it waits for the admin to record a resolution, which is the only step
+   * that may settle it.
+   */
+  async open(userId: string, jobId: string, dto: OpenDisputeDto) {
+    let openedBy: DisputeOpenedBy;
+    try {
+      openedBy = await this.prisma.$transaction(async (tx) => {
+        const job = await tx.job.findUnique({
+          where: { id: jobId },
+          select: { id: true, customerId: true, technicianId: true },
+        });
+        if (!job) throw new NotFoundException('Job not found.');
+
+        const isCustomer = job.customerId === userId;
+        const isTechnician = Boolean(
+          job.technicianId &&
+            (await tx.technicianProfile.findFirst({
+              where: { id: job.technicianId, userId },
+              select: { id: true },
+            })),
+        );
+        if (!isCustomer && !isTechnician) {
+          throw new NotFoundException('Job not found.');
+        }
+        if (!job.technicianId) {
+          throw new ConflictException(
+            'A dispute can only be opened after a technician is assigned.',
+          );
+        }
+
+        const opener = isCustomer
+          ? DisputeOpenedBy.CUSTOMER
+          : DisputeOpenedBy.TECHNICIAN;
+        const dispute = await tx.dispute.create({
+          data: {
+            jobId,
+            reason: dto.reason.trim(),
+            openedBy: opener,
+          },
+          select: { id: true },
+        });
+
+        await this.audit.log(
+          {
+            entityType: 'Dispute',
+            entityId: dispute.id,
+            action: 'DISPUTE_OPENED',
+            actorId: userId,
+            metadata: { jobId, openedBy: opener },
+          },
+          tx,
+        );
+        return opener;
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          'A dispute has already been opened for this job.',
+        );
+      }
+      const prismaErr = error as { code?: string } | null;
+      if (prismaErr?.code === 'P2002') {
+        throw new ConflictException(
+          'A dispute has already been opened for this job.',
+        );
+      }
+      throw error;
+    }
+
+    return openedBy === DisputeOpenedBy.CUSTOMER
+      ? this.jobs.getCustomerJob(userId, jobId)
+      : this.jobs.getTechnicianJob(userId, jobId);
   }
 
   /** Records the decision once; the resolution cannot be edited afterwards. */

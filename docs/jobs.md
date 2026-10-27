@@ -249,6 +249,27 @@ Successful response:
 | `GET` | `/admin/jobs/summary` | Dashboard job counts (active, completed, open disputes) |
 | `GET` | `/admin/jobs/:jobId` | Get full details for a job |
 
+## Disputes
+
+Either the customer who owns a job or its currently assigned technician can open one dispute after a technician has been assigned. The reason must be 10–2,000 characters. A second dispute for the same job returns `409 Conflict`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/jobs/:jobId/disputes` | Customer or assigned technician opens a dispute |
+| `GET` | `/admin/disputes` | List open disputes; use `?state=resolved` for resolved disputes |
+| `GET` | `/admin/disputes/:jobId` | Read the disputed job and its conversation |
+| `POST` | `/admin/disputes/:jobId/resolve` | Record the admin decision |
+
+Open a dispute with:
+
+```json
+{
+  "reason": "The work was marked complete, but the leak is still present."
+}
+```
+
+The create endpoint returns the caller's normal job response, including the dispute reason, opener, and opening time. Admin resolution requires `outcome` (`CUSTOMER`, `TECHNICIAN`, or `PARTIAL`), `amount` in RWF, and a 2–2,000 character `note`. Resolution is immutable and does not itself process or transfer money.
+
 `GET /admin/jobs` returns a JSON array of admin job objects. `GET /admin/jobs/:jobId` returns one admin job object directly. Admin responses include `customer`, `assignmentHistory`, and `offers`, in addition to the common job fields.
 
 Example admin response:
@@ -348,11 +369,11 @@ Admin listing returns every job without backend pagination; apply UI pagination 
 {
   "active": 23,
   "completed": 417,
-  "openDisputes": null
+  "openDisputes": 2
 }
 ```
 
-`active` counts jobs that are still in flight (`OPEN` or `ASSIGNED`). `completed` counts jobs with `status: "COMPLETED"`. `FAILED` and `CANCELLED` jobs are terminal and are included in neither. Disputes are not modelled yet, so `openDisputes` is `null`; the dashboard renders a placeholder for a `null` figure instead of a wrong number.
+`active` counts jobs that are still in flight (`OPEN` or `ASSIGNED`). `completed` counts jobs with `status: "COMPLETED"`. `FAILED` and `CANCELLED` jobs are terminal and are included in neither. `openDisputes` counts dispute records without an admin resolution.
 
 ## Job response
 

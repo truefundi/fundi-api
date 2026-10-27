@@ -13,6 +13,21 @@ import {
   MinLength,
 } from 'class-validator';
 
+/** The customer or assigned technician's reason for escalating a job. */
+export class OpenDisputeDto {
+  @ApiProperty({
+    minLength: 10,
+    maxLength: 2000,
+    description: 'Why the job is being disputed.',
+    example: 'The work was marked complete, but the leak is still present.',
+  })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MinLength(10)
+  @MaxLength(2000)
+  reason!: string;
+}
+
 /** What the admin decided and how much the customer must settle. */
 export class ResolveDisputeDto {
   @ApiProperty({

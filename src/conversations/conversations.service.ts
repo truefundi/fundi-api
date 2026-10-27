@@ -420,12 +420,15 @@ export class ConversationsService {
     if (offer.status !== PriceOfferStatus.PENDING) {
       throw new ConflictException('This offer is no longer awaiting a response.');
     }
+    // The responder check comes first: an invalid responder must be refused for the
+    // reason that applies to them, not masked behind an expiry the offer may no
+    // longer be in.
+    if (!canRespondToOffer(offer.senderRole, role)) {
+      throw new ForbiddenException('You cannot respond to your own offer.');
+    }
     if (isOfferExpired(offer.expiresAt)) {
       await this.expireStaleOffers(conversationId);
       throw new ConflictException('This offer has expired.');
-    }
-    if (!canRespondToOffer(offer.senderRole, role)) {
-      throw new ForbiddenException('You cannot respond to your own offer.');
     }
 
     const now = new Date();
@@ -490,12 +493,15 @@ export class ConversationsService {
     if (offer.status !== PriceOfferStatus.PENDING) {
       throw new ConflictException('This offer is no longer awaiting a response.');
     }
+    // The responder check comes first: an invalid responder must be refused for the
+    // reason that applies to them, not masked behind an expiry the offer may no
+    // longer be in.
+    if (!canRespondToOffer(offer.senderRole, role)) {
+      throw new ForbiddenException('You cannot respond to your own offer.');
+    }
     if (isOfferExpired(offer.expiresAt)) {
       await this.expireStaleOffers(conversationId);
       throw new ConflictException('This offer has expired.');
-    }
-    if (!canRespondToOffer(offer.senderRole, role)) {
-      throw new ForbiddenException('You cannot respond to your own offer.');
     }
 
     const now = new Date();
@@ -647,6 +653,18 @@ export class ConversationsService {
     const conversation = await this.find(conversationId);
     await this.expireStaleOffers(conversation.id);
     const refreshed = await this.find(conversationId);
+    return this.toResponse(refreshed);
+  }
+
+  /**
+   * Admin read of the conversation attached to a job, or null when the job never
+   * opened one. Used by dispute review, where the chat is the evidence.
+   */
+  async getForAdminByJobId(jobId: string) {
+    const conversation = await this.findByJobId(jobId);
+    if (!conversation) return null;
+    await this.expireStaleOffers(conversation.id);
+    const refreshed = await this.find(conversation.id);
     return this.toResponse(refreshed);
   }
 

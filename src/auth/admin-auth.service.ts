@@ -369,7 +369,7 @@ export class AdminAuthService {
   // Seconds the access token stays valid, so the client knows when to refresh.
   accessTokenSeconds(): number {
     return this.durationToSeconds(
-      this.configService.get<string>('adminAuth.accessExpiresIn', '1d'),
+      this.configService.get<string>('adminAuth.accessExpiresIn', '15m'),
     );
   }
 
@@ -377,7 +377,7 @@ export class AdminAuthService {
   // set from the same number as the stored session row and the two cannot drift.
   refreshTokenSeconds(): number {
     return this.durationToSeconds(
-      this.configService.get<string>('adminAuth.refreshExpiresIn', '5d'),
+      this.configService.get<string>('adminAuth.refreshExpiresIn', '12h'),
     );
   }
 

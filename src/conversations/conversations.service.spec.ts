@@ -100,7 +100,7 @@ function buildOfferMessage(offerOverrides: AnyRecord = {}): AnyRecord {
       senderRole: ConversationSender.TECHNICIAN,
       status: PriceOfferStatus.PENDING,
       notes: null,
-      expiresAt: new Date('2026-10-17T12:01:00.000Z'),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       respondedAt: null,
       createdAt,
       ...offerOverrides,

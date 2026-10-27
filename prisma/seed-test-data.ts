@@ -39,12 +39,7 @@ import {
   ConversationMessageType,
   PriceOfferStatus,
 } from '@prisma/client';
-import {
-  createCipheriv,
-  createHash,
-  createHmac,
-  randomBytes,
-} from 'crypto';
+import { createHash } from 'crypto';
 
 // Prisma CLI loads .env, but running this file through ts-node directly does not.
 // dotenv is present as a dependency of @nestjs/config, so this keeps the script
@@ -80,42 +75,6 @@ function detId(...parts: Array<string | number>): string {
 
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-
-// National ID encryption must match NationalIdCryptoService and the AES-GCM
-// helper exactly (key = first 64 hex chars, payload = iv.tag.ciphertext base64,
-// digest = HMAC-SHA256 over "fundi:national-id:v1:<normalised>").
-const keyMaterial = (process.env.NATIONAL_ID_ENCRYPTION_KEY ?? '').trim();
-const nidKeyHex = /^[0-9a-fA-F]{128}$/.test(keyMaterial)
-  ? keyMaterial.slice(0, 64)
-  : keyMaterial;
-if (!/^[0-9a-fA-F]{64}$/.test(nidKeyHex)) {
-  throw new Error(
-    'NATIONAL_ID_ENCRYPTION_KEY must be set to 64 or 128 hexadecimal characters (check .env).',
-  );
-}
-const NID_KEY = Buffer.from(nidKeyHex, 'hex');
-
-const normalizeNid = (value: string) =>
-  value.normalize('NFKC').trim().replace(/[\s-]/g, '').toUpperCase();
-
-function encryptNid(value: string): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', NID_KEY, iv);
-  const ciphertext = Buffer.concat([
-    cipher.update(normalizeNid(value), 'utf8'),
-    cipher.final(),
-  ]);
-  return [iv, cipher.getAuthTag(), ciphertext]
-    .map((part) => part.toString('base64'))
-    .join('.');
-}
-
-function hashNid(value: string): string {
-  return createHmac('sha256', NID_KEY)
-    .update('fundi:national-id:v1:')
-    .update(normalizeNid(value))
-    .digest('hex');
-}
 
 // ─── Reference data ────────────────────────────────────────────────────────
 
@@ -309,13 +268,10 @@ async function seedTechnicians(
     });
 
     const area = AREAS[i % AREAS.length];
-    const nationalId = `1198${String(700000 + i)}`;
     const profile = await prisma.technicianProfile.upsert({
       where: { userId: user.id },
       update: {
         gender: i % 2 === 0 ? TechnicianGender.MALE : TechnicianGender.FEMALE,
-        nationalIdEncrypted: encryptNid(nationalId),
-        nationalIdHash: hashNid(nationalId),
         baseAddress: area.address,
         publicLocationLabel: area.label,
         baseLatitude: area.lat,
@@ -329,8 +285,6 @@ async function seedTechnicians(
         id: detId('technician-profile', i),
         userId: user.id,
         gender: i % 2 === 0 ? TechnicianGender.MALE : TechnicianGender.FEMALE,
-        nationalIdEncrypted: encryptNid(nationalId),
-        nationalIdHash: hashNid(nationalId),
         baseAddress: area.address,
         publicLocationLabel: area.label,
         baseLatitude: area.lat,

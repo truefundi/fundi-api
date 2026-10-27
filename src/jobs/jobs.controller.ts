@@ -133,6 +133,14 @@ export class JobsController {
     return this.jobs.retryDispatch(user.id, jobId);
   }
 
+  @Post('mine/:jobId/accept')
+  acceptTechnicianOffer(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.acceptTechnicianOffer(user.id, jobId);
+  }
+
   @Delete('mine/:jobId')
   cancel(
     @CurrentUser() user: AuthUser,

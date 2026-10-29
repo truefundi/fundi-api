@@ -43,14 +43,22 @@ model RefreshToken {
 }
 
 model ServiceCategory {
-  id          String               @id @default(uuid())
-  name        String               @unique
-  slug        String               @unique
-  isActive    Boolean              @default(true)
-  createdAt   DateTime             @default(now())
-  jobs        Job[]                @relation("JobServiceCategory")
-  technicians TechnicianCategory[]
-  documents   TechnicianDocument[]
+  id                 String               @id @default(uuid())
+  name               String               @unique
+  slug               String               @unique
+  description        String               @default("")
+  /// Service group shown in the admin dashboard: "Home Services" or "Car Services".
+  category           String               @default("Home Services")
+  /// Booking (visit/diagnostic) fee charged for this service, in the job currency.
+  visitFee           Float                @default(0)
+  /// Booking fee used when the customer marks the request as an emergency.
+  emergencyVisitFee  Float                @default(0)
+  isActive           Boolean              @default(true)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  jobs               Job[]                @relation("JobServiceCategory")
+  technicians        TechnicianCategory[]
+  documents          TechnicianDocument[]
 
   @@map("service_categories")
 }

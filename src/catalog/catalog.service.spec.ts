@@ -83,13 +83,60 @@ describe('CatalogService', () => {
     const { service, transaction, audit } = createService();
     await service.create({ name: '  Home Repair  ' }, 'admin-1');
     expect(transaction.serviceCategory.create).toHaveBeenCalledWith({
-      data: { name: 'Home Repair', slug: 'home-repair' },
+      data: {
+        name: 'Home Repair',
+        slug: 'home-repair',
+        description: '',
+        category: 'Home Services',
+        visitFee: 0,
+        emergencyVisitFee: 0,
+        isActive: true,
+      },
     });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
         entityType: 'ServiceCategory',
         action: 'CREATED',
         actorId: 'admin-1',
+      }),
+      transaction,
+    );
+  });
+
+  // Persists the dashboard's editable booking fees and service metadata.
+  it('updates booking fees and records the change', async () => {
+    const { service, transaction, audit } = createService();
+    await service.update(
+      category.id,
+      {
+        description: ' Leaks and pipe repairs. ',
+        category: 'Home Services',
+        visitFee: 75,
+        emergencyVisitFee: 110,
+      },
+      'admin-1',
+    );
+    expect(transaction.serviceCategory.update).toHaveBeenCalledWith({
+      where: { id: category.id },
+      data: {
+        name: undefined,
+        slug: undefined,
+        description: 'Leaks and pipe repairs.',
+        category: 'Home Services',
+        visitFee: 75,
+        emergencyVisitFee: 110,
+        isActive: undefined,
+      },
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'UPDATED',
+        metadata: {
+          description: 'Leaks and pipe repairs.',
+          category: 'Home Services',
+          visitFee: 75,
+          emergencyVisitFee: 110,
+        },
       }),
       transaction,
     );

@@ -27,7 +27,15 @@ export class CatalogService {
     return this.prisma.serviceCategory.findMany({
       where: { isActive: true },
       orderBy: { name: 'asc' },
-      select: { id: true, name: true, slug: true },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        description: true,
+        category: true,
+        visitFee: true,
+        emergencyVisitFee: true,
+      },
     });
   }
 
@@ -39,7 +47,15 @@ export class CatalogService {
         name: { contains: name.trim(), mode: 'insensitive' },
       },
       orderBy: { name: 'asc' },
-      select: { id: true, name: true, slug: true },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        description: true,
+        category: true,
+        visitFee: true,
+        emergencyVisitFee: true,
+      },
     });
   }
 
@@ -52,7 +68,15 @@ export class CatalogService {
   async getActiveById(id: string) {
     const category = await this.prisma.serviceCategory.findFirst({
       where: { id, isActive: true },
-      select: { id: true, name: true, slug: true },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        description: true,
+        category: true,
+        visitFee: true,
+        emergencyVisitFee: true,
+      },
     });
     if (!category) throw new NotFoundException('Service category not found.');
     return category;
@@ -87,7 +111,15 @@ export class CatalogService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const category = await tx.serviceCategory.create({
-          data: { name, slug },
+          data: {
+            name,
+            slug,
+            description: dto.description?.trim() ?? '',
+            category: dto.category?.trim() || 'Home Services',
+            visitFee: dto.visitFee ?? 0,
+            emergencyVisitFee: dto.emergencyVisitFee ?? 0,
+            isActive: dto.isActive ?? true,
+          },
         });
         await this.audit.log(
           {
@@ -95,6 +127,12 @@ export class CatalogService {
             entityId: category.id,
             action: 'CREATED',
             actorId,
+            metadata: {
+              name,
+              category: category.category,
+              visitFee: category.visitFee,
+              emergencyVisitFee: category.emergencyVisitFee,
+            },
           },
           tx,
         );
@@ -107,9 +145,16 @@ export class CatalogService {
 
   // Updates category data and records the change atomically.
   async update(id: string, dto: UpdateCategoryDto, actorId: string) {
-    if (dto.name === undefined && dto.isActive === undefined) {
+    if (
+      dto.name === undefined &&
+      dto.description === undefined &&
+      dto.category === undefined &&
+      dto.visitFee === undefined &&
+      dto.emergencyVisitFee === undefined &&
+      dto.isActive === undefined
+    ) {
       throw new BadRequestException(
-        'Provide a category name or isActive value to update.',
+        'Provide a category name, description, category, fee, or isActive value to update.',
       );
     }
     const name = dto.name?.trim();
@@ -119,11 +164,23 @@ export class CatalogService {
         'Category name must contain letters or numbers.',
       );
     }
+    const description =
+      dto.description === undefined ? undefined : dto.description.trim();
+    const category =
+      dto.category === undefined ? undefined : dto.category.trim();
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const category = await tx.serviceCategory.update({
+        const updated = await tx.serviceCategory.update({
           where: { id },
-          data: { name, slug, isActive: dto.isActive },
+          data: {
+            name,
+            slug,
+            description,
+            category,
+            visitFee: dto.visitFee,
+            emergencyVisitFee: dto.emergencyVisitFee,
+            isActive: dto.isActive,
+          },
         });
         await this.audit.log(
           {
@@ -133,12 +190,18 @@ export class CatalogService {
             actorId,
             metadata: {
               ...(name !== undefined ? { name } : {}),
+              ...(description !== undefined ? { description } : {}),
+              ...(category !== undefined ? { category } : {}),
+              ...(dto.visitFee !== undefined ? { visitFee: dto.visitFee } : {}),
+              ...(dto.emergencyVisitFee !== undefined
+                ? { emergencyVisitFee: dto.emergencyVisitFee }
+                : {}),
               ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
             },
           },
           tx,
         );
-        return category;
+        return updated;
       });
     } catch (e) {
       this.rethrow(e);

@@ -24,6 +24,7 @@ import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobUpload } from './job-media.util';
 import { JobsService } from './jobs.service';
+import { CreateJobMultipartDto } from './dto/create-job-multipart.dto';
 
 const JOB_MEDIA_INTERCEPTOR = FileFieldsInterceptor(
   [
@@ -54,41 +55,10 @@ export class JobsController {
   @Post()
   @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
   @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      required: [
-        'description',
-        'locationAddress',
-        'latitude',
-        'longitude',
-        'offeredAmount',
-      ],
-      properties: {
-        serviceCategoryId: { type: 'string', format: 'uuid' },
-        otherServiceName: { type: 'string', maxLength: 80 },
-        description: { type: 'string', minLength: 10, maxLength: 5000 },
-        locationAddress: { type: 'string', maxLength: 255 },
-        latitude: { type: 'number', minimum: -90, maximum: 90 },
-        longitude: { type: 'number', minimum: -180, maximum: 180 },
-        offeredAmount: {
-          type: 'integer',
-          minimum: 1,
-          description: 'Amount in RWF',
-        },
-        priority: { type: 'string', enum: ['LOW', 'NORMAL', 'HIGH', 'URGENT'] },
-        photos: {
-          type: 'array',
-          maxItems: 5,
-          items: { type: 'string', format: 'binary' },
-        },
-        video: { type: 'string', format: 'binary' },
-      },
-    },
-  })
+  @ApiBody({ type: CreateJobMultipartDto })
   create(
     @CurrentUser() user: AuthUser,
-    @Body() dto: CreateJobDto,
+    @Body() dto: CreateJobMultipartDto,
     @UploadedFiles() files: JobUploadFields,
   ) {
     return this.jobs.create(user.id, dto, files.photos ?? [], files.video?.[0]);

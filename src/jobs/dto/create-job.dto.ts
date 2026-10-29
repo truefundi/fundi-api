@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { JobPriority } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
+  Allow,
   IsEnum,
   IsInt,
   IsNumber,
@@ -22,6 +23,11 @@ export class CreateJobDto {
       'Service category ID from the catalog. Provide this or otherServiceName, not both.',
   })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+  })
   @IsUUID('4')
   serviceCategoryId?: string;
 
@@ -34,7 +40,11 @@ export class CreateJobDto {
     example: 'Solar water heater repair',
   })
   @IsOptional()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+  })
   @IsString()
   @MinLength(2)
   @MaxLength(80)
@@ -111,6 +121,17 @@ export class CreateJobDto {
     description: 'How urgently the job should be dispatched.',
   })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+  })
   @IsEnum(JobPriority)
   priority?: JobPriority;
+
+  @Allow()
+  photos?: unknown[];
+
+  @Allow()
+  video?: unknown;
 }

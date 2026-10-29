@@ -7,6 +7,7 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { normalizeRwandaPhoneNumber } from '../../common/validation/rwanda-phone-number';
 
 export class SearchTechniciansByUserDto {
   @IsOptional()
@@ -14,9 +15,7 @@ export class SearchTechniciansByUserDto {
   userId?: string;
 
   @IsOptional()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.replace(/[\s()-]/g, '') : value,
-  )
+  @Transform(({ value }) => normalizeRwandaPhoneNumber(value))
   @IsString()
   @MinLength(7)
   @MaxLength(20)

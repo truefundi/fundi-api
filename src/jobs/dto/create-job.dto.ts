@@ -14,6 +14,12 @@ import {
 } from 'class-validator';
 
 export class CreateJobDto {
+  @IsUUID('4')
+  paymentId!: string;
+
+  @IsUUID('4')
+  phoneVerificationId!: string;
+
   @IsOptional()
   @IsUUID('4')
   serviceCategoryId?: string;

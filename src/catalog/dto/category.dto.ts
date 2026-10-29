@@ -1,8 +1,10 @@
 import {
   IsBoolean,
   IsOptional,
+  IsInt,
   IsString,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 
@@ -12,6 +14,11 @@ export class CreateCategoryDto {
   @MinLength(2)
   @MaxLength(60)
   name!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  bookingFee?: number;
 }
 
 // Validates editable category fields; an empty update is rejected by the service.
@@ -25,4 +32,9 @@ export class UpdateCategoryDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  bookingFee?: number;
 }

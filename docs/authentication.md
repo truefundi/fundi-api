@@ -1,8 +1,8 @@
 # Phone Authentication API
 
-This guide covers customers and technicians, who sign in with a phone number and an SMS code and receive bearer tokens they hold themselves. Administrators sign in separately with an email address, a password, and a second SMS code; their session lives in `httpOnly` cookies instead of tokens. That flow is documented in [admin-authentication.md](admin-authentication.md). The two flows share no endpoints, and public registration cannot create an administrator.
+This guide covers customers and technicians, who sign in with a phone number and an SMS code and receive bearer tokens they hold themselves. Administrators sign in separately with an email address, a password, and an authenticator-app code; their session lives in `httpOnly` cookies instead of tokens. That flow is documented in [admin-authentication.md](admin-authentication.md). The two flows share no endpoints, and public registration cannot create an administrator.
 
-Phone numbers are the login identifier. Public registration accepts `CUSTOMER` or `TECHNICIAN` (case-insensitive) and defaults to `CUSTOMER`; it cannot create an administrator. New accounts default to `ACTIVE`.
+Phone numbers are the login identifier. Public registration accepts `CUSTOMER` or `TECHNICIAN` (case-insensitive) and defaults to `CUSTOMER`; it cannot create an administrator. New accounts default to `ACTIVE`. Customer registration is immediate and does not send an OTP. Technician registration sends an OTP, which must be verified before the technician can create or update a profile. Both roles use login OTPs after registration. Customers verify their phone separately for every job request; see [Jobs API](jobs.md#verify-a-phone-number-for-a-job).
 
 Send `Content-Type: application/json` for requests with a body. OTP hashes and resend/verification counters are stored temporarily in Redis, where the OTP key expires automatically after five minutes; PostgreSQL stores user and refresh-token data, not OTPs. During development, `SMS_MODE=console` prints OTP codes in the backend terminal, not in the HTTP response. OTPs can be resent at most three times and are rejected after five incorrect attempts. The five-attempt limit is counted per account rather than per code, so requesting or resending a new OTP does not reset it. After five incorrect guesses the account is locked out of verification for fifteen minutes, and each further guess restarts that window; a successful verification clears the count.
 
@@ -10,7 +10,7 @@ Lifetimes are settings, not constants: `OTP_TTL_SECONDS` (default `300`, five mi
 
 ## `POST /api/v1/auth/register`
 
-No authentication required. `email` and `role` are optional. Phone numbers may include a leading `+`; spaces, parentheses, and hyphens are removed.
+No authentication required. `email` and `role` are optional. Phone numbers must be Rwandan mobile numbers: `078`, `079`, `072`, or `073` followed by seven digits, or the equivalent international `+250` format. Spaces, parentheses, and hyphens are removed, and accepted values are normalized to `+250` format. Email addresses must be valid; surrounding whitespace is trimmed and the address is lowercased.
 
 Request:
 
@@ -23,11 +23,27 @@ Request:
 }
 ```
 
-Success response (`200`):
+For a customer, registration creates the account without an OTP.
+
+Success response (`200`, customer):
 
 ```json
 {
-  "message": "OTP generated. Verify it to complete registration.",
+  "message": "Customer account registered successfully.",
+  "user": {
+    "id": "generated-user-id",
+    "fullName": "Prince Example",
+    "phoneNumber": "+250788123456",
+    "role": "CUSTOMER"
+  }
+}
+```
+
+For a technician, registration starts phone verification:
+
+```json
+{
+  "message": "OTP generated. Verify it to complete technician registration.",
   "user": {
     "id": "generated-user-id",
     "fullName": "Prince Example",
@@ -36,6 +52,8 @@ Success response (`200`):
   }
 }
 ```
+
+Find the technician registration code in the API terminal during development and submit it to `POST /api/v1/auth/verify-otp`. That endpoint returns the user and bearer tokens. Successful verification sets a technician's `phoneVerifiedAt`. A customer can verify an OTP during login, but that does not replace the per-job verification.
 
 ## `POST /api/v1/auth/login`
 

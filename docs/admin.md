@@ -37,7 +37,13 @@ The platform has three account statuses: `ACTIVE`, `INACTIVE`, and `SUSPENDED`.
 blocked state that forbids login and sessions. (`INACTIVE` is a separate
 opt-out state and is not counted.) Administrators are never counted here.
 
-The dashboard's job counts come from `GET /api/v1/admin/jobs/summary`; see [Jobs API](jobs.md#dashboard-summary).
+The dashboard's job counts come from `GET /api/v1/admin/jobs/summary`; see [Jobs API](jobs.md#administrator-endpoints).
+
+Administrators can review technician cancellation requests, edit jobs, and
+permanently delete only completed or cancelled jobs. They can also inspect
+booking payments and extend their validity. See [Jobs API](jobs.md#administrator-endpoints)
+and [Booking Payments API](booking-payments.md#administrator-endpoints) for
+request bodies and lifecycle rules.
 
 ## Common errors
 

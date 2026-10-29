@@ -26,17 +26,17 @@ import {
 export class AuthController {
   constructor(private authService: AuthService, private usersService: UsersService) {}
 
-  // Creates a customer account and immediately starts phone verification.
+  // Customer registration is immediate; technician registration requires OTP verification.
   @Post('register')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Register a customer and send a verification OTP',
+    summary: 'Register a customer or start technician phone verification',
     description:
-      'Creates the account and sends the first OTP. The account is not usable until `/verify-otp` succeeds. `ADMIN` cannot be requested here.',
+      'Customer accounts are created without registration OTP verification. Technician accounts receive an OTP and must verify it before completing a profile. `ADMIN` cannot be requested here.',
   })
   @ApiValidationFailed()
   @ApiConflict('An account with this phone number or email already exists.')
-  @ApiServiceUnavailable('The OTP could not be stored, so the account was not started')
+  @ApiServiceUnavailable('The OTP could not be stored for technician registration.')
   async register(@Body() body: RegisterDto) {
     return this.authService.register(body);
   }

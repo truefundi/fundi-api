@@ -1,9 +1,23 @@
-import { Controller, Get, Param, ParseUUIDPipe } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+} from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
-import { Auth } from '../common/decorators/auth.decorator';
+import {
+  Auth,
+  AuthUser,
+  CurrentUser,
+} from '../common/decorators/auth.decorator';
 import { JobSummaryResponseDto } from './dto/job-summary-response.dto';
 import { JobsService } from './jobs.service';
+import { AdminUpdateJobDto } from './dto/admin-update-job.dto';
+import { ReviewCancellationDto } from './dto/cancel-job.dto';
 
 @ApiTags('Admin jobs')
 @Controller('api/v1/admin/jobs')
@@ -33,8 +47,39 @@ export class AdminJobsController {
     return this.jobs.summaryForAdmin();
   }
 
+  @Get('cancellation-requests')
+  listCancellationRequests() {
+    return this.jobs.listCancellationRequests();
+  }
+
+  @Patch('cancellation-requests/:requestId')
+  reviewCancellation(
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+    @Body() dto: ReviewCancellationDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.jobs.reviewCancellation(requestId, dto, user.id);
+  }
+
   @Get(':jobId')
   get(@Param('jobId', ParseUUIDPipe) jobId: string) {
     return this.jobs.getForAdmin(jobId);
+  }
+
+  @Patch(':jobId')
+  update(
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: AdminUpdateJobDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.jobs.updateByAdmin(jobId, dto, user.id);
+  }
+
+  @Delete(':jobId')
+  delete(
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.jobs.permanentlyDelete(jobId, user.id);
   }
 }

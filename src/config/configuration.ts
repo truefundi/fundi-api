@@ -70,6 +70,17 @@ export default () => {
   },
   security: {
     totpEncryptionKey: process.env.ADMIN_TOTP_ENCRYPTION_KEY,
+    nationalIdEncryptionKey: process.env.NATIONAL_ID_ENCRYPTION_KEY,
+  },
+  mockPayment: {
+    key: process.env.MOCK_PAYMENT_KEY,
+    secret: process.env.MOCK_PAYMENT_SECRET,
+  },
+  geocoding: {
+    endpoint:
+      process.env.GEOCODING_ENDPOINT ||
+      'https://nominatim.openstreetmap.org/search',
+    userAgent: process.env.GEOCODING_USER_AGENT || 'FundiBackend/0.1.0',
   },
   cors: {
     origins: (process.env.CORS_ORIGINS || 'http://localhost:3000').split(','),

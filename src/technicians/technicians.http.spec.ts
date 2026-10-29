@@ -13,6 +13,7 @@ import { TechniciansAdminController } from './technicians-admin.controller';
 import { TechniciansController } from './technicians.controller';
 import { TechniciansPublicController } from './technicians-public.controller';
 import { TechniciansService } from './technicians.service';
+import { AuthService } from '../auth/auth.service';
 
 // Exercises the full request pipeline used in main.ts (ValidationPipe +
 // HttpExceptionFilter) with a stand-in JWT guard, so query conversion,
@@ -35,6 +36,8 @@ describe('Technician list endpoints (HTTP)', () => {
   });
 
   const techniciansService = {
+    registerPublicTechnician: jest.fn(),
+    registerMyProfile: jest.fn(),
     listAllByAdmin: jest.fn(),
     searchByAdmin: jest.fn(),
     searchByUserDetails: jest.fn(),
@@ -42,6 +45,9 @@ describe('Technician list endpoints (HTTP)', () => {
     listApproved: jest.fn(),
     listPublic: jest.fn(),
     setAccountStatusByAdmin: jest.fn(),
+  };
+  const authService = {
+    requestTechnicianRegistrationOtp: jest.fn(),
   };
 
   // Stand-in for AuthGuard('jwt'): a request carries its role in a test header.
@@ -69,6 +75,16 @@ describe('Technician list endpoints (HTTP)', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     techniciansService.listAllByAdmin.mockResolvedValue(envelope());
+    techniciansService.registerMyProfile.mockResolvedValue({
+      id: technicianId,
+    });
+    techniciansService.registerPublicTechnician.mockResolvedValue({
+      id: technicianId,
+      user: { id: 'public-user-id' },
+    });
+    authService.requestTechnicianRegistrationOtp.mockResolvedValue({
+      message: 'OTP generated.',
+    });
     techniciansService.searchByAdmin.mockResolvedValue(envelope());
     techniciansService.listAvailable.mockResolvedValue(envelope());
     techniciansService.listApproved.mockResolvedValue(envelope());
@@ -85,6 +101,7 @@ describe('Technician list endpoints (HTTP)', () => {
       ],
       providers: [
         { provide: TechniciansService, useValue: techniciansService },
+        { provide: AuthService, useValue: authService },
       ],
     })
       .overrideGuard(AuthGuard('jwt'))
@@ -95,7 +112,11 @@ describe('Technician list endpoints (HTTP)', () => {
     // Mirrors the global configuration in main.ts.
     app.useGlobalFilters(new HttpExceptionFilter());
     app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
     );
     await app.init();
   });
@@ -108,8 +129,58 @@ describe('Technician list endpoints (HTTP)', () => {
 
   describe('authorization', () => {
     it('rejects unauthenticated requests with 401', async () => {
-      await request(app.getHttpServer()).get('/api/v1/admin/technicians').expect(401);
+      await request(app.getHttpServer())
+        .get('/api/v1/admin/technicians')
+        .expect(401);
       expect(techniciansService.listAllByAdmin).not.toHaveBeenCalled();
+    });
+
+    describe('POST /technicians/register', () => {
+      it('creates a public technician registration and starts phone OTP verification', async () => {
+        await request(app.getHttpServer())
+          .post('/api/v1/technicians/register')
+          .send({
+            user: {
+              fullName: 'Amina Example',
+              phoneNumber: '0788123456',
+              email: ' AMINA@EXAMPLE.COM ',
+            },
+            profile: {
+              gender: 'FEMALE',
+              nationalIdNumber: 'ID123456',
+              baseAddress: 'Kigali, Rwanda',
+              publicLocationLabel: 'Kigali',
+              baseLatitude: null,
+              baseLongitude: null,
+              paymentMethod: 'MOMO',
+              paymentNumber: '0788123456',
+              serviceExperiences: [
+                {
+                  categoryId,
+                  yearsOfExperience: 5,
+                },
+              ],
+            },
+          })
+          .expect(201);
+
+        expect(techniciansService.registerPublicTechnician).toHaveBeenCalledWith(
+          expect.objectContaining({
+            user: expect.objectContaining({
+              phoneNumber: '+250788123456',
+              email: 'amina@example.com',
+            }),
+            profile: expect.objectContaining({
+              baseLatitude: null,
+              baseLongitude: null,
+              paymentNumber: '+250788123456',
+            }),
+          }),
+        );
+        expect(
+          authService.requestTechnicianRegistrationOtp,
+        ).toHaveBeenCalledWith('public-user-id');
+      });
     });
 
     it('rejects non-admin callers with 403 on the admin list', async () => {
@@ -203,16 +274,55 @@ describe('Technician list endpoints (HTTP)', () => {
       });
     });
 
-    describe('technician profile input', () => {
-      it('rejects nationalIdNumber because it is no longer a profile field', async () => {
-        const { body } = await request(app.getHttpServer())
+    describe('POST /technicians/profile', () => {
+      it('accepts nationalIdNumber as a technician profile field', async () => {
+        await request(app.getHttpServer())
           .post('/api/v1/technicians/profile')
           .set('x-test-role', 'TECHNICIAN')
           .send({ nationalIdNumber: 'ID123456' })
-          .expect(400);
+          .expect(201);
 
-        expect(body.statusCode).toBe(400);
-        expect(body.message).toContain('property nationalIdNumber should not exist');
+        expect(techniciansService.registerMyProfile).toHaveBeenCalledWith(
+          technicianId,
+          { nationalIdNumber: 'ID123456' },
+        );
+      });
+
+      it('allows a logged-in customer to start a technician profile', async () => {
+        await request(app.getHttpServer())
+          .post('/api/v1/technicians/profile')
+          .set('x-test-role', 'CUSTOMER')
+          .send({ nationalIdNumber: 'ID123456' })
+          .expect(201);
+
+        expect(techniciansService.registerMyProfile).toHaveBeenCalledWith(
+          technicianId,
+          { nationalIdNumber: 'ID123456' },
+        );
+      });
+
+      it('accepts a text location with null coordinates for a logged-in customer', async () => {
+        await request(app.getHttpServer())
+          .post('/api/v1/technicians/profile')
+          .set('x-test-role', 'CUSTOMER')
+          .send({
+            gender: 'FEMALE',
+            baseAddress: 'Kigali, Rwanda',
+            publicLocationLabel: 'Kigali',
+            baseLatitude: null,
+            baseLongitude: null,
+          })
+          .expect(201);
+
+        expect(techniciansService.registerMyProfile).toHaveBeenCalledWith(
+          technicianId,
+          expect.objectContaining({
+            baseAddress: 'Kigali, Rwanda',
+            publicLocationLabel: 'Kigali',
+            baseLatitude: null,
+            baseLongitude: null,
+          }),
+        );
       });
     });
 

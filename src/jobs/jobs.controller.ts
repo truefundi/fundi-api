@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
@@ -24,6 +25,14 @@ import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobUpload } from './job-media.util';
 import { JobsService } from './jobs.service';
+import { AuthService } from '../auth/auth.service';
+import { VerifyJobPhoneDto } from './dto/verify-job-phone.dto';
+import { CancelJobDto } from './dto/cancel-job.dto';
+import {
+  MatchingTechniciansDto,
+  ProposeTechnicianDto,
+} from './dto/matching-technicians.dto';
+import { MatchingTechniciansByLocationDto } from './dto/matching-technicians-by-location.dto';
 
 const JOB_MEDIA_INTERCEPTOR = FileFieldsInterceptor(
   [
@@ -45,11 +54,43 @@ interface JobUploadFields {
   video?: JobUpload[];
 }
 
-@ApiTags('Customer jobs')
+@ApiTags('Customer and technician job requests')
 @Controller('api/v1/jobs')
-@Auth(UserRole.CUSTOMER)
+@Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
 export class JobsController {
-  constructor(private readonly jobs: JobsService) {}
+  constructor(
+    private readonly jobs: JobsService,
+    private readonly auth: AuthService,
+  ) {}
+
+  @Post('phone-verification/request')
+  requestPhoneVerification(@CurrentUser() user: AuthUser) {
+    return this.auth.requestCustomerJobOtp(user.id);
+  }
+
+  @Post('phone-verification/verify')
+  verifyPhone(@CurrentUser() user: AuthUser, @Body() dto: VerifyJobPhoneDto) {
+    return this.auth.verifyCustomerJobOtp(user.id, dto.verificationId, dto.otp);
+  }
+
+  @Get('matching-technicians')
+  matchingTechnicians(@Query() dto: MatchingTechniciansDto) {
+    return this.jobs.previewMatchingTechnicians(dto);
+  }
+
+  @Post('matching-technicians/geocode')
+  matchingTechniciansByGeocodedLocation(
+    @Body() dto: MatchingTechniciansByLocationDto,
+  ) {
+    return this.jobs.previewMatchingTechniciansByGeocodedLocation(dto);
+  }
+
+  @Post('matching-technicians/by-location-name')
+  matchingTechniciansByLocationName(
+    @Body() dto: MatchingTechniciansByLocationDto,
+  ) {
+    return this.jobs.previewMatchingTechniciansByLocationName(dto);
+  }
 
   @Post()
   @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
@@ -58,6 +99,8 @@ export class JobsController {
     schema: {
       type: 'object',
       required: [
+        'paymentId',
+        'phoneVerificationId',
         'description',
         'locationAddress',
         'latitude',
@@ -65,6 +108,8 @@ export class JobsController {
         'offeredAmount',
       ],
       properties: {
+        paymentId: { type: 'string', format: 'uuid' },
+        phoneVerificationId: { type: 'string', format: 'uuid' },
         serviceCategoryId: { type: 'string', format: 'uuid' },
         otherServiceName: { type: 'string', maxLength: 80 },
         description: { type: 'string', minLength: 10, maxLength: 5000 },
@@ -107,6 +152,23 @@ export class JobsController {
     return this.jobs.getCustomerJob(user.id, jobId);
   }
 
+  @Post('mine/:jobId/requests')
+  proposeTechnician(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: ProposeTechnicianDto,
+  ) {
+    return this.jobs.proposeTechnician(user.id, jobId, dto);
+  }
+
+  @Post('mine/:jobId/confirm-cooperation')
+  confirmCooperation(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.confirmCooperation(user.id, jobId, 'customer');
+  }
+
   @Patch('mine/:jobId')
   updateMine(
     @CurrentUser() user: AuthUser,
@@ -133,12 +195,37 @@ export class JobsController {
     return this.jobs.retryDispatch(user.id, jobId);
   }
 
-  @Delete('mine/:jobId')
-  cancel(
+  @Post('mine/:jobId/cancel')
+  cancelJob(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: CancelJobDto,
+  ) {
+    return this.jobs.cancelJob(user.id, jobId, 'customer', dto);
+  }
+
+  @Post('mine/:jobId/pause')
+  pauseJob(
     @CurrentUser() user: AuthUser,
     @Param('jobId', ParseUUIDPipe) jobId: string,
   ) {
-    return this.jobs.cancel(user.id, jobId);
+    return this.jobs.requestPause(user.id, jobId, 'customer');
+  }
+
+  @Post('mine/:jobId/resume')
+  resumeJob(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.requestResume(user.id, jobId, 'customer');
+  }
+
+  @Delete('mine/:jobId')
+  hide(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.hideJobForUser(user.id, jobId, 'customer');
   }
 
   @Post('mine/:jobId/media')

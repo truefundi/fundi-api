@@ -114,6 +114,7 @@ export class AuthService {
   async requestLoginOtp(phoneNumber: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) throw new NotFoundException('No account was found for this phone number.');
+    this.rejectAdminPhoneLogin(user.role);
     this.ensureActive(user.status);
     await this.issueOtp(user.id, user.phoneNumber);
     return { message: `OTP generated. It expires in ${this.otpLifetimeMinutes()} minutes.` };
@@ -123,6 +124,7 @@ export class AuthService {
   async resendOtp(phoneNumber: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) throw new NotFoundException('No account was found for this phone number.');
+    this.rejectAdminPhoneLogin(user.role);
     this.ensureActive(user.status);
     const code = randomInt(100000, 1000000).toString();
     const resendCount = await this.runOtpScript(
@@ -147,6 +149,7 @@ export class AuthService {
   async verifyOtp(phoneNumber: string, otp: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) throw new NotFoundException('No account was found for this phone number.');
+    this.rejectAdminPhoneLogin(user.role);
     this.ensureActive(user.status);
     await this.verifyOtpCode(user.id, otp);
     const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
@@ -184,6 +187,9 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('The account associated with this token no longer exists.');
     }
+    // Stops a bearer session minted for an administrator before the phone flow was
+    // closed from being renewed indefinitely.
+    this.rejectAdminPhoneLogin(user.role);
     this.ensureActive(user.status);
     const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
     const expiresAt = this.refreshTokenExpiresAt();
@@ -217,15 +223,24 @@ export class AuthService {
       this.configService.get<string>('jwt.refreshSecret') ||
       'default_dev_refresh_secret_32chars';
 
-    const accessToken = await this.jwtService.signAsync(payload, {
-      secret: accessSecret,
-      expiresIn: this.configService.get<string>('jwt.accessExpiresIn', '7d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
-    });
+    // `typ` pins each token to its purpose. Without it a refresh token is a valid
+    // JWT for the access-secret check whenever the two secrets are configured the
+    // same, and admin and phone tokens share the same secrets in this project.
+    const accessToken = await this.jwtService.signAsync(
+      { ...payload, typ: 'access' },
+      {
+        secret: accessSecret,
+        expiresIn: this.configService.get<string>('jwt.accessExpiresIn', '7d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      },
+    );
 
-    const refreshToken = await this.jwtService.signAsync(payload, {
-      secret: refreshSecret,
-      expiresIn: this.configService.get<string>('jwt.refreshExpiresIn', '30d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
-    });
+    const refreshToken = await this.jwtService.signAsync(
+      { ...payload, typ: 'refresh' },
+      {
+        secret: refreshSecret,
+        expiresIn: this.configService.get<string>('jwt.refreshExpiresIn', '30d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      },
+    );
 
     return {
       accessToken,
@@ -348,6 +363,16 @@ export class AuthService {
   // Formats unknown errors for diagnostic logs without hiding the cause.
   private errorMessage(error: unknown) {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  // Administrators never hold bearer tokens: their session is an httpOnly cookie
+  // issued only after password + authenticator verification. Letting an ADMIN
+  // account through the phone-OTP flow would mint a token that admin routes accept,
+  // turning a texted code into full dashboard access.
+  private rejectAdminPhoneLogin(role: string) {
+    if (role === UserRole.ADMIN) {
+      throw new ForbiddenException('Administrators must sign in through the admin portal.');
+    }
   }
 
   // Ensures only active accounts can receive login codes or authenticate.

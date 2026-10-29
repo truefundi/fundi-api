@@ -1,6 +1,6 @@
 # Phone Authentication API
 
-This guide covers customers and technicians, who sign in with a phone number and an SMS code and receive bearer tokens they hold themselves. Administrators sign in separately with an email address, a password, and a second SMS code; their session lives in `httpOnly` cookies instead of tokens. That flow is documented in [admin-authentication.md](admin-authentication.md). The two flows share no endpoints, and public registration cannot create an administrator.
+This guide covers customers and technicians, who sign in with a phone number and an SMS code and receive bearer tokens they hold themselves. Administrators sign in separately with an email address, a password, and a code from an authenticator app; their session lives in `httpOnly` cookies instead of tokens. That flow is documented in [admin-authentication.md](admin-authentication.md). The two flows share no endpoints, public registration cannot create an administrator, and the phone endpoints below answer `403` for an `ADMIN` account so a texted code can never mint a token that admin routes would accept.
 
 Phone numbers are the login identifier. Public registration accepts `CUSTOMER` or `TECHNICIAN` (case-insensitive) and defaults to `CUSTOMER`; it cannot create an administrator. New accounts default to `ACTIVE`.
 

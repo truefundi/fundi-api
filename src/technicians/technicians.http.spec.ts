@@ -49,10 +49,17 @@ describe('Technician list endpoints (HTTP)', () => {
     canActivate: (context: ExecutionContext) => {
       const req = context
         .switchToHttp()
-        .getRequest<{ headers: Record<string, string>; user?: unknown }>();
+        .getRequest<{
+          headers: Record<string, string>;
+          user?: unknown;
+          authMethod?: 'bearer' | 'cookie';
+        }>();
       const role = req.headers['x-test-role'];
       if (!role) throw new UnauthorizedException();
       req.user = { userId: technicianId, role };
+      // Mirrors JwtStrategy: the way the credential arrived is recorded so
+      // RolesGuard can refuse a bearer token carrying the ADMIN role.
+      req.authMethod = req.headers['x-test-auth-method'] === 'bearer' ? 'bearer' : 'cookie';
       return true;
     },
   };
@@ -116,6 +123,17 @@ describe('Technician list endpoints (HTTP)', () => {
       await request(app.getHttpServer())
         .get('/api/v1/admin/technicians')
         .set('x-test-role', 'CUSTOMER')
+        .expect(403);
+      expect(techniciansService.listAllByAdmin).not.toHaveBeenCalled();
+    });
+
+    // An ADMIN identity carried by a bearer token has not passed the password and
+    // authenticator checks, so the admin cookie is required.
+    it('rejects an ADMIN bearer token with 403 on the admin list', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/admin/technicians')
+        .set('x-test-role', 'ADMIN')
+        .set('x-test-auth-method', 'bearer')
         .expect(403);
       expect(techniciansService.listAllByAdmin).not.toHaveBeenCalled();
     });

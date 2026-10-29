@@ -84,6 +84,35 @@ describe('AuthService phone OTP flow', () => {
     expect(sms.sendOtp).not.toHaveBeenCalled();
   });
 
+  // Administrators sign in with a password and an authenticator, never a texted
+  // code, so the phone flow must not even start for their number.
+  it('rejects OTP requests for administrator accounts', async () => {
+    const { service, prisma, sms } = createService();
+    prisma.user.findUnique.mockResolvedValue({ ...activeUser, role: 'ADMIN' });
+    await expect(service.requestLoginOtp(activeUser.phoneNumber)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(sms.sendOtp).not.toHaveBeenCalled();
+  });
+
+  it('rejects OTP resends for administrator accounts', async () => {
+    const { service, prisma, sms } = createService();
+    prisma.user.findUnique.mockResolvedValue({ ...activeUser, role: 'ADMIN' });
+    await expect(service.resendOtp(activeUser.phoneNumber)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(sms.sendOtp).not.toHaveBeenCalled();
+  });
+
+  // Even a code already in flight must not be exchangeable for a bearer token that
+  // admin routes would accept.
+  it('rejects OTP verification for administrator accounts', async () => {
+    const { service, prisma, redisClient } = createService();
+    prisma.user.findUnique.mockResolvedValue({ ...activeUser, role: 'ADMIN' });
+    redisClient.eval.mockResolvedValue(1);
+    await expect(service.verifyOtp(activeUser.phoneNumber, '123456')).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    expect(redisClient.eval).not.toHaveBeenCalled();
+  });
+
   // Enforces no more than three resend operations for a pending OTP.
   it('rejects a fourth OTP resend', async () => {
     const { service, prisma, sms, redisClient } = createService();
@@ -197,6 +226,15 @@ describe('AuthService refresh token exchange', () => {
     const { service, prisma } = createService();
     prisma.user.findUnique.mockResolvedValue({ ...activeUser, status: 'INACTIVE' });
     await expect(service.refreshTokens('current-refresh-token')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  // A bearer refresh token issued to an administrator before the phone flow was
+  // closed must not be able to keep minting admin-capable bearer tokens.
+  it('rejects refresh for an administrator account', async () => {
+    const { service, prisma, tx } = createService();
+    prisma.user.findUnique.mockResolvedValue({ ...activeUser, role: 'ADMIN' });
+    await expect(service.refreshTokens('current-refresh-token')).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.refreshToken.create).not.toHaveBeenCalled();
   });
 
   // Fails the second of two concurrent refreshes so one token cannot mint two pairs.

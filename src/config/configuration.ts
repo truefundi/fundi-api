@@ -1,6 +1,25 @@
 // Loads typed runtime settings from the process environment.
 export default () => {
   const environment = process.env.NODE_ENV || 'development';
+
+  // Production must never run on the development fallbacks below. Failing at boot is
+  // the only safe outcome: otherwise a deploy that forgot a secret happily signs
+  // tokens with a value printed in this repository.
+  if (environment === 'production') {
+    const required = [
+      'JWT_ACCESS_SECRET',
+      'JWT_REFRESH_SECRET',
+      'TOKEN_HASH_SECRET',
+      'ADMIN_TOTP_ENCRYPTION_KEY',
+    ].filter((key) => !process.env[key]);
+    if (required.length > 0) {
+      throw new Error(`Missing required production secrets: ${required.join(', ')}`);
+    }
+    if (process.env.JWT_ACCESS_SECRET === process.env.JWT_REFRESH_SECRET) {
+      throw new Error('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different in production.');
+    }
+  }
+
   return {
   environment,
   port: parseInt(process.env.PORT || '3000', 10),

@@ -38,7 +38,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.bearerToken(client.handshake.headers.authorization);
     if (typeof token !== 'string' || !token) return;
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: string; sid: string }>(
+      const payload = await this.jwt.verifyAsync<{ sub: string; sid: string; typ?: string }>(
         token,
         {
           secret:
@@ -46,7 +46,8 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             'default_dev_access_secret_32chars',
         },
       );
-      if (!payload.sub || !payload.sid) return;
+      // Only access tokens are accepted here, never a refresh token presented as one.
+      if (!payload.sub || !payload.sid || payload.typ !== 'access') return;
       const session = await this.prisma.refreshToken.findUnique({
         where: { sessionId: payload.sid },
         select: { userId: true, expiresAt: true },

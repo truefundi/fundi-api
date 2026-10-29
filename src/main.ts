@@ -9,6 +9,11 @@ import { json, urlencoded } from 'express';
 import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import {
+  ADMIN_2FA_CHALLENGE_COOKIE,
+  ADMIN_ACCESS_COOKIE,
+  ADMIN_REFRESH_COOKIE,
+} from './auth/admin-cookies';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -62,9 +67,11 @@ async function bootstrap() {
       'accessToken',
     )
     // Lets Swagger UI send the admin session cookies, which no request body carries.
-    .addCookieAuth('adminAccessToken')
-    .addCookieAuth('adminRefreshToken')
-    .addCookieAuth('adminTwoFactorChallenge')
+    // The third argument names each scheme: without it every call overwrites the
+    // previous one under the default name `cookie`.
+    .addCookieAuth(ADMIN_ACCESS_COOKIE, undefined, 'adminAccessToken')
+    .addCookieAuth(ADMIN_REFRESH_COOKIE, undefined, 'adminRefreshToken')
+    .addCookieAuth(ADMIN_2FA_CHALLENGE_COOKIE, undefined, 'adminTwoFactorChallenge')
     .addTag('auth', 'Phone-OTP sign-up and sign-in, token exchange, and session revocation.')
     .addTag(
       'admin-auth',

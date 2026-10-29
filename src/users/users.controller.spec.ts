@@ -61,14 +61,17 @@ describe('UsersController', () => {
       const guard = new RolesGuard({
         getAllAndOverride: jest.fn().mockReturnValue(['ADMIN']),
       } as unknown as Reflector);
-      const contextWithRole = (role: string) =>
+      const contextWithRole = (role: string, authMethod: 'bearer' | 'cookie' = 'cookie') =>
         ({
-          switchToHttp: () => ({ getRequest: () => ({ user: { role } }) }),
+          switchToHttp: () => ({ getRequest: () => ({ user: { role }, authMethod }) }),
           getHandler: () => undefined,
           getClass: () => UsersController,
         }) as unknown as Parameters<typeof guard.canActivate>[0];
 
       expect(guard.canActivate(contextWithRole('ADMIN'))).toBe(true);
+      expect(() => guard.canActivate(contextWithRole('ADMIN', 'bearer'))).toThrow(
+        'Administrator sessions must use the admin portal.',
+      );
       expect(() => guard.canActivate(contextWithRole('CUSTOMER'))).toThrow(
         'You do not have permission to perform this action.',
       );

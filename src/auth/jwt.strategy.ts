@@ -48,9 +48,15 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   // Confirms the token subject still exists and is an active account. The phone
   // number is read off the user rather than the payload, so admin tokens do not
   // carry one.
-  async validate(payload: { sub: string; phoneNumber?: string; role: string; sid: string }) {
+  async validate(payload: { sub: string; phoneNumber?: string; role: string; sid: string; typ?: string }) {
     if (!payload?.sub || !payload.sid) {
       throw new UnauthorizedException('The access token is missing its account session.');
+    }
+    // A refresh token is signed with a different secret and carries typ=refresh.
+    // Refusing anything but typ=access keeps the two from being interchangeable if
+    // the secrets are ever misconfigured to match.
+    if (payload.typ !== 'access') {
+      throw new UnauthorizedException('The token is not an access token.');
     }
     const session = await this.prisma.refreshToken.findUnique({ where: { sessionId: payload.sid } });
     if (!session || session.userId !== payload.sub || session.expiresAt.getTime() <= Date.now()) {

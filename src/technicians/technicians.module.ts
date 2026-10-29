@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
 import { StorageModule } from '../storage/storage.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { TechniciansController } from './technicians.controller';
 import { TechniciansAdminController } from './technicians-admin.controller';
 import { TechniciansService } from './technicians.service';
@@ -11,7 +12,7 @@ import { TechnicianDocumentsService } from './documents/technician-documents.ser
 
 // Groups the technician profile endpoints, document handling, and persistence services.
 @Module({
-  imports: [DatabaseModule, StorageModule],
+  imports: [DatabaseModule, StorageModule, NotificationsModule],
   controllers: [
     TechniciansController,
     TechniciansAdminController,

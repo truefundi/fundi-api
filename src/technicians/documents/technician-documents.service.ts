@@ -8,6 +8,7 @@ import {
 import {
   DocumentStatus,
   DocumentType,
+  NotificationType,
   Prisma,
   TechnicianDocument,
 } from '@prisma/client';
@@ -15,6 +16,7 @@ import { randomUUID } from 'crypto';
 import { AuditService } from '../../audit/audit.service';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../../storage/storage.service';
+import { NotificationsService } from '../../notifications/notifications.service';
 import { ReviewDocumentDto } from './dto/review-document.dto';
 import { UploadDocumentDto } from './dto/upload-document.dto';
 import {
@@ -75,6 +77,7 @@ export class TechnicianDocumentsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly storage: StorageService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ---------- Technician: profile picture ----------
@@ -347,6 +350,42 @@ export class TechnicianDocumentsService {
         where: { id: documentId },
         include: { category: { select: { id: true, name: true, slug: true } } },
       });
+
+      const tech = await tx.technicianProfile.findUnique({
+        where: { id: document.technicianId },
+        select: { userId: true },
+      });
+      if (tech && dto.status === DocumentStatus.ACCEPTED) {
+        await this.notifications
+          .create({
+            userId: tech.userId,
+            type: NotificationType.DOCUMENT_APPROVED,
+            title: 'Document approved',
+            body: 'One of your documents has been approved.',
+            data: {
+              documentId,
+              type: document.type,
+              dedupeKey: `doc-approved:${documentId}`,
+            },
+          })
+          .catch(() => undefined);
+      } else if (tech && dto.status === DocumentStatus.DENIED) {
+        await this.notifications
+          .create({
+            userId: tech.userId,
+            type: NotificationType.DOCUMENT_REJECTED,
+            title: 'Document rejected',
+            body: 'One of your documents was rejected. Check your review note.',
+            data: {
+              documentId,
+              type: document.type,
+              reviewNote: note,
+              dedupeKey: `doc-rejected:${documentId}`,
+            },
+          })
+          .catch(() => undefined);
+      }
+
       return this.toResponse(updated, true);
     });
   }

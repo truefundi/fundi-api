@@ -24,6 +24,7 @@ describe('JobsService.summaryForAdmin', () => {
       undefined as unknown as never,
       undefined as unknown as never,
       undefined as unknown as never,
+      undefined as unknown as never,
     );
     return { service, jobCount, disputeCount };
   };

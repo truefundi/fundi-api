@@ -5,6 +5,7 @@ import { AuditModule } from '../audit/audit.module';
 import { DatabaseModule } from '../database/database.module';
 import { StorageModule } from '../storage/storage.module';
 import { WebSocketsModule } from '../websockets/websockets.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { AdminJobsController } from './admin-jobs.controller';
 import { JobDispatchProcessor } from './job-dispatch.processor';
 import { JobMediaController } from './job-media.controller';
@@ -19,6 +20,7 @@ import { TestQueueProcessor } from './test-queue.processor';
     StorageModule,
     AuditModule,
     WebSocketsModule,
+    NotificationsModule,
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({

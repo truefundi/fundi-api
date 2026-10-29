@@ -1,13 +1,14 @@
-import { DisputeOpenedBy, Prisma } from '@prisma/client';
+import { DisputeOpenedBy, NotificationType, Prisma } from '@prisma/client';
 import {
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AuditService } from '../audit/audit.service';
+import { JobsService } from '../jobs/jobs.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { PrismaService } from '../database/prisma.service';
-import { JobsService } from '../jobs/jobs.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { AuditService } from '../audit/audit.service';
 import { OpenDisputeDto, ResolveDisputeDto } from './dto/dispute.dto';
 
 /**
@@ -21,6 +22,7 @@ export class DisputesService {
     private readonly jobs: JobsService,
     private readonly conversations: ConversationsService,
     private readonly audit: AuditService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** Jobs whose dispute is still open (default) or already resolved, newest first. */
@@ -118,26 +120,51 @@ export class DisputesService {
       throw error;
     }
 
+    const job = await this.prisma.job.findUnique({
+      where: { id: jobId },
+      select: {
+        customerId: true,
+        technician: { select: { userId: true } },
+      },
+    });
+    const recipientId =
+      openedBy === DisputeOpenedBy.CUSTOMER
+        ? job?.technician?.userId
+        : job?.customerId;
+    if (this.notifications && recipientId) {
+      await this.notifications
+        .create({
+          userId: recipientId,
+          type: NotificationType.DISPUTE_OPENED,
+          title: 'Dispute opened',
+          body: 'A dispute has been opened for your job. An admin will review it.',
+          data: { jobId, dedupeKey: `dispute-opened:${jobId}` },
+        })
+        .catch(() => undefined);
+    }
+
     return openedBy === DisputeOpenedBy.CUSTOMER
       ? this.jobs.getCustomerJob(userId, jobId)
       : this.jobs.getTechnicianJob(userId, jobId);
   }
 
-  /** Records the decision once; the resolution cannot be edited afterwards. */
+  /**
+   * Records the decision once; the resolution cannot be edited afterwards.
+   */
   async resolve(jobId: string, dto: ResolveDisputeDto, adminId: string) {
-    const dispute = await this.prisma.dispute.findUnique({
+    const existing = await this.prisma.dispute.findUnique({
       where: { jobId },
       select: { id: true, resolvedAt: true },
     });
-    if (!dispute) throw new NotFoundException('Dispute not found.');
-    if (dispute.resolvedAt) {
+    if (!existing) throw new NotFoundException('Dispute not found.');
+    if (existing.resolvedAt) {
       throw new ConflictException('This dispute has already been resolved.');
     }
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
       const resolved = await tx.dispute.updateMany({
-        where: { id: dispute.id, resolvedAt: null },
+        where: { id: existing.id, resolvedAt: null },
         data: {
           outcome: dto.outcome,
           amount: dto.amount,
@@ -152,7 +179,7 @@ export class DisputesService {
       await this.audit.log(
         {
           entityType: 'Dispute',
-          entityId: dispute.id,
+          entityId: existing.id,
           action: 'DISPUTE_RESOLVED',
           actorId: adminId,
           metadata: {
@@ -164,6 +191,38 @@ export class DisputesService {
         tx,
       );
     });
-    return this.jobs.getForAdmin(jobId);
+    const job = await this.jobs.getForAdmin(jobId);
+    const dispute = await this.prisma.dispute.findUnique({
+      where: { jobId },
+      include: {
+        job: {
+          select: {
+            customerId: true,
+            technician: { select: { userId: true } },
+          },
+        },
+      },
+    });
+    const recipients = new Set<string>();
+    const disputeJob = (dispute as any)?.job;
+    if (disputeJob?.customerId) recipients.add(disputeJob.customerId);
+    if (disputeJob?.technician?.userId)
+      recipients.add(disputeJob.technician.userId);
+    for (const recipient of recipients) {
+      await this.notifications
+        .create({
+          userId: recipient,
+          type: NotificationType.DISPUTE_RESOLVED,
+          title: 'Dispute resolved',
+          body: 'The admin has resolved your dispute.',
+          data: {
+            jobId,
+            outcome: dto.outcome,
+            dedupeKey: `dispute-resolved:${jobId}`,
+          },
+        })
+        .catch(() => undefined);
+    }
+    return job;
   }
 }

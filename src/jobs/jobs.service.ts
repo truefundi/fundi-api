@@ -18,6 +18,7 @@ import {
   JobPriority,
   JobProgressStatus,
   JobStatus,
+  NotificationType,
   Prisma,
   PriceOfferStatus,
   TechnicianAvailability,
@@ -31,6 +32,7 @@ import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { EventsGateway } from '../websockets/events.gateway';
+import { NotificationsService } from '../notifications/notifications.service';
 import { canRespondToOffer, isOfferExpired } from '../conversations/negotiation.util';
 import {
   JOB_MATCH_RADIUS_METERS,
@@ -152,6 +154,7 @@ export class JobsService {
     private readonly storage: StorageService,
     private readonly audit: AuditService,
     private readonly events: EventsGateway,
+    private readonly notifications: NotificationsService,
     @InjectQueue('job-dispatch') private readonly dispatchQueue: Queue,
   ) {}
 
@@ -750,6 +753,24 @@ export class JobsService {
         tx,
       );
     });
+    if (this.notifications) {
+      const recipients = [job.customerId, job.technician?.userId].filter(
+        (id): id is string => Boolean(id),
+      );
+      for (const recipient of new Set(recipients)) {
+        await this.notifications
+          .create({
+            userId: recipient,
+            type: NotificationType.JOB_CANCELLED,
+            title: 'Job cancelled',
+            body: trimmedReason
+              ? `The job was cancelled by Fundi admin: ${trimmedReason}`
+              : 'The job was cancelled by Fundi admin.',
+            data: { jobId, dedupeKey: `job-cancelled:${jobId}` },
+          })
+          .catch(() => undefined);
+      }
+    }
     return this.getForAdmin(jobId);
   }
 
@@ -772,7 +793,7 @@ export class JobsService {
       select: {
         id: true,
         verificationStatus: true,
-        user: { select: { fullName: true, role: true, status: true } },
+        user: { select: { id: true, fullName: true, role: true, status: true } },
       },
     });
     if (!technician || technician.user.role !== UserRole.TECHNICIAN) {
@@ -878,6 +899,17 @@ export class JobsService {
         tx,
       );
     });
+    if (this.notifications) {
+      await this.notifications
+        .create({
+          userId: technician.user.id,
+          type: NotificationType.JOB_ASSIGNED,
+          title: 'New job assigned',
+          body: 'Fundi admin assigned a job to you.',
+          data: { jobId, dedupeKey: `job-reassigned:${jobId}:${technician.id}` },
+        })
+        .catch(() => undefined);
+    }
     return this.getForAdmin(jobId);
   }
 
@@ -1103,6 +1135,17 @@ export class JobsService {
       throw error;
     }
     const job = await this.findJobByTechnician(technicianUserId, offerId);
+    if (this.notifications) {
+      await this.notifications
+        .create({
+          userId: job.customerId,
+          type: NotificationType.JOB_ASSIGNED,
+          title: 'Technician assigned',
+          body: 'A technician accepted your job and will contact you shortly.',
+          data: { jobId: job.id, dedupeKey: `job-assigned:${job.id}` },
+        })
+        .catch(() => undefined);
+    }
     return this.toResponse(job, 'technician');
   }
 
@@ -1311,6 +1354,36 @@ export class JobsService {
       );
     });
     const updated = await this.findJob(jobId);
+    if (
+      this.notifications &&
+      (updated.status === JobStatus.COMPLETED ||
+        updated.status === JobStatus.FAILED)
+    ) {
+      const completed = updated.status === JobStatus.COMPLETED;
+      const recipients = [updated.customerId, updated.technician?.userId].filter(
+        (id): id is string => Boolean(id),
+      );
+      for (const recipient of new Set(recipients)) {
+        await this.notifications
+          .create({
+            userId: recipient,
+            type: completed
+              ? NotificationType.JOB_COMPLETED
+              : NotificationType.JOB_CANCELLED,
+            title: completed ? 'Job completed' : 'Job ended',
+            body: completed
+              ? 'The job has been marked as completed by both parties.'
+              : 'The job was marked as failed.',
+            data: {
+              jobId,
+              dedupeKey: completed
+                ? `job-completed:${jobId}`
+                : `job-failed:${jobId}`,
+            },
+          })
+          .catch(() => undefined);
+      }
+    }
     return this.toResponse(updated, side);
   }
 
@@ -1793,6 +1866,19 @@ export class JobsService {
       currency: next.job.currency,
       priority: next.job.priority,
     });
+    await this.notifications
+      .create({
+        userId: next.technician.userId,
+        type: NotificationType.JOB_OFFER,
+        title: 'New job offer',
+        body: 'You have a new job offer.',
+        data: {
+          offerId: next.id,
+          jobId: next.jobId,
+          dedupeKey: `job-offer:${next.id}`,
+        },
+      })
+      .catch(() => undefined);
   }
 
   private async createOffers(

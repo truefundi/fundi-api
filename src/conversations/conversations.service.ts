@@ -8,12 +8,14 @@ import {
   ConversationMessageType,
   ConversationSender,
   ConversationStatus,
+  NotificationType,
   Prisma,
   PriceOfferStatus,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { JobsService } from '../jobs/jobs.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   CONVERSATION_MAX_OFFERS_PER_SIDE,
   CONVERSATION_MAX_TOTAL_OFFERS,
@@ -72,6 +74,7 @@ export class ConversationsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly jobs: JobsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -223,6 +226,14 @@ export class ConversationsService {
       );
     });
 
+    await this.notifyOther(conversation, userId, {
+      type: NotificationType.JOB_ACCEPTED,
+      title: 'Technician accepted your request',
+      body: 'Your technician accepted the job request. You can now agree on a price.',
+      data: { conversationId, jobId: conversation.jobId },
+      dedupeKey: `job-request-accepted:${conversationId}`,
+    });
+
     return this.get(userId, conversationId);
   }
 
@@ -323,6 +334,13 @@ export class ConversationsService {
       );
     });
 
+    await this.notifyOther(conversation, userId, {
+      type: NotificationType.CONVERSATION_MESSAGE,
+      title: 'New message',
+      body: dto.text.trim().slice(0, 140),
+      data: { conversationId, jobId: conversation.jobId },
+    });
+
     return this.get(userId, conversationId);
   }
 
@@ -401,6 +419,19 @@ export class ConversationsService {
       );
     });
 
+    await this.notifyOther(conversation, userId, {
+      type: NotificationType.OFFER_SENT,
+      title: 'New price offer',
+      body: `You received an offer of ${dto.amount} ${current.currency}.`,
+      data: {
+        conversationId,
+        jobId: conversation.jobId,
+        amount: dto.amount,
+        currency: current.currency,
+      },
+      dedupeKey: `offer-sent:${conversationId}:${dto.amount}:${userId}`,
+    });
+
     return this.get(userId, conversationId);
   }
 
@@ -471,6 +502,19 @@ export class ConversationsService {
         },
         tx,
       );
+    });
+
+    await this.notifyOther(conversation, userId, {
+      type: NotificationType.OFFER_ACCEPTED,
+      title: 'Price offer accepted',
+      body: `Your offer of ${offer.amount} ${offer.currency} was accepted.`,
+      data: {
+        conversationId,
+        jobId: conversation.jobId,
+        amount: offer.amount,
+        currency: offer.currency,
+      },
+      dedupeKey: `offer-accepted:${offer.id}`,
     });
 
     return this.get(userId, conversationId);
@@ -548,6 +592,19 @@ export class ConversationsService {
         },
         tx,
       );
+    });
+
+    await this.notifyOther(conversation, userId, {
+      type: NotificationType.OFFER_DECLINED,
+      title: 'Price offer declined',
+      body: reason ? `Your offer was declined: ${reason}` : 'Your offer was declined.',
+      data: {
+        conversationId,
+        jobId: conversation.jobId,
+        amount: offer.amount,
+        currency: offer.currency,
+      },
+      dedupeKey: `offer-declined:${offer.id}`,
     });
 
     return this.get(userId, conversationId);
@@ -714,6 +771,40 @@ export class ConversationsService {
         );
       }
     });
+  }
+
+  /**
+   * Sends an in-app notification to the participant who did not perform the
+   * action. Notification failures are swallowed: they must never roll back a
+   * negotiation that has already been committed.
+   */
+  private async notifyOther(
+    conversation: ConversationWithDetails,
+    actorId: string,
+    input: {
+      type: NotificationType;
+      title: string;
+      body: string;
+      data?: Record<string, unknown>;
+      dedupeKey?: string;
+    },
+  ): Promise<void> {
+    if (!this.notifications) return;
+    const recipientId =
+      conversation.job.customerId === actorId
+        ? conversation.job.technician?.userId
+        : conversation.job.customerId;
+    if (!recipientId || recipientId === actorId) return;
+    await this.notifications
+      .create({
+        userId: recipientId,
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        data: input.data as Prisma.InputJsonValue | undefined,
+        dedupeKey: input.dedupeKey,
+      })
+      .catch(() => undefined);
   }
 
   private async find(conversationId: string): Promise<ConversationWithDetails> {

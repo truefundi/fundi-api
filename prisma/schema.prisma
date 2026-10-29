@@ -25,6 +25,7 @@ model User {
   refreshTokens     RefreshToken[]
   technicianProfile TechnicianProfile?
   resolvedDisputes  Dispute[]          @relation("DisputeResolver")
+  notifications     Notification[]
 
   @@map("users")
 }
@@ -247,6 +248,22 @@ model Dispute {
 
   @@index([resolvedAt, openedAt])
   @@map("disputes")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
 }
 
 model AuditLog {
@@ -483,4 +500,21 @@ enum DisputeOutcome {
   CUSTOMER
   TECHNICIAN
   PARTIAL
+}
+
+enum NotificationType {
+  JOB_OFFER
+  JOB_ASSIGNED
+  JOB_ACCEPTED
+  JOB_COMPLETED
+  JOB_CANCELLED
+  CONVERSATION_MESSAGE
+  OFFER_SENT
+  OFFER_ACCEPTED
+  OFFER_DECLINED
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+  DOCUMENT_APPROVED
+  DOCUMENT_REJECTED
+  SYSTEM
 }

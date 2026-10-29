@@ -39,6 +39,7 @@ import {
   JOB_OFFER_RESPONSE_SECONDS,
 } from './job.constants';
 import { AdminCreateJobDto } from './dto/admin-create-job.dto';
+import { AdminRateJobDto } from './dto/admin-rate-job.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import {
   DropJobDto,
@@ -588,6 +589,63 @@ export class JobsService {
       );
     });
     await this.dispatchNext(jobId);
+  }
+
+  /**
+   * Records the customer's rating for a completed job on their behalf. The
+   * admin dashboard uses this when a rating is collected after a dispute.
+   */
+  async adminRate(jobId: string, dto: AdminRateJobDto, adminId: string) {
+    const job = await this.findJob(jobId);
+    if (
+      job.status !== JobStatus.COMPLETED &&
+      job.status !== JobStatus.ASSIGNED
+    ) {
+      throw new ConflictException(
+        'Only an assigned or completed job can be rated.',
+      );
+    }
+    const comment = dto.comment?.trim() || null;
+    const ratedAt = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.job.update({
+        where: { id: jobId },
+        data: {
+          ratingOverall: dto.overall,
+          ratingQuality: dto.quality,
+          ratingProfessionalism: dto.professionalism,
+          ratingArrival: dto.arrival,
+          ratingCommunication: dto.communication,
+          ratingValue: dto.value,
+          ratingComment: comment,
+          ratedAt,
+        },
+      });
+      await this.audit.log(
+        {
+          entityType: 'Job',
+          entityId: jobId,
+          action: 'JOB_RATED',
+          actorId: adminId,
+          metadata: { ...dto, comment },
+        },
+        tx,
+      );
+    });
+
+    const updated = await this.findJob(jobId);
+    if (this.notifications && updated.technician?.userId) {
+      await this.notifications
+        .create({
+          userId: updated.technician.userId,
+          type: NotificationType.SYSTEM,
+          title: 'You received a rating',
+          body: `A customer rated your work ${dto.overall}/5.`,
+          data: { jobId, rating: dto.overall, dedupeKey: `job-rated:${jobId}` },
+        })
+        .catch(() => undefined);
+    }
+    return this.toResponse(updated, 'admin');
   }
 
   async retryDispatch(customerId: string, jobId: string) {
@@ -2116,6 +2174,19 @@ export class JobsService {
       assignedAt: job.assignedAt,
       completedAt: job.completedAt,
       cancellationReason: job.cancellationReason,
+      rating:
+        job.ratingOverall === null
+          ? null
+          : {
+              overall: job.ratingOverall,
+              quality: job.ratingQuality,
+              professionalism: job.ratingProfessionalism,
+              arrival: job.ratingArrival,
+              communication: job.ratingCommunication,
+              value: job.ratingValue,
+              comment: job.ratingComment ?? '',
+              ratedAt: job.ratedAt,
+            },
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       media: await this.mediaResponse(job.id, job.media),

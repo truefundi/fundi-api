@@ -19,6 +19,7 @@ import { JobSummaryResponseDto } from './dto/job-summary-response.dto';
 import { AdminCancelJobDto } from './dto/admin-cancel-job.dto';
 import { AdminCreateJobDto } from './dto/admin-create-job.dto';
 import { AdminReassignJobDto } from './dto/admin-reassign-job.dto';
+import { AdminRateJobDto } from './dto/admin-rate-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobsService } from './jobs.service';
 
@@ -113,6 +114,22 @@ export class AdminJobsController {
     @Body() dto: AdminReassignJobDto,
   ) {
     return this.jobs.adminReassign(jobId, dto.technicianId, user.id);
+  }
+
+  @Post(':jobId/rating')
+  @ApiOperation({
+    summary: 'Rate a job (admin only)',
+    description:
+      'Records the customer’s post-job rating on their behalf. All six categories ' +
+      'are whole stars from 1 to 5; `overall` is the average shown in the dashboard.',
+  })
+  @ApiResponse({ status: 201, description: 'The rated job' })
+  rate(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: AdminRateJobDto,
+  ) {
+    return this.jobs.adminRate(jobId, dto, user.id);
   }
 
   @Delete(':jobId')

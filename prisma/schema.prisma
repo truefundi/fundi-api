@@ -151,6 +151,14 @@ model Job {
   cancellationReason String?
   assignedAt         DateTime?
   completedAt        DateTime?
+  ratingOverall      Int?
+  ratingQuality      Int?
+  ratingProfessionalism Int?
+  ratingArrival      Int?
+  ratingCommunication Int?
+  ratingValue        Int?
+  ratingComment      String?
+  ratedAt            DateTime?
   createdAt          DateTime                  @default(now())
   updatedAt          DateTime                  @updatedAt
   assignmentHistory  JobAssignmentHistory[]

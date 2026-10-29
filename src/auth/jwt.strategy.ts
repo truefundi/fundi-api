@@ -26,17 +26,19 @@ function fromAdminAccessCookie(request: JwtRequest): string | null {
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(configService: ConfigService, private prisma: PrismaService) {
     super({
-      // Bearer first, so mobile clients are unaffected and an explicit header
-      // always wins. The admin httpOnly cookie is the fallback for the dashboard.
+      // The admin cookie wins when it is present: only the dashboard sets it and
+      // it is httpOnly, so a stale Authorization header (old bundle, Swagger,
+      // proxy) must not shadow a live cookie session. Mobile clients never carry
+      // this cookie, so bearer extraction stays the normal path for them.
       jwtFromRequest: (request: JwtRequest) => {
-        const fromHeader = ExtractJwt.fromAuthHeaderAsBearerToken()(request);
-        if (fromHeader) {
-          request.authMethod = 'bearer';
-          return fromHeader;
-        }
         const fromCookie = fromAdminAccessCookie(request);
-        if (fromCookie) request.authMethod = 'cookie';
-        return fromCookie;
+        if (fromCookie) {
+          request.authMethod = 'cookie';
+          return fromCookie;
+        }
+        const fromHeader = ExtractJwt.fromAuthHeaderAsBearerToken()(request);
+        if (fromHeader) request.authMethod = 'bearer';
+        return fromHeader;
       },
       ignoreExpiration: false,
       secretOrKey:

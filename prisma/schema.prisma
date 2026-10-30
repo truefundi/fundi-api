@@ -27,6 +27,7 @@ model User {
   technicianProfile  TechnicianProfile?
   bookingPayments    BookingPayment[]
   phoneVerifications CustomerPhoneVerification[]
+  resolvedDisputes  Dispute[]          @relation("DisputeResolver")
 
   @@map("users")
 }
@@ -177,9 +178,11 @@ model Job {
   phoneVerificationId         String?                    @unique
   phoneVerification           CustomerPhoneVerification? @relation(fields: [phoneVerificationId], references: [id], onDelete: SetNull)
   cancellationRequests        JobCancellationRequest[]
+  cancellationReason          String?
   customer                    User                       @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
   serviceCategory             ServiceCategory?           @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id])
   technician                  TechnicianProfile?         @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
+  dispute            Dispute?
 
   @@index([customerId, createdAt])
   @@index([technicianId, status, updatedAt])
@@ -304,6 +307,29 @@ model JobAssignmentHistory {
   @@index([jobId, acceptedAt])
   @@index([technicianId, acceptedAt])
   @@map("job_assignment_history")
+}
+
+/// A disagreement between the customer and the technician on a job. The admin
+/// reviews the job and chat, then records a resolution; the record is kept after
+/// it is resolved so the decision stays auditable.
+model Dispute {
+  id           String          @id @default(uuid())
+  jobId        String          @unique
+  reason       String
+  openedBy     DisputeOpenedBy
+  openedAt     DateTime        @default(now())
+  outcome      DisputeOutcome?
+  amount       Int?
+  note         String?
+  resolvedAt   DateTime?
+  resolvedById String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  job          Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  resolvedBy   User?           @relation("DisputeResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([resolvedAt, openedAt])
+  @@map("disputes")
 }
 
 model AuditLog {
@@ -554,4 +580,15 @@ enum PriceOfferStatus {
   DECLINED
   SUPERSEDED
   EXPIRED
+}
+
+enum DisputeOpenedBy {
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum DisputeOutcome {
+  CUSTOMER
+  TECHNICIAN
+  PARTIAL
 }

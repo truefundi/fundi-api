@@ -212,6 +212,14 @@ export class JobsController {
     return this.jobs.requestPause(user.id, jobId, 'customer');
   }
 
+  @Post('mine/:jobId/accept')
+  acceptTechnicianOffer(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.acceptTechnicianOffer(user.id, jobId);
+  }
+
   @Post('mine/:jobId/resume')
   resumeJob(
     @CurrentUser() user: AuthUser,

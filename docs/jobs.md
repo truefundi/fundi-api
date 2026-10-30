@@ -330,10 +330,13 @@ A technician cannot accept another job while a job is `ASSIGNED`. A mutually
 | --- | --- | --- |
 | `GET` | `/api/v1/admin/jobs` | List all jobs, offers, and assignment history |
 | `GET` | `/api/v1/admin/jobs/summary` | Dashboard job counts |
+| `POST` | `/api/v1/admin/jobs` | Create and dispatch a job on a customer's behalf |
 | `GET` | `/api/v1/admin/jobs/cancellation-requests` | List technician cancellation requests |
 | `PATCH` | `/api/v1/admin/jobs/cancellation-requests/:requestId` | Approve or reject a technician cancellation |
 | `GET` | `/api/v1/admin/jobs/:jobId` | Get a job |
-| `PATCH` | `/api/v1/admin/jobs/:jobId` | Edit job description, address, or offered amount |
+| `PATCH` | `/api/v1/admin/jobs/:jobId` | Edit job fields; open jobs are re-matched |
+| `POST` | `/api/v1/admin/jobs/:jobId/cancel` | Cancel an open or assigned job |
+| `POST` | `/api/v1/admin/jobs/:jobId/reassign` | Reassign an open or assigned job |
 | `DELETE` | `/api/v1/admin/jobs/:jobId` | Permanently delete a completed/cancelled job |
 
 Review a technician cancellation:
@@ -351,6 +354,43 @@ place. Admins can permanently delete only completed or cancelled jobs.
 Payment records and audit history are retained. User-level `DELETE` endpoints
 only hide jobs and never permanently delete them.
 
+## Disputes
+
+Either the customer who owns a job or its currently assigned technician can open one dispute after a technician has been assigned. The reason must be 10–2,000 characters. A second dispute for the same job returns `409 Conflict`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/jobs/:jobId/disputes` | Customer or assigned technician opens a dispute |
+| `GET` | `/admin/disputes` | List open disputes; use `?state=resolved` for resolved disputes |
+| `GET` | `/admin/disputes/:jobId` | Read the disputed job and its conversation |
+| `POST` | `/admin/disputes/:jobId/resolve` | Record the admin decision |
+
+Open a dispute with:
+
+```json
+{
+  "reason": "The work was marked complete, but the leak is still present."
+}
+```
+
+The create endpoint returns the caller's normal job response, including the dispute reason, opener, and opening time. Admin resolution requires `outcome` (`CUSTOMER`, `TECHNICIAN`, or `PARTIAL`), `amount` in RWF, and a 2–2,000 character `note`. Resolution is immutable and does not itself process or transfer money.
+
+`GET /admin/jobs` returns a JSON array of admin job objects. `GET /admin/jobs/:jobId` returns one admin job object directly. Admin responses include `customer`, `assignmentHistory`, and `offers`, in addition to the common job fields.
+
+Example admin response:
+
+```json
+{
+  "active": 23,
+  "completed": 417,
+  "openDisputes": 2
+}
+```
+
+`active` counts `OPEN`, `ASSIGNED`, and `PAUSED` jobs. `completed` counts jobs
+with `status: "COMPLETED"`. `FAILED` and `CANCELLED` jobs are terminal and
+excluded. `openDisputes` counts dispute records without an admin resolution.
+
 ## Job and payment status
 
 Job statuses are `OPEN`, `ASSIGNED`, `PAUSED`, `COMPLETED`, `FAILED`, and
@@ -362,9 +402,10 @@ customer can select a technician.
 
 The category booking fee starts with seven days of validity. The countdown
 pauses when a technician accepts the job and resumes after an approved
-technician cancellation or customer cancellation. It remains paused while an
-accepted job is being worked on, including when both sides pause the job, and
-is marked completed when both sides complete the job.
+technician cancellation or customer cancellation if cooperation has not been
+confirmed. Both participants confirming cooperation expires the payment
+immediately. A payment remains paused while an assigned job is paused before
+mutual confirmation, and is marked completed when both sides complete the job.
 
 An expired payment does not automatically delete or cancel the job. The
 customer must make another payment and create a new job request. Administrators

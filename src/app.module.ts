@@ -15,6 +15,7 @@ import { TechniciansModule } from './technicians/technicians.module';
 import { AdminModule } from './admin/admin.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { PaymentsModule } from './payments/payments.module';
+import { DisputesModule } from './disputes/disputes.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { PaymentsModule } from './payments/payments.module';
     AdminModule,
     ConversationsModule,
     PaymentsModule,
+    DisputesModule,
     HealthModule,
   ],
   controllers: [AppController],

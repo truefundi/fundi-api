@@ -20,18 +20,32 @@ import { PaginatedTechniciansResponseDto } from './dto/paginated-technicians-res
 import { SearchAvailableTechniciansDto } from './dto/search-available-technicians.dto';
 import { UpdateAvailabilityDto } from './dto/update-availability.dto';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto';
+import { RegisterTechnicianDto } from './dto/register-technician.dto';
 import { TechniciansService } from './technicians.service';
+import { AuthService } from '../auth/auth.service';
 
 // Groups technician self-service and authenticated discovery endpoints.
 @ApiTags('Technicians')
 @Controller('api/v1/technicians')
 export class TechniciansController {
-  constructor(private readonly technicians: TechniciansService) {}
+  constructor(
+    private readonly technicians: TechniciansService,
+    private readonly auth: AuthService,
+  ) {}
 
   // ─── Technician self-service ──────────────────────────────────────────
 
+  @Post('register')
+  async registerPublic(@Body() dto: RegisterTechnicianDto) {
+    const profile = await this.technicians.registerPublicTechnician(dto);
+    const otp = await this.auth.requestTechnicianRegistrationOtp(
+      profile.user.id,
+    );
+    return { profile, ...otp };
+  }
+
   @Post('profile')
-  @Auth(UserRole.TECHNICIAN)
+  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
   registerProfile(
     @CurrentUser() user: AuthUser,
     @Body() dto: UpdateTechnicianProfileDto,
@@ -79,7 +93,8 @@ export class TechniciansController {
   })
   @ApiResponse({
     status: 200,
-    description: 'One page of available technician profiles plus pagination metadata',
+    description:
+      'One page of available technician profiles plus pagination metadata',
     type: PaginatedTechniciansResponseDto,
   })
   listAvailable(
@@ -94,13 +109,15 @@ export class TechniciansController {
   @Get('approved')
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
   @ApiOperation({
-    summary: 'List approved technicians regardless of availability (any signed-in role)',
+    summary:
+      'List approved technicians regardless of availability (any signed-in role)',
     description:
       'Always constrained server-side to active, approved technicians. Accepts the same filters and paging as GET /technicians.',
   })
   @ApiResponse({
     status: 200,
-    description: 'One page of approved technician profiles plus pagination metadata',
+    description:
+      'One page of approved technician profiles plus pagination metadata',
     type: PaginatedTechniciansResponseDto,
   })
   listApproved(

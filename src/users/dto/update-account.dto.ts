@@ -1,6 +1,10 @@
 import { IsEmail, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
+import {
+  normalizeRwandaPhoneNumber,
+  RWANDA_PHONE_NUMBER_PATTERN,
+} from '../../common/validation/rwanda-phone-number';
 
 // Allows profile edits while intentionally omitting role and status fields.
 export class UpdateAccountDto {
@@ -20,18 +24,15 @@ export class UpdateAccountDto {
   @ApiProperty({
     example: '+250788999000',
     description:
-      'New phone number. Spaces, parentheses, and hyphens are stripped before validation. Must not already belong to another account.',
-    minLength: 7,
-    maxLength: 20,
-    pattern: '^\\+?[0-9]+$',
+      'New Rwandan mobile number: local format (078, 079, 072, or 073 followed by seven digits) or international +250 format. Local numbers are normalized to +250 format. Must not already belong to another account.',
     required: false,
   })
   @IsOptional()
-  @Transform(({ value }) => typeof value === 'string' ? value.replace(/[\s()-]/g, '') : value)
+  @Transform(({ value }) => normalizeRwandaPhoneNumber(value))
   @IsString()
-  @MinLength(7)
-  @MaxLength(20)
-  @Matches(/^\+?[0-9]+$/)
+  @MinLength(13)
+  @MaxLength(13)
+  @Matches(RWANDA_PHONE_NUMBER_PATTERN)
   phoneNumber?: string;
 
   @ApiProperty({
@@ -42,6 +43,9 @@ export class UpdateAccountDto {
     required: false,
   })
   @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
   @IsEmail()
   @MaxLength(254)
   email?: string;

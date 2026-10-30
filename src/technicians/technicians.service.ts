@@ -7,6 +7,7 @@ import {
 import {
   Prisma,
   TechnicianAvailability,
+  JobStatus,
   UserRole,
   UserStatus,
   VerificationStatus,
@@ -28,6 +29,8 @@ import { SearchTechniciansByUserDto } from './dto/search-technicians-by-user.dto
 import { SearchTechniciansDto } from './dto/search-technicians.dto';
 import { ServiceExperienceDto } from './dto/service-experience.dto';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto';
+import { RegisterTechnicianDto } from './dto/register-technician.dto';
+import { NationalIdCryptoService } from './national-id-crypto.service';
 
 type Viewer = 'owner' | 'admin' | 'authenticated' | 'anonymous';
 
@@ -80,12 +83,13 @@ export interface TechnicianResponse {
   location: {
     address: string;
     publicLocationLabel: string | null;
-    latitude: number;
-    longitude: number;
+    latitude: number | null;
+    longitude: number | null;
   };
   profilePictureUrl: string | null;
   paymentMethod: string | null;
   paymentNumber: string | null;
+  nationalIdNumber: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -94,7 +98,12 @@ export interface TechnicianResponse {
 // plus pagination metadata — the same shape GET /users returns.
 export interface PaginatedTechnicianList {
   data: TechnicianResponse[];
-  pagination: { page: number; limit: number; total: number; totalPages: number };
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
 }
 
 @Injectable()
@@ -104,13 +113,25 @@ export class TechniciansService {
     private readonly audit: AuditService,
     private readonly storage: StorageService,
     private readonly documents: TechnicianDocumentsService,
+    private readonly nationalIdCrypto: NationalIdCryptoService,
   ) {}
 
   // ─── Technician self-service ────────────────────────────────────────────
 
   async registerMyProfile(userId: string, dto: UpdateTechnicianProfileDto) {
-    this.assertCoordinatePair(dto);
-    this.assertServiceExperiences(dto.serviceExperiences);
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { phoneVerifiedAt: true, role: true },
+    });
+    if (!user) throw new NotFoundException('User account not found.');
+    if (user.role === UserRole.TECHNICIAN && !user.phoneVerifiedAt) {
+      throw new ConflictException(
+        'Verify your phone number before completing a technician profile.',
+      );
+    }
+    const profileDto = await this.resolveProfileCoordinates(dto);
+    this.assertCoordinatePair(profileDto);
+    this.assertServiceExperiences(profileDto.serviceExperiences);
     try {
       const profile = await this.runSerializable(async (tx) => {
         const existing = await tx.technicianProfile.findUnique({
@@ -122,23 +143,82 @@ export class TechniciansService {
             'A technician profile already exists. Use PUT to update it.',
           );
         }
-        this.assertRequiredProfileFieldsForCreate(dto);
+        this.assertRequiredProfileFieldsForCreate(profileDto);
+        if (user.role === UserRole.CUSTOMER) {
+          await tx.user.update({
+            where: { id: userId },
+            data: {
+              role: UserRole.TECHNICIAN,
+              phoneVerifiedAt: user.phoneVerifiedAt ?? new Date(),
+            },
+          });
+        }
         const created = await tx.technicianProfile.create({
-          data: this.buildProfileCreateData(userId, dto),
+          data: this.buildProfileCreateData(userId, profileDto),
         });
         await this.lockProfile(tx, created.id);
         await this.replaceServiceExperiences(
           tx,
           created.id,
-          dto.serviceExperiences ?? [],
+          profileDto.serviceExperiences ?? [],
         );
-        await this.writePostgisLocation(tx, created.id, dto);
+        await this.writePostgisLocation(tx, created.id, profileDto);
         await this.audit.log(
           {
             entityType: 'TechnicianProfile',
             entityId: created.id,
             action: 'PROFILE_REGISTERED',
             actorId: userId,
+            toStatus: VerificationStatus.PENDING,
+          },
+          tx,
+        );
+        return tx.technicianProfile.findUniqueOrThrow({
+          where: { id: created.id },
+          include: PROFILE_INCLUDE,
+        });
+      });
+      return this.toResponse(profile, 'owner');
+    } catch (error) {
+      this.throwWriteError(error);
+    }
+  }
+
+  async registerPublicTechnician(dto: RegisterTechnicianDto) {
+    const profileDto = await this.resolveProfileCoordinates(dto.profile);
+    this.assertCoordinatePair(profileDto);
+    this.assertServiceExperiences(profileDto.serviceExperiences);
+    this.assertRequiredProfileFieldsForCreate(profileDto);
+    if (profileDto.availabilityStatus === TechnicianAvailability.ONLINE) {
+      throw new BadRequestException('New technicians must be created offline.');
+    }
+    try {
+      const profile = await this.runSerializable(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            fullName: dto.user.fullName.trim(),
+            phoneNumber: dto.user.phoneNumber,
+            email: dto.user.email?.trim().toLowerCase() || null,
+            role: UserRole.TECHNICIAN,
+            status: UserStatus.ACTIVE,
+          },
+        });
+        const created = await tx.technicianProfile.create({
+          data: this.buildProfileCreateData(user.id, profileDto),
+        });
+        await this.lockProfile(tx, created.id);
+        await this.replaceServiceExperiences(
+          tx,
+          created.id,
+          profileDto.serviceExperiences ?? [],
+        );
+        await this.writePostgisLocation(tx, created.id, profileDto);
+        await this.audit.log(
+          {
+            entityType: 'TechnicianProfile',
+            entityId: created.id,
+            action: 'PUBLIC_TECHNICIAN_REGISTRATION_STARTED',
+            actorId: user.id,
             toStatus: VerificationStatus.PENDING,
           },
           tx,
@@ -169,8 +249,9 @@ export class TechniciansService {
 
   async updateMyProfile(userId: string, dto: UpdateTechnicianProfileDto) {
     this.assertUpdateHasFields(dto);
-    this.assertCoordinatePair(dto);
-    this.assertServiceExperiences(dto.serviceExperiences);
+    const profileDto = await this.resolveProfileCoordinates(dto);
+    this.assertCoordinatePair(profileDto);
+    this.assertServiceExperiences(profileDto.serviceExperiences);
     try {
       const profile = await this.runSerializable(async (tx) => {
         const saved = await tx.technicianProfile.findUnique({
@@ -183,7 +264,7 @@ export class TechniciansService {
           );
         }
         await this.lockProfile(tx, saved.id);
-        await this.saveProfileFields(tx, saved.id, dto, userId, 'owner');
+        await this.saveProfileFields(tx, saved.id, profileDto, userId, 'owner');
         return tx.technicianProfile.findUniqueOrThrow({
           where: { id: saved.id },
           include: PROFILE_INCLUDE,
@@ -294,7 +375,7 @@ export class TechniciansService {
         'Technician fullName and phoneNumber are required.',
       );
     }
-    const profileDto = dto.profile ?? {};
+    const profileDto = await this.resolveProfileCoordinates(dto.profile ?? {});
     this.assertCoordinatePair(profileDto);
     this.assertServiceExperiences(profileDto.serviceExperiences);
     this.assertRequiredProfileFieldsForCreate(profileDto);
@@ -558,10 +639,10 @@ export class TechniciansService {
   }
 
   // Validates paging input so invalid values fail with a 400 before any query runs.
-  private resolvePaging(query: {
-    page?: number;
-    limit?: number;
-  }): { page: number; limit: number } {
+  private resolvePaging(query: { page?: number; limit?: number }): {
+    page: number;
+    limit: number;
+  } {
     const page = query.page ?? DEFAULT_PAGE;
     const limit = query.limit ?? DEFAULT_PAGE_LIMIT;
     if (!Number.isInteger(page) || page < DEFAULT_PAGE) {
@@ -614,7 +695,9 @@ export class TechniciansService {
     const category = dto.category?.trim();
     if (category) {
       filters.push({
-        categories: { some: { category: this.buildCategoryNameClause(category) } },
+        categories: {
+          some: { category: this.buildCategoryNameClause(category) },
+        },
       });
     }
     if (dto.minYearsOfExperience !== undefined) {
@@ -664,7 +747,9 @@ export class TechniciansService {
     const category = query.category?.trim();
     if (category) {
       filters.push({
-        categories: { some: { category: this.buildCategoryNameClause(category) } },
+        categories: {
+          some: { category: this.buildCategoryNameClause(category) },
+        },
       });
     }
     if (query.minYearsOfExperience !== undefined) {
@@ -700,7 +785,9 @@ export class TechniciansService {
 
   // Case-insensitive match of a catalogue category by name or slug, so the
   // frontend can send "Plumbing" while matching logic can send "plumbing".
-  private buildCategoryNameClause(name: string): Prisma.ServiceCategoryWhereInput {
+  private buildCategoryNameClause(
+    name: string,
+  ): Prisma.ServiceCategoryWhereInput {
     return {
       OR: [
         { name: { equals: name, mode: 'insensitive' } },
@@ -762,6 +849,11 @@ export class TechniciansService {
       where: { id: profileId },
       include: PROFILE_INCLUDE,
     });
+    const clearCoordinates =
+      (dto.baseLatitude === null && dto.baseLongitude === null) ||
+      ((dto.baseAddress !== undefined ||
+        dto.publicLocationLabel !== undefined) &&
+        dto.baseLatitude === undefined);
 
     const requestedVerification: VerificationStatus =
       viewer === 'admin'
@@ -786,24 +878,34 @@ export class TechniciansService {
         'Only active, approved technicians can be online.',
       );
     }
+    if (nextAvailability === TechnicianAvailability.ONLINE) {
+      const activeJobs = await tx.job.count({
+        where: {
+          technicianId: current.id,
+          status: JobStatus.ASSIGNED,
+        },
+      });
+      if (activeJobs) {
+        throw new ConflictException(
+          'A technician with an active job cannot be marked online.',
+        );
+      }
+    }
     if (requestedVerification !== VerificationStatus.APPROVED) {
       nextAvailability = TechnicianAvailability.OFFLINE;
-    }
-
-    const userData: Prisma.UserUpdateInput = {};
-    if (dto.fullName !== undefined) userData.fullName = dto.fullName.trim();
-    if (dto.phoneNumber !== undefined) userData.phoneNumber = dto.phoneNumber;
-    if (dto.email !== undefined) {
-      userData.email = dto.email?.trim().toLowerCase() || null;
-    }
-    if (Object.keys(userData).length) {
-      await tx.user.update({ where: { id: current.userId }, data: userData });
     }
 
     await tx.technicianProfile.update({
       where: { id: current.id },
       data: {
         ...(dto.gender !== undefined && { gender: dto.gender }),
+        ...(dto.nationalIdNumber !== undefined && {
+          nationalIdEncrypted: this.nationalIdCrypto.encrypt(
+            dto.nationalIdNumber,
+          ),
+          nationalIdHash: this.nationalIdCrypto.hash(dto.nationalIdNumber),
+          nationalIdLast4: this.nationalIdCrypto.lastFour(dto.nationalIdNumber),
+        }),
         ...(dto.baseAddress !== undefined && {
           baseAddress: dto.baseAddress.trim(),
         }),
@@ -815,6 +917,10 @@ export class TechniciansService {
         }),
         ...(dto.baseLongitude !== undefined && {
           baseLongitude: dto.baseLongitude,
+        }),
+        ...(clearCoordinates && {
+          baseLatitude: null,
+          baseLongitude: null,
         }),
         ...(dto.paymentMethod !== undefined && {
           paymentMethod: dto.paymentMethod,
@@ -836,7 +942,12 @@ export class TechniciansService {
         dto.serviceExperiences,
       );
     }
-    await this.writePostgisLocation(tx, current.id, dto);
+    await this.writePostgisLocation(
+      tx,
+      current.id,
+      dto,
+      clearCoordinates,
+    );
     await this.audit.log(
       {
         entityType: 'TechnicianProfile',
@@ -931,10 +1042,16 @@ export class TechniciansService {
     return {
       user: { connect: { id: userId } },
       gender: dto.gender!,
-      baseAddress: dto.baseAddress!.trim(),
+      nationalIdEncrypted: this.nationalIdCrypto.encrypt(dto.nationalIdNumber!),
+      nationalIdHash: this.nationalIdCrypto.hash(dto.nationalIdNumber!),
+      nationalIdLast4: this.nationalIdCrypto.lastFour(dto.nationalIdNumber!),
+      baseAddress:
+        dto.baseAddress?.trim() ||
+        dto.publicLocationLabel?.trim() ||
+        `${dto.baseLatitude}, ${dto.baseLongitude}`,
       publicLocationLabel: dto.publicLocationLabel?.trim() || null,
-      baseLatitude: dto.baseLatitude!,
-      baseLongitude: dto.baseLongitude!,
+      baseLatitude: dto.baseLatitude ?? null,
+      baseLongitude: dto.baseLongitude ?? null,
       paymentMethod: dto.paymentMethod!,
       paymentNumber: dto.paymentNumber!,
       verificationStatus: VerificationStatus.PENDING,
@@ -947,12 +1064,16 @@ export class TechniciansService {
   ) {
     const missing: string[] = [];
     if (!dto.gender) missing.push('gender');
-    if (!dto.baseAddress?.trim()) missing.push('baseAddress');
-    if (dto.baseLatitude === undefined || dto.baseLatitude === null) {
-      missing.push('baseLatitude');
-    }
-    if (dto.baseLongitude === undefined || dto.baseLongitude === null) {
-      missing.push('baseLongitude');
+    if (!dto.nationalIdNumber) missing.push('nationalIdNumber');
+    const hasCoordinates =
+      typeof dto.baseLatitude === 'number' &&
+      typeof dto.baseLongitude === 'number';
+    if (
+      !hasCoordinates &&
+      !dto.baseAddress?.trim() &&
+      !dto.publicLocationLabel?.trim()
+    ) {
+      missing.push('baseAddress or publicLocationLabel');
     }
     if (!dto.paymentMethod) missing.push('paymentMethod');
     if (!dto.paymentNumber) missing.push('paymentNumber');
@@ -1020,11 +1141,21 @@ export class TechniciansService {
         'baseLatitude and baseLongitude must be provided together.',
       );
     }
-    if (dto.baseLatitude === null || dto.baseLongitude === null) {
+    if (
+      (dto.baseLatitude === null) !==
+      (dto.baseLongitude === null)
+    ) {
       throw new BadRequestException(
-        'baseLatitude and baseLongitude cannot be null for a technician.',
+        'Set both coordinates to null when location coordinates are unavailable.',
       );
     }
+  }
+
+  private async resolveProfileCoordinates(
+    dto: UpdateTechnicianProfileDto,
+  ): Promise<UpdateTechnicianProfileDto> {
+    this.assertCoordinatePair(dto);
+    return dto;
   }
 
   private assertUpdateHasFields(dto: object) {
@@ -1039,8 +1170,25 @@ export class TechniciansService {
     tx: Prisma.TransactionClient,
     profileId: string,
     dto: Pick<UpdateTechnicianProfileDto, 'baseLatitude' | 'baseLongitude'>,
+    clearWhenMissing = false,
   ) {
+    if (
+      dto.baseLatitude === null &&
+      dto.baseLongitude === null
+    ) {
+      await tx.$executeRaw`
+        UPDATE "technician_profiles"
+        SET "baseLocation" = NULL
+        WHERE "id" = ${profileId}`;
+      return;
+    }
     if (dto.baseLatitude === undefined || dto.baseLongitude === undefined) {
+      if (clearWhenMissing) {
+        await tx.$executeRaw`
+          UPDATE "technician_profiles"
+          SET "baseLocation" = NULL
+          WHERE "id" = ${profileId}`;
+      }
       return;
     }
     await tx.$executeRaw`
@@ -1094,6 +1242,9 @@ export class TechniciansService {
           updatedAt: profile.user.updatedAt,
         },
         gender: profile.gender,
+        nationalIdNumber: profile.nationalIdLast4
+          ? `****${profile.nationalIdLast4}`
+          : null,
         yearsOfExperience: totalYearsOfExperience,
         serviceExperiences,
         verificationStatus: profile.verificationStatus,
@@ -1127,6 +1278,7 @@ export class TechniciansService {
           updatedAt: profile.user.updatedAt,
         },
         gender: profile.gender,
+        nationalIdNumber: null,
         yearsOfExperience: totalYearsOfExperience,
         serviceExperiences,
         verificationStatus: profile.verificationStatus,
@@ -1159,6 +1311,7 @@ export class TechniciansService {
         updatedAt: null,
       },
       gender: profile.gender,
+      nationalIdNumber: null,
       yearsOfExperience: totalYearsOfExperience,
       serviceExperiences,
       verificationStatus: profile.verificationStatus,
@@ -1188,6 +1341,11 @@ export class TechniciansService {
         }
         if (target.includes('email')) {
           throw new ConflictException('A user with this email already exists.');
+        }
+        if (target.includes('nationalIdHash')) {
+          throw new ConflictException(
+            'This technician ID number is already associated with another profile.',
+          );
         }
         if (target.includes('customNameNormalized')) {
           throw new ConflictException(

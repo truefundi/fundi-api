@@ -24,6 +24,9 @@ export class RegisterDto extends PhoneDto {
     required: false,
   })
   @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
   @IsEmail()
   @MaxLength(254)
   email?: string;

@@ -17,7 +17,7 @@ describe('AdminJobsController', () => {
     adminUpdate: jest.fn(),
     adminCancel: jest.fn(),
     adminReassign: jest.fn(),
-    adminDelete: jest.fn(),
+    permanentlyDelete: jest.fn(),
   };
   const controller = new AdminJobsController(jobs as unknown as JobsService);
   const reflector = new Reflector();
@@ -91,12 +91,14 @@ describe('AdminJobsController', () => {
     );
   });
 
-  it('forwards a deletion with the admin as the actor', async () => {
-    jobs.adminDelete.mockResolvedValue({ message: 'Job deleted.' });
-
-    await expect(controller.remove(admin, 'job-1')).resolves.toEqual({
-      message: 'Job deleted.',
+  it('permanently deletes a completed or cancelled job as an admin action', async () => {
+    jobs.permanentlyDelete.mockResolvedValue({
+      message: 'Job permanently deleted.',
     });
-    expect(jobs.adminDelete).toHaveBeenCalledWith('job-1', 'admin-1');
+
+    await expect(controller.delete(admin, 'job-1')).resolves.toEqual({
+      message: 'Job permanently deleted.',
+    });
+    expect(jobs.permanentlyDelete).toHaveBeenCalledWith('job-1', 'admin-1');
   });
 });

@@ -1,6 +1,6 @@
 import {
   IsBoolean,
-  IsNumber,
+  IsInt,
   IsOptional,
   IsString,
   Max,
@@ -8,7 +8,6 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
-import { Type } from 'class-transformer';
 
 // Validates the category name accepted when an administrator creates a category.
 export class CreateCategoryDto {
@@ -29,18 +28,16 @@ export class CreateCategoryDto {
   @MaxLength(60)
   category?: string;
 
-  // Booking (visit) fee in the job currency.
+  // Booking (visit) fee in RWF.
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsInt()
   @Min(0)
   @Max(2_000_000_000)
   visitFee?: number;
 
   // Booking fee applied to emergency requests.
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsInt()
   @Min(0)
   @Max(2_000_000_000)
   emergencyVisitFee?: number;
@@ -70,15 +67,13 @@ export class UpdateCategoryDto {
   category?: string;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsInt()
   @Min(0)
   @Max(2_000_000_000)
   visitFee?: number;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsInt()
   @Min(0)
   @Max(2_000_000_000)
   emergencyVisitFee?: number;

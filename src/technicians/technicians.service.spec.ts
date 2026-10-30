@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   Prisma,
   TechnicianAvailability,
@@ -11,6 +15,7 @@ import { PrismaService } from '../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { TechnicianDocumentsService } from './documents/technician-documents.service';
 import { TechniciansService } from './technicians.service';
+import { NationalIdCryptoService } from './national-id-crypto.service';
 
 // Tests technician profile integrity, per-service experience, discovery and storage-backed images.
 describe('TechniciansService', () => {
@@ -26,6 +31,9 @@ describe('TechniciansService', () => {
     id: profileId,
     userId,
     gender: TechnicianGender.FEMALE,
+    nationalIdEncrypted: 'encrypted-id',
+    nationalIdHash: 'id-hash',
+    nationalIdLast4: '1234',
     baseAddress: 'Kigali, Rwanda',
     publicLocationLabel: 'Kigali, Rwanda',
     baseLatitude: -1.95,
@@ -69,6 +77,7 @@ describe('TechniciansService', () => {
         create: jest.fn().mockResolvedValue(baseProfile().user),
         update: jest.fn().mockResolvedValue(baseProfile().user),
         delete: jest.fn().mockResolvedValue(baseProfile().user),
+        findUnique: jest.fn().mockResolvedValue({ phoneVerifiedAt: now }),
       },
       technicianProfile: {
         create: jest.fn().mockResolvedValue(baseProfile()),
@@ -82,6 +91,10 @@ describe('TechniciansService', () => {
       },
     };
     const prisma = {
+      user: {
+        create: jest.fn().mockResolvedValue(baseProfile().user),
+        findUnique: jest.fn().mockResolvedValue({ phoneVerifiedAt: now }),
+      },
       technicianProfile: {
         count: jest.fn().mockResolvedValue(1),
         findMany: jest.fn().mockResolvedValue([baseProfile()]),
@@ -98,35 +111,39 @@ describe('TechniciansService', () => {
     const documents = {
       assertReadyForApproval: jest.fn().mockResolvedValue(undefined),
     };
+    const nationalIdCrypto = {
+      encrypt: jest.fn((value: string) => `encrypted:${value}`),
+      hash: jest.fn((value: string) => `hash:${value}`),
+      lastFour: jest.fn((value: string) => value.slice(-4)),
+    };
     return {
       service: new TechniciansService(
         prisma as unknown as PrismaService,
         audit as unknown as AuditService,
         storage as unknown as StorageService,
         documents as unknown as TechnicianDocumentsService,
+        nationalIdCrypto as unknown as NationalIdCryptoService,
       ),
       prisma,
       transaction,
       audit,
       storage,
       documents,
+      nationalIdCrypto,
     };
   };
 
   // A complete, valid registration body matching the new required fields.
   const validRegistration = () => ({
-    fullName: 'Amina Example',
-    phoneNumber: '+250788123456',
     gender: TechnicianGender.FEMALE,
+    nationalIdNumber: '119900001234',
     baseAddress: 'Kigali, Rwanda',
     publicLocationLabel: 'Kigali, Rwanda',
     baseLatitude: -1.95,
     baseLongitude: 30.06,
     paymentMethod: 'MOMO' as const,
     paymentNumber: '+250788123456',
-    serviceExperiences: [
-      { categoryId, yearsOfExperience: 5 },
-    ],
+    serviceExperiences: [{ categoryId, yearsOfExperience: 5 }],
   });
 
   // ─── Read ──────────────────────────────────────────────────────────────
@@ -166,14 +183,121 @@ describe('TechniciansService', () => {
     );
   });
 
-    it('rejects registration missing required fields with a combined list', async () => {
+  it('lets a signed-in customer become a technician while retaining the same account', async () => {
+    const { service, transaction, prisma } = createService();
+    prisma.user.findUnique.mockResolvedValue({
+      phoneVerifiedAt: null,
+      role: 'CUSTOMER',
+    });
+    transaction.technicianProfile.findUnique.mockResolvedValue(null);
+
+    await service.registerMyProfile(userId, validRegistration());
+
+    expect(transaction.user.update).toHaveBeenCalledWith({
+      where: { id: userId },
+      data: {
+        role: 'TECHNICIAN',
+        phoneVerifiedAt: expect.any(Date),
+      },
+    });
+    expect(transaction.technicianProfile.create).toHaveBeenCalled();
+  });
+
+  it('registers a text-only profile without geocoding it', async () => {
     const { service, transaction } = createService();
     transaction.technicianProfile.findUnique.mockResolvedValue(null);
-    await expect(
-      service.registerMyProfile(userId, {
-        fullName: 'Amina Example',
+    const profile = validRegistration();
+    delete (profile as Partial<typeof profile>).baseLatitude;
+    delete (profile as Partial<typeof profile>).baseLongitude;
+    profile.publicLocationLabel = 'Nyamirambo, Kigali';
+
+    await service.registerMyProfile(userId, profile);
+
+    expect(transaction.technicianProfile.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          baseAddress: 'Kigali, Rwanda',
+          publicLocationLabel: 'Nyamirambo, Kigali',
+          baseLatitude: null,
+          baseLongitude: null,
+        }),
       }),
-    ).rejects.toMatchObject({
+    );
+  });
+
+  it('returns null coordinates for a text-only technician profile', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      baseLatitude: null,
+      baseLongitude: null,
+    });
+
+    await expect(service.getMyProfile(userId)).resolves.toMatchObject({
+      location: {
+        address: 'Kigali, Rwanda',
+        latitude: null,
+        longitude: null,
+      },
+    });
+  });
+
+  it('registers a coordinate-only profile without a location label', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue(null);
+
+    await service.registerMyProfile(userId, {
+      ...validRegistration(),
+      baseAddress: undefined,
+      publicLocationLabel: undefined,
+    });
+
+    expect(transaction.technicianProfile.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          baseAddress: '-1.95, 30.06',
+          publicLocationLabel: null,
+          baseLatitude: -1.95,
+          baseLongitude: 30.06,
+        }),
+      }),
+    );
+  });
+
+  it('creates a public technician account and profile together', async () => {
+    const { service, transaction, audit } = createService();
+    const profile = await service.registerPublicTechnician({
+      user: {
+        fullName: 'Amina Example',
+        phoneNumber: '+250788123456',
+        email: 'amina@example.com',
+      },
+      profile: validRegistration(),
+    });
+
+    expect(transaction.user.create).toHaveBeenCalledWith({
+      data: {
+        fullName: 'Amina Example',
+        phoneNumber: '+250788123456',
+        email: 'amina@example.com',
+        role: 'TECHNICIAN',
+        status: 'ACTIVE',
+      },
+    });
+    expect(transaction.technicianProfile.create).toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'PUBLIC_TECHNICIAN_REGISTRATION_STARTED',
+      }),
+      transaction,
+    );
+    expect(profile.verificationStatus).toBe(VerificationStatus.PENDING);
+  });
+
+  it('rejects registration missing required fields with a combined list', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue(null);
+    await expect(service.registerMyProfile(userId, {})).rejects.toMatchObject({
       message: expect.stringContaining('gender'),
     });
   });
@@ -214,25 +338,15 @@ describe('TechniciansService', () => {
 
   // ─── Update ────────────────────────────────────────────────────────────
 
-  it('updates account, profile, and service experience atomically', async () => {
+  it('updates profile and service experience without changing account identity', async () => {
     const { service, transaction, audit } = createService();
     await service.updateMyProfile(userId, {
-      fullName: 'Amina Newname',
-      phoneNumber: '+250788123457',
-      email: ' AMINA@example.com ',
       paymentMethod: 'MOMO',
       paymentNumber: '+250788123457',
       serviceExperiences: [{ categoryId, yearsOfExperience: 6 }],
     });
 
-    expect(transaction.user.update).toHaveBeenCalledWith({
-      where: { id: userId },
-      data: {
-        fullName: 'Amina Newname',
-        phoneNumber: '+250788123457',
-        email: 'amina@example.com',
-      },
-    });
+    expect(transaction.user.update).not.toHaveBeenCalled();
     expect(transaction.technicianProfile.update).toHaveBeenCalled();
     expect(transaction.technicianCategory.deleteMany).toHaveBeenCalledWith({
       where: { technicianId: profileId },
@@ -255,6 +369,24 @@ describe('TechniciansService', () => {
       }),
       transaction,
     );
+  });
+
+  it('clears saved coordinates when a text-only location is updated', async () => {
+    const { service, transaction } = createService();
+
+    await service.updateMyProfile(userId, {
+      publicLocationLabel: 'Nyamirambo, Kigali',
+    });
+
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          baseLatitude: null,
+          baseLongitude: null,
+        }),
+      }),
+    );
+    expect(transaction.$executeRaw).toHaveBeenCalled();
   });
 
   it('accepts a custom service name when no category matches', async () => {
@@ -319,20 +451,6 @@ describe('TechniciansService', () => {
       service.updateMyProfile(userId, { baseLatitude: -1.95 }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
-  });
-
-  it('returns conflict when an email is already used', async () => {
-    const { service, transaction } = createService();
-    transaction.user.update.mockRejectedValue(
-      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-        code: 'P2002',
-        clientVersion: 'test',
-        meta: { target: ['email'] },
-      }),
-    );
-    await expect(
-      service.updateMyProfile(userId, { email: 'taken@example.com' }),
-    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   // ─── Admin ─────────────────────────────────────────────────────────────
@@ -424,7 +542,11 @@ describe('TechniciansService', () => {
     );
     transaction.technicianProfile.update.mockResolvedValue(offlineFreeProfile);
 
-    await service.setAccountStatusByAdmin(profileId, UserStatus.ACTIVE, 'admin-1');
+    await service.setAccountStatusByAdmin(
+      profileId,
+      UserStatus.ACTIVE,
+      'admin-1',
+    );
 
     expect(transaction.user.update).toHaveBeenCalledWith({
       where: { id: userId },
@@ -439,7 +561,11 @@ describe('TechniciansService', () => {
 
   it('leaves the account untouched when the status is already set', async () => {
     const { service, transaction } = createService();
-    await service.setAccountStatusByAdmin(profileId, UserStatus.ACTIVE, 'admin-1');
+    await service.setAccountStatusByAdmin(
+      profileId,
+      UserStatus.ACTIVE,
+      'admin-1',
+    );
 
     expect(transaction.user.update).not.toHaveBeenCalled();
     expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
@@ -450,7 +576,11 @@ describe('TechniciansService', () => {
     transaction.technicianProfile.findUnique.mockResolvedValue(null);
 
     await expect(
-      service.setAccountStatusByAdmin(profileId, UserStatus.INACTIVE, 'admin-1'),
+      service.setAccountStatusByAdmin(
+        profileId,
+        UserStatus.INACTIVE,
+        'admin-1',
+      ),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -570,20 +700,20 @@ describe('TechniciansService', () => {
 
   // ─── Redaction by viewer ───────────────────────────────────────────────
 
-  it('returns payment fields but no national ID field to the owner', async () => {
+  it('returns the masked national ID and payment fields to the owner', async () => {
     const { service } = createService();
     const result = await service.getMyProfile(userId);
-    expect(result).not.toHaveProperty('nationalIdNumber');
+    expect(result.nationalIdNumber).toBe('****1234');
     expect(result).toHaveProperty('paymentMethod');
     expect(result).toHaveProperty('paymentNumber');
   });
 
-  it('redacts payment and omits national ID for authenticated non-owners', async () => {
+  it('redacts payment and national ID for authenticated non-owners', async () => {
     const { service, prisma } = createService();
     prisma.technicianProfile.findMany.mockResolvedValue([baseProfile()]);
     const { data } = await service.listAvailable({}, 'authenticated');
     const [result] = data;
-    expect(result).not.toHaveProperty('nationalIdNumber');
+    expect(result.nationalIdNumber).toBeNull();
     expect(result.paymentMethod).toBeNull();
     expect(result.paymentNumber).toBeNull();
     expect(result.user.phoneNumber).toBe('+250788123456');
@@ -594,6 +724,7 @@ describe('TechniciansService', () => {
     prisma.technicianProfile.findMany.mockResolvedValue([baseProfile()]);
     const { data } = await service.listPublic({});
     const [result] = data;
+    expect(result.nationalIdNumber).toBeNull();
     expect(result.user).toEqual({
       id: userId,
       fullName: 'Amina Example',
@@ -606,7 +737,7 @@ describe('TechniciansService', () => {
     });
     expect(result.paymentMethod).toBeNull();
     expect(result.paymentNumber).toBeNull();
-    expect(result).not.toHaveProperty('nationalIdNumber');
+    expect(result.nationalIdNumber).toBeNull();
   });
 
   // ─── Derived experience + picture ──────────────────────────────────────
@@ -814,9 +945,9 @@ describe('TechniciansService', () => {
     await expect(service.listAllByAdmin({ page: 0 })).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    await expect(
-      service.listAllByAdmin({ limit: 101 }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.listAllByAdmin({ limit: 101 })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
     expect(prisma.technicianProfile.findMany).not.toHaveBeenCalled();
     expect(prisma.technicianProfile.count).not.toHaveBeenCalled();
   });
@@ -858,18 +989,16 @@ describe('TechniciansService', () => {
   // ─── Admin search ──────────────────────────────────────────────────────
 
   it('searches admin records across profile and user fields', async () => {
-  const { service, prisma } = createService();
-  const results = await service.searchByAdmin({ query: 'Amina' });
-  expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
-    expect.objectContaining({
-      where: expect.objectContaining({ AND: expect.any(Array) }),
-    }),
-  );
-  expect(results.data).toHaveLength(1);
-  expect(results.data[0].user.phoneNumber).toBe('+250788123456');
-});
-
-
+    const { service, prisma } = createService();
+    const results = await service.searchByAdmin({ query: 'Amina' });
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ AND: expect.any(Array) }),
+      }),
+    );
+    expect(results.data).toHaveLength(1);
+    expect(results.data[0].user.phoneNumber).toBe('+250788123456');
+  });
 
   it('requires at least one identifier in searchByUserDetails', async () => {
     const { service, prisma } = createService();
@@ -905,7 +1034,7 @@ describe('TechniciansService', () => {
         (callback: (tx: typeof transaction) => Promise<unknown>) =>
           callback(transaction),
       );
-    await service.updateMyProfile(userId, { fullName: 'Amina Retry' });
+    await service.updateMyProfile(userId, { paymentNumber: '+250788123459' });
     expect(prisma.$transaction).toHaveBeenCalledTimes(2);
   });
 });

@@ -39,13 +39,10 @@ import {
   ConversationMessageType,
   PriceOfferStatus,
 } from '@prisma/client';
+import { ConfigModule } from '@nestjs/config';
 import { createHash } from 'crypto';
 
-// Prisma CLI loads .env, but running this file through ts-node directly does not.
-// dotenv is present as a dependency of @nestjs/config, so this keeps the script
-// runnable either way.
-import { config as loadEnv } from 'dotenv';
-loadEnv();
+ConfigModule.forRoot();
 
 const prisma = new PrismaClient();
 

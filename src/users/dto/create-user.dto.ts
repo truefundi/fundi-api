@@ -2,6 +2,10 @@ import { Transform } from 'class-transformer';
 import { IsEmail, IsEnum, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 import { UserRole, UserStatus } from '@prisma/client';
 import { ApiProperty } from '@nestjs/swagger';
+import {
+  normalizeRwandaPhoneNumber,
+  RWANDA_PHONE_NUMBER_PATTERN,
+} from '../../common/validation/rwanda-phone-number';
 
 // Validates account fields an administrator may set at creation time.
 export class CreateUserDto {
@@ -19,16 +23,13 @@ export class CreateUserDto {
   @ApiProperty({
     example: '+250788123456',
     description:
-      'Phone number, preferably in international format. Spaces, parentheses, and hyphens are stripped before validation.',
-    minLength: 7,
-    maxLength: 20,
-    pattern: '^\\+?[0-9]+$',
+      'Rwandan mobile number in local format (078, 079, 072, or 073 followed by seven digits) or international +250 format. Local numbers are normalized to +250 format; spaces, parentheses, and hyphens are stripped.',
   })
-  @Transform(({ value }) => typeof value === 'string' ? value.replace(/[\s()-]/g, '') : value)
+  @Transform(({ value }) => normalizeRwandaPhoneNumber(value))
   @IsString()
-  @MinLength(7)
-  @MaxLength(20)
-  @Matches(/^\+?[0-9]+$/)
+  @MinLength(13)
+  @MaxLength(13)
+  @Matches(RWANDA_PHONE_NUMBER_PATTERN)
   phoneNumber!: string;
 
   @ApiProperty({
@@ -39,6 +40,9 @@ export class CreateUserDto {
     required: false,
   })
   @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
   @IsEmail()
   @MaxLength(254)
   email?: string;

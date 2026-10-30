@@ -24,7 +24,19 @@ describe('AuthService phone OTP flow', () => {
       del: jest.fn().mockResolvedValue(1),
     };
     const prisma = {
-      user: { findUnique: jest.fn(), create: jest.fn().mockResolvedValue(activeUser) },
+      user: {
+        findUnique: jest.fn(),
+        create: jest.fn().mockImplementation(({ data }) =>
+          Promise.resolve({ ...activeUser, role: data.role }),
+        ),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      customerPhoneVerification: {
+        create: jest.fn(),
+        findFirst: jest.fn(),
+        updateMany: jest.fn(),
+        delete: jest.fn(),
+      },
       refreshToken: { create: jest.fn().mockResolvedValue({}) },
     };
     const sms = { sendOtp: jest.fn().mockResolvedValue(undefined) };
@@ -45,8 +57,8 @@ describe('AuthService phone OTP flow', () => {
   };
 
   // Defaults new self-registered accounts to the customer role.
-  it('registers as customer when no role is provided', async () => {
-    const { service, prisma } = createService();
+  it('registers customers without sending a registration OTP', async () => {
+    const { service, prisma, sms } = createService();
     await service.register({
       fullName: activeUser.fullName,
       phoneNumber: activeUser.phoneNumber,
@@ -54,11 +66,11 @@ describe('AuthService phone OTP flow', () => {
     expect(prisma.user.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ role: 'CUSTOMER' }),
     }));
+    expect(sms.sendOtp).not.toHaveBeenCalled();
   });
 
-  // Preserves technician role when explicitly selected during registration.
-  it('registers with the technician role when requested', async () => {
-    const { service, prisma } = createService();
+  it('starts OTP verification during technician registration', async () => {
+    const { service, prisma, sms } = createService();
     await service.register({
       fullName: activeUser.fullName,
       phoneNumber: activeUser.phoneNumber,
@@ -67,6 +79,76 @@ describe('AuthService phone OTP flow', () => {
     expect(prisma.user.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ role: 'TECHNICIAN' }),
     }));
+    expect(sms.sendOtp).toHaveBeenCalledWith(activeUser.phoneNumber, expect.any(String));
+  });
+
+  it('creates and consumes a separate customer phone verification for a job', async () => {
+    const { service, prisma, sms, redisClient } = createService();
+    const verification = {
+      id: 'verification-1',
+      expiresAt: new Date(Date.now() + 300_000),
+    };
+    prisma.user.findUnique.mockResolvedValue(activeUser);
+    prisma.customerPhoneVerification.create.mockResolvedValue(verification);
+    prisma.customerPhoneVerification.findFirst.mockResolvedValue(verification);
+    prisma.customerPhoneVerification.updateMany.mockResolvedValue({ count: 1 });
+    redisClient.eval.mockResolvedValue(1);
+
+    const issued = await service.requestCustomerJobOtp(activeUser.id);
+    expect(issued.verificationId).toBe(verification.id);
+    expect(sms.sendOtp).toHaveBeenCalledWith(
+      activeUser.phoneNumber,
+      expect.any(String),
+    );
+
+    const verified = await service.verifyCustomerJobOtp(
+      activeUser.id,
+      verification.id,
+      '123456',
+    );
+    expect(verified).toMatchObject({
+      verificationId: verification.id,
+      verifiedAt: expect.any(Date),
+    });
+
+    expect(prisma.customerPhoneVerification.updateMany).toHaveBeenCalled();
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: activeUser.id },
+        data: { phoneVerifiedAt: expect.any(Date) },
+      }),
+    );
+  });
+
+  it('also allows an active technician account to verify a job request phone', async () => {
+    const { service, prisma } = createService();
+    prisma.user.findUnique.mockResolvedValue({
+      ...activeUser,
+      role: 'TECHNICIAN',
+    });
+    prisma.customerPhoneVerification.create.mockResolvedValue({
+      id: 'verification-2',
+      expiresAt: new Date(Date.now() + 300_000),
+    });
+
+    await expect(
+      service.requestCustomerJobOtp(activeUser.id),
+    ).resolves.toMatchObject({ verificationId: 'verification-2' });
+  });
+
+  it('sends a technician registration OTP for an already-created account', async () => {
+    const { service, prisma, sms } = createService();
+    prisma.user.findUnique.mockResolvedValue({
+      ...activeUser,
+      role: 'TECHNICIAN',
+    });
+
+    await service.requestTechnicianRegistrationOtp(activeUser.id);
+
+    expect(sms.sendOtp).toHaveBeenCalledWith(
+      activeUser.phoneNumber,
+      expect.any(String),
+    );
   });
 
   // Rejects phone login when no matching user record exists.

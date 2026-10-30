@@ -2,16 +2,33 @@ import { PrismaService } from '../database/prisma.service';
 import { JobsService } from './jobs.service';
 
 describe('JobsService customer job creation', () => {
-  it('creates a customer job, creates an offer for a matching technician, and dispatches it', async () => {
+  it('creates a customer job from a valid payment and phone verification', async () => {
     const jobCreate = jest.fn().mockResolvedValue(undefined);
     const executeRaw = jest.fn().mockResolvedValue(1);
-    const createOffers = jest.fn().mockResolvedValue(undefined);
+    const paymentFindFirst = jest.fn().mockResolvedValue({
+      id: 'payment-1',
+      status: 'VALID',
+      validUntil: new Date(Date.now() + 60_000),
+    });
+    const paymentUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const verificationFindFirst = jest
+      .fn()
+      .mockResolvedValue({ id: 'verification-1' });
+    const verificationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const auditLog = jest.fn().mockResolvedValue(undefined);
     const categoryFindFirst = jest.fn().mockResolvedValue({ id: 'category-1' });
 
     const tx = {
       job: { create: jobCreate },
-      jobOffer: { createMany: createOffers },
+      bookingPayment: {
+        findFirst: paymentFindFirst,
+        update: jest.fn(),
+        updateMany: paymentUpdateMany,
+      },
+      customerPhoneVerification: {
+        findFirst: verificationFindFirst,
+        updateMany: verificationUpdateMany,
+      },
       $executeRaw: executeRaw,
     };
     const prisma = {
@@ -30,17 +47,10 @@ describe('JobsService customer job creation', () => {
       undefined as unknown as never,
       undefined as unknown as never,
       undefined as unknown as never,
+      undefined as unknown as never,
     );
 
-    const candidate = {
-      technicianId: 'technician-1',
-      matchScore: 90,
-      distanceMeters: 250,
-    };
-    jest.spyOn(service as any, 'findMatches').mockResolvedValue([candidate]);
-    const dispatchNext = jest
-      .spyOn(service as any, 'dispatchNext')
-      .mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'findMatches').mockResolvedValue([]);
 
     const customerJob = {
       id: 'job-created',
@@ -52,6 +62,8 @@ describe('JobsService customer job creation', () => {
       .mockResolvedValue(customerJob as any);
 
     const dto = {
+      paymentId: 'payment-1',
+      phoneVerificationId: 'verification-1',
       serviceCategoryId: 'category-1',
       description: 'The kitchen sink has been leaking since yesterday.',
       locationAddress: 'Kimironko, Gasabo',
@@ -60,9 +72,9 @@ describe('JobsService customer job creation', () => {
       offeredAmount: 20_000,
     };
 
-    await expect(
-      service.create('customer-1', dto as any, []),
-    ).resolves.toBe(customerJob);
+    await expect(service.create('customer-1', dto as any, [])).resolves.toBe(
+      customerJob,
+    );
 
     expect(categoryFindFirst).toHaveBeenCalledWith({
       where: { id: 'category-1', isActive: true },
@@ -73,6 +85,7 @@ describe('JobsService customer job creation', () => {
         customerId: 'customer-1',
         serviceCategoryId: 'category-1',
         otherServiceName: null,
+        phoneVerificationId: 'verification-1',
         description: dto.description,
         locationAddress: dto.locationAddress,
         latitude: dto.latitude,
@@ -83,17 +96,17 @@ describe('JobsService customer job creation', () => {
       }),
     });
     expect(executeRaw).toHaveBeenCalled();
-    expect(createOffers).toHaveBeenCalledWith({
-      data: [
-        expect.objectContaining({
-          jobId: expect.any(String),
-          technicianId: candidate.technicianId,
-          round: 1,
-          matchScore: candidate.matchScore,
-          distanceMeters: candidate.distanceMeters,
-          status: 'WAITING',
-        }),
-      ],
+    expect(paymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'payment-1', customerId: 'customer-1', jobId: null },
+      data: { jobId: expect.any(String) },
+    });
+    expect(verificationUpdateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'verification-1',
+        customerId: 'customer-1',
+        consumedAt: null,
+      }),
+      data: { consumedAt: expect.any(Date) },
     });
     expect(auditLog).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -104,7 +117,6 @@ describe('JobsService customer job creation', () => {
       }),
       tx,
     );
-    expect(dispatchNext).toHaveBeenCalledWith(expect.any(String));
     expect(getCustomerJob).toHaveBeenCalledWith(
       'customer-1',
       expect.any(String),

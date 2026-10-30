@@ -88,7 +88,7 @@ export class AuthService {
     this.otpTtlSeconds = this.configService.get<number>('otp.ttlSeconds', 300);
   }
 
-  // Creates a customer or technician account, defaulting to customer, then starts OTP verification.
+  // Customer registration is immediate; technician registration starts phone OTP verification.
   async register(input: RegisterDto) {
     try {
       const user = await this.prisma.user.create({
@@ -100,8 +100,14 @@ export class AuthService {
         },
         select: { id: true, fullName: true, phoneNumber: true, role: true },
       });
-      await this.issueOtp(user.id, user.phoneNumber);
-      return { message: 'OTP generated. Verify it to complete registration.', user };
+      if (user.role === UserRole.TECHNICIAN) {
+        await this.issueOtp(user.id, user.phoneNumber);
+        return {
+          message: 'OTP generated. Verify it to complete technician registration.',
+          user,
+        };
+      }
+      return { message: 'Customer account registered successfully.', user };
     } catch (error) {
       if (this.isPrismaError(error, 'P2002')) {
         throw new ConflictException('An account with this phone number or email already exists.');
@@ -149,6 +155,12 @@ export class AuthService {
     if (!user) throw new NotFoundException('No account was found for this phone number.');
     this.ensureActive(user.status);
     await this.verifyOtpCode(user.id, otp);
+    if (user.role === UserRole.TECHNICIAN && !user.phoneVerifiedAt) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { phoneVerifiedAt: new Date() },
+      });
+    }
     const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
     const refreshHash = this.hash(tokens.refreshToken);
     const refreshExpiresAt = this.refreshTokenExpiresAt();
@@ -244,10 +256,14 @@ export class AuthService {
   // own channel can hand the code over itself. Reused by the development-only admin
   // sign-in, which returns the code in the response instead of texting it.
   async issueOtpCode(userId: string): Promise<string> {
+    return this.issueOtpForKeys(this.otpKey(userId));
+  }
+
+  private async issueOtpForKeys(otpKey: string): Promise<string> {
     const code = randomInt(100000, 1000000).toString();
     await this.runOtpScript(
       CREATE_OTP_SCRIPT,
-      [this.otpKey(userId)],
+      [otpKey],
       this.hash(code),
       '0',
       '0',
@@ -261,9 +277,113 @@ export class AuthService {
   // same errors the phone flow does on every kind of failure. Split out so the
   // development-only admin sign-in reuses this exact logic rather than a copy.
   async verifyOtpCode(userId: string, otp: string): Promise<void> {
+    return this.verifyCode(this.otpKey(userId), this.otpTriesKey(userId), otp);
+  }
+
+  async requestCustomerJobOtp(customerId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: customerId },
+      select: { id: true, phoneNumber: true, role: true, status: true },
+    });
+    if (!user || user.role === UserRole.ADMIN) {
+      throw new NotFoundException('Account not found.');
+    }
+    this.ensureActive(user.status);
+    const verification = await this.prisma.customerPhoneVerification.create({
+      data: {
+        customerId,
+        expiresAt: new Date(Date.now() + this.otpTtlSeconds * 1000),
+      },
+    });
+    const key = this.jobVerificationOtpKey(verification.id);
+    try {
+      const code = await this.issueOtpForKeys(
+        key,
+      );
+      await this.deliverOtp(user.id, user.phoneNumber, code, key);
+    } catch (error) {
+      await this.prisma.customerPhoneVerification.delete({
+        where: { id: verification.id },
+      });
+      throw error;
+    }
+    return {
+      verificationId: verification.id,
+      expiresAt: verification.expiresAt,
+      message: `OTP sent. It expires in ${this.otpLifetimeMinutes()} minutes.`,
+    };
+  }
+
+  async requestTechnicianRegistrationOtp(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, phoneNumber: true, role: true, status: true },
+    });
+    if (!user || user.role !== UserRole.TECHNICIAN) {
+      throw new NotFoundException('Technician account not found.');
+    }
+    this.ensureActive(user.status);
+    await this.issueOtp(user.id, user.phoneNumber);
+    return {
+      message: `OTP generated. Verify it to activate your technician registration phone. It expires in ${this.otpLifetimeMinutes()} minutes.`,
+    };
+  }
+
+  async verifyCustomerJobOtp(
+    customerId: string,
+    verificationId: string,
+    otp: string,
+  ) {
+    const verification = await this.prisma.customerPhoneVerification.findFirst({
+      where: {
+        id: verificationId,
+        customerId,
+        consumedAt: null,
+        verifiedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    if (!verification) {
+      throw new BadRequestException(
+        'Phone verification is missing, expired, or already used.',
+      );
+    }
+    await this.verifyCode(
+      this.jobVerificationOtpKey(verification.id),
+      this.jobVerificationOtpTriesKey(verification.id),
+      otp,
+    );
+    const verifiedAt = new Date();
+    const updated = await this.prisma.customerPhoneVerification.updateMany({
+      where: {
+        id: verification.id,
+        customerId,
+        verifiedAt: null,
+        consumedAt: null,
+        expiresAt: { gt: verifiedAt },
+      },
+      data: { verifiedAt },
+    });
+    if (!updated.count) {
+      throw new ConflictException(
+        'Phone verification expired or was already used. Request a new OTP.',
+      );
+    }
+    await this.prisma.user.update({
+      where: { id: customerId },
+      data: { phoneVerifiedAt: verifiedAt },
+    });
+    return { verificationId: verification.id, verifiedAt };
+  }
+
+  private async verifyCode(
+    otpKey: string,
+    triesKey: string,
+    otp: string,
+  ): Promise<void> {
     const verificationResult = await this.runOtpScript(
       VERIFY_OTP_SCRIPT,
-      [this.otpKey(userId), this.otpTriesKey(userId)],
+      [otpKey, triesKey],
       this.hash(otp),
       String(this.maxOtpVerificationTries),
       String(Date.now()),
@@ -293,12 +413,17 @@ export class AuthService {
   }
 
   // Sends the code and clears its Redis key if delivery fails.
-  private async deliverOtp(userId: string, phoneNumber: string, code: string) {
+  private async deliverOtp(
+    userId: string,
+    phoneNumber: string,
+    code: string,
+    otpKey = this.otpKey(userId),
+  ) {
     try {
       await this.smsService.sendOtp(phoneNumber, code);
     } catch (error) {
       try {
-        await this.redisService.getClient().del(this.otpKey(userId));
+        await this.redisService.getClient().del(otpKey);
       } catch (cleanupError) {
         this.logger.error(`Could not clear OTP key for user ${userId}: ${this.errorMessage(cleanupError)}`);
       }
@@ -327,6 +452,14 @@ export class AuthService {
   // hash so that issuing a new code cannot reset it.
   private otpTriesKey(userId: string) {
     return `auth:otp:tries:${userId}`;
+  }
+
+  private jobVerificationOtpKey(verificationId: string) {
+    return `jobs:phone-otp:${verificationId}`;
+  }
+
+  private jobVerificationOtpTriesKey(verificationId: string) {
+    return `jobs:phone-otp:tries:${verificationId}`;
   }
 
   // Absolute expiry stamp stored on the hash and treated as authoritative.

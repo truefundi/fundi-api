@@ -1,6 +1,6 @@
 # Service Categories API
 
-The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Send `Content-Type: application/json` for requests with a body.
+The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Administrators set each category's positive `bookingFee` in RWF. A category without a configured fee cannot be used to create a paid job request. Send `Content-Type: application/json` for requests with a body.
 
 For local development, seed the initial sample catalog with `npm run prisma:seed`. The seed operation is safe to rerun because it upserts categories by slug.
 
@@ -17,7 +17,8 @@ Success response (`200`):
   {
     "id": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
     "name": "Plumbing",
-    "slug": "plumbing"
+    "slug": "plumbing",
+    "bookingFee": 1000
   }
 ]
 ```
@@ -32,7 +33,8 @@ Success response (`200`):
 {
   "id": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
   "name": "Plumbing",
-  "slug": "plumbing"
+  "slug": "plumbing",
+  "bookingFee": 1000
 }
 ```
 
@@ -52,7 +54,8 @@ Request:
 
 ```json
 {
-  "name": "Home Repair"
+  "name": "Home Repair",
+  "bookingFee": 1000
 }
 ```
 
@@ -63,6 +66,7 @@ Success response (`201`):
   "id": "generated-category-id",
   "name": "Home Repair",
   "slug": "home-repair",
+  "bookingFee": 1000,
   "isActive": true,
   "createdAt": "2026-10-01T10:00:00.000Z"
 }
@@ -88,14 +92,15 @@ Success response (`200`): one full category record.
 
 ### `PATCH /api/v1/catalog/categories/:id`
 
-Update a category name, its availability, or both. At least one field is required. Changing the name also regenerates its slug.
+Update a category name, its availability, or booking fee. At least one field is required. `bookingFee` must be a positive integer in RWF. Changing the name also regenerates its slug.
 
 Request:
 
 ```json
 {
   "name": "Home Maintenance",
-  "isActive": true
+  "isActive": true,
+  "bookingFee": 1500
 }
 ```
 
@@ -114,6 +119,7 @@ Success response (`200`):
     "id": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
     "name": "Plumbing",
     "slug": "plumbing",
+    "bookingFee": 1000,
     "isActive": false,
     "createdAt": "2026-10-01T10:00:00.000Z"
   }

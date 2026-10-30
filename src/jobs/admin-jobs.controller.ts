@@ -21,6 +21,7 @@ import { AdminCreateJobDto } from './dto/admin-create-job.dto';
 import { AdminReassignJobDto } from './dto/admin-reassign-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobsService } from './jobs.service';
+import { ReviewCancellationDto } from './dto/cancel-job.dto';
 
 @ApiTags('Admin jobs')
 @Controller('api/v1/admin/jobs')
@@ -38,7 +39,7 @@ export class AdminJobsController {
   @ApiOperation({
     summary: 'Get dashboard job counts (admin only)',
     description:
-      'Counts active (OPEN or ASSIGNED) and COMPLETED jobs, plus disputes that ' +
+      'Counts active (OPEN, ASSIGNED, or PAUSED) and COMPLETED jobs, plus disputes that ' +
       'have no resolution yet.',
   })
   @ApiResponse({
@@ -48,6 +49,20 @@ export class AdminJobsController {
   })
   summary() {
     return this.jobs.summaryForAdmin();
+  }
+
+  @Get('cancellation-requests')
+  listCancellationRequests() {
+    return this.jobs.listCancellationRequests();
+  }
+
+  @Patch('cancellation-requests/:requestId')
+  reviewCancellation(
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+    @Body() dto: ReviewCancellationDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.jobs.reviewCancellation(requestId, dto, user.id);
   }
 
   @Post()
@@ -117,16 +132,16 @@ export class AdminJobsController {
 
   @Delete(':jobId')
   @ApiOperation({
-    summary: 'Delete an open or cancelled job (admin only)',
+    summary: 'Permanently delete a completed or cancelled job (admin only)',
     description:
-      'Removes a mistaken or duplicate job and its stored media. Assigned and ' +
-      'completed jobs must be cancelled instead so their record stays traceable.',
+      'Permanently deletes a completed or cancelled job while retaining payment ' +
+      'and audit history. Open or assigned jobs must not be deleted.',
   })
-  @ApiResponse({ status: 200, description: 'Job deleted' })
-  remove(
+  @ApiResponse({ status: 200, description: 'Job permanently deleted' })
+  delete(
     @CurrentUser() user: AuthUser,
     @Param('jobId', ParseUUIDPipe) jobId: string,
   ) {
-    return this.jobs.adminDelete(jobId, user.id);
+    return this.jobs.permanentlyDelete(jobId, user.id);
   }
 }

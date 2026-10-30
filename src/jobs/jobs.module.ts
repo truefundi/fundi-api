@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
-import { ConfigService } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuditModule } from '../audit/audit.module';
 import { DatabaseModule } from '../database/database.module';
 import { StorageModule } from '../storage/storage.module';
 import { WebSocketsModule } from '../websockets/websockets.module';
+import { AuthModule } from '../auth/auth.module';
+import { GeocodingModule } from '../geocoding/geocoding.module';
 import { AdminJobsController } from './admin-jobs.controller';
 import { JobDispatchProcessor } from './job-dispatch.processor';
 import { JobMediaController } from './job-media.controller';
@@ -16,9 +18,12 @@ import { TestQueueProcessor } from './test-queue.processor';
 @Module({
   imports: [
     DatabaseModule,
+    ConfigModule,
+    GeocodingModule,
     StorageModule,
     AuditModule,
     WebSocketsModule,
+    AuthModule,
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({

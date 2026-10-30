@@ -30,13 +30,12 @@ const MAX_ACTIVE_DOCUMENTS = 10;
 // Document types an administrator must accept before a technician can be approved.
 export const REQUIRED_DOCUMENT_TYPES: DocumentType[] = [
   DocumentType.NATIONAL_ID,
-  DocumentType.CERTIFICATE,
 ];
 
 // Human-readable labels for each required document type in the checklist.
 const DOCUMENT_LABELS: Record<DocumentType, string> = {
   NATIONAL_ID: 'Accepted National ID document',
-  CERTIFICATE: 'Accepted TVET certificate',
+  CERTIFICATE: 'Accepted certificate (optional)',
 };
 
 // The checklist only counts a CERTIFICATE whose certificateType matches this value.

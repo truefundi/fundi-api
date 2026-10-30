@@ -15,6 +15,12 @@ import {
 } from 'class-validator';
 
 export class CreateJobDto {
+  @IsUUID('4')
+  paymentId!: string;
+
+  @IsUUID('4')
+  phoneVerificationId!: string;
+
   @ApiProperty({
     required: false,
     format: 'uuid',

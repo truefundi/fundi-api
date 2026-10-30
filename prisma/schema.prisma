@@ -10,20 +10,23 @@ datasource db {
 }
 
 model User {
-  id                String             @id @default(uuid())
-  email             String?            @unique
-  phoneNumber       String             @unique
-  fullName          String
-  role              UserRole           @default(CUSTOMER)
-  status            UserStatus         @default(ACTIVE)
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  passwordHash      String?
-  totpSecret        String?
-  totpEnabledAt     DateTime?
-  customerJobs      Job[]              @relation("JobCustomer")
-  refreshTokens     RefreshToken[]
-  technicianProfile TechnicianProfile?
+  id                 String                      @id @default(uuid())
+  email              String?                     @unique
+  phoneNumber        String                      @unique
+  fullName           String
+  role               UserRole                    @default(CUSTOMER)
+  status             UserStatus                  @default(ACTIVE)
+  phoneVerifiedAt    DateTime?
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+  passwordHash       String?
+  totpSecret         String?
+  totpEnabledAt      DateTime?
+  customerJobs       Job[]                       @relation("JobCustomer")
+  refreshTokens      RefreshToken[]
+  technicianProfile  TechnicianProfile?
+  bookingPayments    BookingPayment[]
+  phoneVerifications CustomerPhoneVerification[]
   resolvedDisputes  Dispute[]          @relation("DisputeResolver")
 
   @@map("users")
@@ -42,14 +45,16 @@ model RefreshToken {
 }
 
 model ServiceCategory {
-  id          String               @id @default(uuid())
-  name        String               @unique
-  slug        String               @unique
-  isActive    Boolean              @default(true)
-  createdAt   DateTime             @default(now())
-  jobs        Job[]                @relation("JobServiceCategory")
-  technicians TechnicianCategory[]
-  documents   TechnicianDocument[]
+  id              String               @id @default(uuid())
+  name            String               @unique
+  slug            String               @unique
+  isActive        Boolean              @default(true)
+  bookingFee      Int?
+  createdAt       DateTime             @default(now())
+  jobs            Job[]                @relation("JobServiceCategory")
+  technicians     TechnicianCategory[]
+  documents       TechnicianDocument[]
+  bookingPayments BookingPayment[]
 
   @@map("service_categories")
 }
@@ -57,15 +62,20 @@ model ServiceCategory {
 model TechnicianProfile {
   id                      String                    @id @default(uuid())
   userId                  String                    @unique
+  nationalIdEncrypted     String?
+  nationalIdHash          String?                   @unique
+  nationalIdLast4         String?
   baseAddress             String
-  baseLatitude            Float
-  baseLongitude           Float
+  baseLatitude            Float?
+  baseLongitude           Float?
   verificationStatus      VerificationStatus        @default(PENDING)
   createdAt               DateTime                  @default(now())
   updatedAt               DateTime                  @updatedAt
   gender                  TechnicianGender
   profilePictureMimeType  String?
   availabilityStatus      TechnicianAvailability    @default(OFFLINE)
+  rejectionCount          Int                       @default(0)
+  cancellationCount       Int                       @default(0)
   baseLocation            Unsupported("geography")?
   publicLocationLabel     String?
   profilePictureObjectKey String?
@@ -129,42 +139,57 @@ model TechnicianDocument {
 }
 
 model Job {
-  id                 String                    @id @default(uuid())
-  customerId         String
-  technicianId       String?
-  serviceCategoryId  String?
-  otherServiceName   String?
-  description        String
-  locationAddress    String
-  latitude           Float
-  longitude          Float
-  location           Unsupported("geography")?
-  offeredAmount      Int
-  currency           String                    @default("RWF")
-  priority           JobPriority               @default(NORMAL)
-  status             JobStatus                 @default(OPEN)
-  dispatchStatus     JobDispatchStatus         @default(PENDING)
-  dispatchRound      Int                       @default(1)
-  customerProgress   JobProgressStatus         @default(PENDING)
-  technicianProgress JobProgressStatus         @default(PENDING)
-  cancellationReason String?
-  assignedAt         DateTime?
-  completedAt        DateTime?
-  createdAt          DateTime                  @default(now())
-  updatedAt          DateTime                  @updatedAt
-  assignmentHistory  JobAssignmentHistory[]
-  media              JobMedia[]
-  offers             JobOffer[]
-  conversation       Conversation?
+  id                          String                     @id @default(uuid())
+  customerId                  String
+  technicianId                String?
+  serviceCategoryId           String?
+  otherServiceName            String?
+  description                 String
+  locationAddress             String
+  latitude                    Float
+  longitude                   Float
+  location                    Unsupported("geography")?
+  offeredAmount               Int
+  currency                    String                     @default("RWF")
+  priority                    JobPriority                @default(NORMAL)
+  status                      JobStatus                  @default(OPEN)
+  cooperationStatus           JobCooperationStatus       @default(PENDING)
+  dispatchStatus              JobDispatchStatus          @default(PENDING)
+  dispatchRound               Int                        @default(1)
+  customerProgress            JobProgressStatus          @default(PENDING)
+  technicianProgress          JobProgressStatus          @default(PENDING)
+  customerConfirmedAt         DateTime?
+  technicianConfirmedAt       DateTime?
+  customerHiddenAt            DateTime?
+  technicianHiddenAt          DateTime?
+  customerPauseRequestedAt    DateTime?
+  technicianPauseRequestedAt  DateTime?
+  customerResumeRequestedAt   DateTime?
+  technicianResumeRequestedAt DateTime?
+  assignedAt                  DateTime?
+  completedAt                 DateTime?
+  createdAt                   DateTime                   @default(now())
+  updatedAt                   DateTime                   @updatedAt
+  assignmentHistory           JobAssignmentHistory[]
+  media                       JobMedia[]
+  offers                      JobOffer[]
+  conversation                Conversation?
+  bookingPayment              BookingPayment?
+  phoneVerificationId         String?                    @unique
+  phoneVerification           CustomerPhoneVerification? @relation(fields: [phoneVerificationId], references: [id], onDelete: SetNull)
+  cancellationRequests        JobCancellationRequest[]
+  cancellationReason          String?
+  customer                    User                       @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory             ServiceCategory?           @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id])
+  technician                  TechnicianProfile?         @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
   dispute            Dispute?
-  customer           User                      @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
-  serviceCategory    ServiceCategory?          @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id])
-  technician         TechnicianProfile?        @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
 
   @@index([customerId, createdAt])
   @@index([technicianId, status, updatedAt])
   @@index([status, dispatchStatus, priority, createdAt])
   @@index([serviceCategoryId])
+  @@index([customerId, customerHiddenAt, createdAt])
+  @@index([technicianId, technicianHiddenAt, updatedAt])
   @@map("jobs")
 }
 
@@ -190,6 +215,64 @@ model JobOffer {
   @@index([jobId, round, status, matchScore])
   @@index([technicianId, status, updatedAt])
   @@map("job_offers")
+}
+
+model BookingPayment {
+  id                       String               @id @default(uuid())
+  customerId               String
+  serviceCategoryId        String
+  jobId                    String?              @unique
+  externalPaymentId        String               @unique
+  paymentKeyId             String
+  signature                String
+  phoneNumber              String
+  amount                   Int
+  status                   BookingPaymentStatus @default(VALID)
+  paidAt                   DateTime             @default(now())
+  validUntil               DateTime
+  remainingValiditySeconds Int?
+  extensionCount           Int                  @default(0)
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+  customer                 User                 @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory          ServiceCategory      @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
+  job                      Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, paidAt])
+  @@index([status, validUntil])
+  @@map("booking_payments")
+}
+
+model CustomerPhoneVerification {
+  id         String    @id @default(uuid())
+  customerId String
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+  customer   User      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  job        Job?
+
+  @@index([customerId, createdAt])
+  @@map("customer_phone_verifications")
+}
+
+model JobCancellationRequest {
+  id           String                    @id @default(uuid())
+  jobId        String
+  actorId      String
+  requester    CancellationRequester
+  reason       String
+  status       CancellationRequestStatus @default(PENDING)
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+  createdAt    DateTime                  @default(now())
+  job          Job                       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, status])
+  @@index([status, createdAt])
+  @@map("job_cancellation_requests")
 }
 
 model JobMedia {
@@ -399,9 +482,34 @@ enum JobPriority {
 enum JobStatus {
   OPEN
   ASSIGNED
+  PAUSED
   COMPLETED
   FAILED
   CANCELLED
+}
+
+enum JobCooperationStatus {
+  PENDING
+  CONFIRMED
+}
+
+enum BookingPaymentStatus {
+  VALID
+  EXPIRED
+  PAUSED
+  RESUMED
+  COMPLETED
+}
+
+enum CancellationRequester {
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum CancellationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum JobDispatchStatus {

@@ -14,6 +14,7 @@ import { CatalogModule } from './catalog/catalog.module';
 import { TechniciansModule } from './technicians/technicians.module';
 import { AdminModule } from './admin/admin.module';
 import { ConversationsModule } from './conversations/conversations.module';
+import { PaymentsModule } from './payments/payments.module';
 import { DisputesModule } from './disputes/disputes.module';
 
 @Module({
@@ -33,6 +34,7 @@ import { DisputesModule } from './disputes/disputes.module';
     TechniciansModule,
     AdminModule,
     ConversationsModule,
+    PaymentsModule,
     DisputesModule,
     HealthModule,
   ],

@@ -1,34 +1,177 @@
-# Jobs API
+# Paid Job Booking API
 
-All routes below are prefixed with `/api/v1`. Authenticated routes require an access token:
+All routes below are prefixed with `/api/v1`. Job-owner routes accept a
+customer or technician bearer token; administrator routes require an
+administrator session or token. JSON endpoints use
+`Content-Type: application/json`. Job creation and media uploads use
+`multipart/form-data`.
 
-```http
-Authorization: Bearer <access-token>
-```
+The booking flow is owner-selected: a logged-in customer or technician previews
+eligible technicians, makes a category booking-fee payment, verifies their
+phone for this request, creates the job, then proposes one matching technician.
+The technician has five minutes to accept or reject a proposal.
 
-JSON request and response examples use UUIDs and timestamps as examples. Fields containing `null` can be populated after a technician accepts a job. Job list endpoints return all matching records as a JSON array; apply pagination in the frontend.
+## Booking flow
 
-## Customer endpoints
+1. List service categories with `GET /catalog/categories`; select a category
+   with a configured positive `bookingFee`.
+2. Preview matches using `GET /jobs/matching-technicians`.
+3. Pay the booking fee using `POST /payments/mock`. This development-only
+   payment is not a real money transfer.
+4. Request and verify the job owner's phone OTP for this job using
+   `POST /jobs/phone-verification/request` and
+   `POST /jobs/phone-verification/verify`.
+5. Create the job using the returned `paymentId` and `verificationId`.
+6. Propose a technician from the preview list using
+   `POST /jobs/mine/:jobId/requests`.
 
-| Method | Path | Purpose |
+See [Booking Payments API](booking-payments.md) for payment records, validity,
+and administrator extensions.
+
+## Customer and technician job-owner endpoints
+
+| Method | URL | Purpose |
 | --- | --- | --- |
-| `POST` | `/jobs` | Create a job and optionally upload attachments |
-| `GET` | `/jobs/mine` | List all jobs belonging to the current customer |
-| `GET` | `/jobs/mine/:jobId` | Get one of the current customer's jobs |
-| `PATCH` | `/jobs/mine/:jobId` | Edit an open, unassigned job |
-| `PATCH` | `/jobs/mine/:jobId/progress` | Update customer progress on an assigned job |
-| `POST` | `/jobs/mine/:jobId/retry-dispatch` | Retry matching after the offer list is exhausted |
-| `DELETE` | `/jobs/mine/:jobId` | Cancel an open, unassigned job |
-| `POST` | `/jobs/mine/:jobId/media` | Add attachments to an open, unassigned job |
-| `DELETE` | `/jobs/mine/:jobId/media/:mediaId` | Remove an attachment from an open, unassigned job |
+| `POST` | `/api/v1/jobs/phone-verification/request` | Customer or technician: send a phone OTP for this job request |
+| `POST` | `/api/v1/jobs/phone-verification/verify` | Verify that OTP |
+| `GET` | `/api/v1/jobs/matching-technicians?...` | Preview scored matches before paying |
+| `POST` | `/api/v1/jobs/matching-technicians/geocode` | Geocode one or more named places and preview nearby technicians |
+| `POST` | `/api/v1/jobs/matching-technicians/by-location-name` | Match technician location labels against place-name text |
+| `POST` | `/api/v1/jobs` | Customer or technician: create a paid job request and optionally upload media |
+| `GET` | `/api/v1/jobs/mine` | List this user's visible jobs |
+| `GET` | `/api/v1/jobs/mine/:jobId` | Read one owned job |
+| `POST` | `/api/v1/jobs/mine/:jobId/requests` | Propose a matching technician |
+| `POST` | `/api/v1/jobs/mine/:jobId/confirm-cooperation` | Customer confirms agreement with the assigned technician |
+| `PATCH` | `/api/v1/jobs/mine/:jobId` | Edit an open, unassigned job |
+| `PATCH` | `/api/v1/jobs/mine/:jobId/progress` | Update customer progress |
+| `POST` | `/api/v1/jobs/mine/:jobId/cancel` | Cancel with a reason |
+| `POST` | `/api/v1/jobs/mine/:jobId/pause` | Request a mutual pause |
+| `POST` | `/api/v1/jobs/mine/:jobId/resume` | Request a mutual resume |
+| `DELETE` | `/api/v1/jobs/mine/:jobId` | Hide a completed/cancelled job from the job owner's history |
+| `POST` | `/api/v1/jobs/mine/:jobId/retry-dispatch` | Retry a pending dispatch after a scheduling issue |
+| `POST` | `/api/v1/jobs/mine/:jobId/media` | Add media to an editable job |
+| `DELETE` | `/api/v1/jobs/mine/:jobId/media/:mediaId` | Remove media from an editable job |
 
-### Create a job
+### Verify a phone number for a job
 
-`POST /jobs` uses `multipart/form-data`, not JSON, because the request can contain file uploads. Send the following JSON-shaped values as individual text form fields, and send files under the `photos` and `video` field names:
+Each job request requires a new phone verification, even if the job owner
+verified their phone during login or for an earlier request.
+
+**POST** `/api/v1/jobs/phone-verification/request` — customer or technician
+bearer token.
+No request body. In development, read the code from the API terminal when
+`SMS_MODE=console` is configured. The response includes a `verificationId`.
 
 ```json
 {
-  "serviceCategoryId": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
+  "verificationId": "8ae5cc0d-578a-4f4f-870d-700c4fb4b108",
+  "expiresAt": "2026-10-28T12:05:00.000Z",
+  "message": "OTP sent. It expires in 5 minutes."
+}
+```
+
+**POST** `/api/v1/jobs/phone-verification/verify`:
+
+```json
+{
+  "verificationId": "8ae5cc0d-578a-4f4f-870d-700c4fb4b108",
+  "otp": "123456"
+}
+```
+
+The response contains the same `verificationId` and `verifiedAt`. The
+verification can be consumed only once and must be passed to job creation.
+
+### Preview scored technicians
+
+**GET**
+`/api/v1/jobs/matching-technicians?serviceCategoryId={{categoryId}}&latitude=-1.9536&longitude=30.0606`
+— customer or technician bearer token; no body.
+
+For an unlisted service, replace `serviceCategoryId` with
+`otherServiceName=Solar%20panel%20installation`. Supply exactly one service
+selector. This endpoint returns eligible technicians and their match scores;
+it does not require payment and does not send an offer.
+
+Example response:
+
+```json
+[
+  {
+    "technicianId": "8a6541c3-1958-48e7-96c4-0e465a3e57e7",
+    "fullName": "Alex Technician",
+    "matchAccuracy": 94,
+    "distanceMeters": 1200,
+    "gender": "MALE",
+    "yearsOfExperience": 8,
+    "serviceExperiences": [
+      {
+        "categoryId": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
+        "category": {
+          "id": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
+          "name": "Plumbing",
+          "slug": "plumbing"
+        },
+        "customName": null,
+        "yearsOfExperience": 8
+      }
+    ],
+    "publicLocationLabel": "Kigali"
+  }
+]
+```
+
+### Match by named locations
+
+Both named-location endpoints accept a customer or technician bearer token
+and accept one to five locations:
+
+```json
+{
+  "serviceCategoryId": "{{categoryId}}",
+  "locations": ["Kimihurura, Kigali", "Kicukiro, Kigali"],
+  "latitude": null,
+  "longitude": null
+}
+```
+
+Use numeric `latitude` and `longitude` together to add geospatial matches;
+both may be `null` or omitted for text-only matching.
+
+**POST** `/api/v1/jobs/matching-technicians/geocode` geocodes each place
+(OpenStreetMap Nominatim by default) and runs the normal distance/rating-aware
+match for each resulting coordinate. A technician matching more than one
+requested place appears once; `matchedLocations` lists the matching queries,
+and their score/distance come from their strongest match.
+
+**POST** `/api/v1/jobs/matching-technicians/by-location-name` does not call an
+external provider. It case-insensitively searches each technician's stored
+base address and public location label for any supplied place name. It sorts
+eligible text matches using the existing rejection/cancellation penalties.
+This works for technicians with text-only profiles and does not require their
+coordinates. The same request may include an optional `latitude` and
+`longitude` pair; geographic candidates are then included and merged with the
+text matches. Results include `distanceMeters` where coordinates matched and
+`matchedLocations` for matching text. At least one of `locations` or a
+coordinate pair is required, and coordinates must be sent together.
+
+The geocoding endpoint and User-Agent are configurable using
+`GEOCODING_ENDPOINT` and `GEOCODING_USER_AGENT`. The default Nominatim service
+has a public usage policy and is rate-limited by this API process; configure an
+appropriate provider for production traffic. Both endpoints are previews only
+and do not create a job request or send an offer.
+
+### Create a job
+
+**POST** `/api/v1/jobs` — customer or technician bearer token. Use **Body → form-data**
+because photos and video are supported. Add the values below as text fields;
+the JSON is a shape reference, not a raw JSON body:
+
+```json
+{
+  "paymentId": "a44a6586-6681-46ae-9c4a-86b4a83ae218",
+  "phoneVerificationId": "8ae5cc0d-578a-4f4f-870d-700c4fb4b108",
+  "serviceCategoryId": "{{categoryId}}",
   "description": "Repair a leaking kitchen tap and check the connection.",
   "locationAddress": "Kimihurura, Kigali",
   "latitude": -1.9536,
@@ -38,89 +181,94 @@ JSON request and response examples use UUIDs and timestamps as examples. Fields 
 }
 ```
 
-Use exactly one service selection:
+Required form fields: `paymentId`, `phoneVerificationId`, exactly one of
+`serviceCategoryId` or `otherServiceName`, `description`, `locationAddress`,
+`latitude`, `longitude`, and `offeredAmount`. A payment must belong to this
+customer, be unused, be valid, and match the selected category. Custom
+`otherServiceName` requests can be previewed but cannot currently be booked:
+the payment workflow requires a `serviceCategoryId`. Choose a configured
+category to create a paid request. The phone verification is consumed when the
+job is created.
 
-- For a catalog service, provide `serviceCategoryId` and omit `otherServiceName`.
-- For an unavailable service, omit `serviceCategoryId` and provide its actual name in `otherServiceName` (for example, `"otherServiceName": "Solar water heater repair"`). Do not send the literal value `"Other"`.
+Optional files: up to five `photos` (JPEG, PNG, or WebP; 5 MiB each) and one
+`video` (MP4; up to 50 MiB and 30 seconds). Use repeated `photos` fields for
+multiple images. For jobs without attachments, the request may use JSON.
 
-| Field | Required | Rules |
-| --- | --- | --- |
-| `serviceCategoryId` | One service field required | UUID of an active catalog category |
-| `otherServiceName` | One service field required | 2–80 characters |
-| `description` | Yes | 10–5,000 characters |
-| `locationAddress` | Yes | 3–255 characters |
-| `latitude` | Yes | Number from -90 to 90 |
-| `longitude` | Yes | Number from -180 to 180 |
-| `offeredAmount` | Yes | Integer from 1 to 2,000,000,000, in RWF |
-| `priority` | No | `LOW`, `NORMAL` (default), `HIGH`, or `URGENT` |
-| `photos` | No | Up to five repeated file fields; JPEG, PNG, or WebP; 5 MiB maximum each |
-| `video` | No | One MP4 file; 50 MiB and 30 seconds maximum |
+### Propose a technician
 
-The response is a job object as shown in [Job response](#job-response). A newly created job has `status: "OPEN"`, no `currentTechnician`, and `dispatchStatus` may be `PENDING` or `OFFERED` as dispatch begins.
-
-### Read jobs
-
-`GET /jobs/mine` returns an array of full customer job objects:
+**POST** `/api/v1/jobs/mine/{{jobId}}/requests` — job-owner bearer token:
 
 ```json
-[
-  {
-    "id": "a497ee8b-205a-4f5c-9e8a-6352f2207bd4",
-    "service": "Plumbing",
-    "serviceCategory": {
-      "id": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
-      "name": "Plumbing",
-      "slug": "plumbing"
-    },
-    "otherServiceName": null,
-    "description": "Repair a leaking kitchen tap and check the connection.",
-    "location": {
-      "address": "Kimihurura, Kigali",
-      "latitude": -1.9536,
-      "longitude": 30.0606
-    },
-    "offeredAmount": 25000,
-    "currency": "RWF",
-    "priority": "HIGH",
-    "status": "OPEN",
-    "dispatchStatus": "OFFERED",
-    "customerProgress": "PENDING",
-    "technicianProgress": "PENDING",
-    "assignedAt": null,
-    "completedAt": null,
-    "createdAt": "2026-10-12T12:59:00.000Z",
-    "updatedAt": "2026-10-12T12:59:00.000Z",
-    "media": [],
-    "currentTechnician": null,
-    "customer": {
-      "id": "01a37f89-3ee1-42e3-89ae-186ed15fc3a1",
-      "fullName": "Sam Customer"
-    },
-    "assignmentHistory": []
-  }
-]
+{
+  "technicianId": "{{technicianId}}"
+}
 ```
 
-`GET /jobs/mine/:jobId` returns one job object directly.
+Choose a technician returned by the matching preview. Only one proposal can be
+active at a time. A rejection or five-minute timeout leaves the job open so
+the customer can propose another matching technician, provided the payment is
+still valid.
 
-### Edit a job
+### Read, edit, and cancel a job
 
-`PATCH /jobs/mine/:jobId` accepts one or more editable fields. For example:
+`GET /api/v1/jobs/mine` returns the signed-in user's jobs except those they hid.
+`GET /api/v1/jobs/mine/{{jobId}}` returns one visible job.
+
+`PATCH /api/v1/jobs/mine/{{jobId}}` edits an open, unassigned request. Example:
 
 ```json
 {
   "description": "Repair the leaking kitchen tap and replace the worn washer.",
+  "locationAddress": "Kacyiru, Kigali",
   "latitude": -1.954,
   "longitude": 30.061,
   "offeredAmount": 30000
 }
 ```
 
-`latitude` and `longitude` must be supplied together. Use the same exactly-one service selection rule as job creation. Editing invalidates outstanding offers and starts a new matching round. The response is the updated job object.
+Latitude and longitude must be provided together. The category cannot be
+changed after the payment is attached; cancel and create a new paid request
+instead.
 
-### Update customer progress
+**POST** `/api/v1/jobs/mine/{{jobId}}/cancel` immediately cancels an open job
+or releases an assigned technician and returns the job to `OPEN`:
 
-`PATCH /jobs/mine/:jobId/progress` request:
+```json
+{
+  "reason": "I need to change the requested service."
+}
+```
+
+Customer cancellation of an assigned job is immediate; the attached payment's
+remaining validity resumes for reassignment. Only completed or cancelled jobs
+can be hidden with `DELETE /api/v1/jobs/mine/{{jobId}}`. Hiding is per user and
+does not delete the other party's history.
+
+### Progress, pause, and resume
+
+After an offer is accepted, the job is `ASSIGNED` and the booking payment is
+`PAUSED`. The customer and assigned technician independently confirm their
+agreement while the job is `ASSIGNED` or `PAUSED`, using:
+
+- Customer: `POST /api/v1/jobs/mine/{{jobId}}/confirm-cooperation`
+- Technician: `POST /api/v1/jobs/technician/mine/{{jobId}}/confirm-cooperation`
+
+The job response includes `cooperationStatus` (`PENDING` until both confirm,
+then `CONFIRMED`) and both confirmation timestamps. When the second party
+confirms, the payment immediately becomes `EXPIRED` and `validUntil` is set to
+that time, regardless of the remaining booking lifetime. The job remains
+in its current work status (`ASSIGNED` or `PAUSED`); cooperation confirmation
+is separate from work progress and completion, which still requires both sides
+to mark their work completed.
+
+If an assigned job is cancelled before mutual confirmation, the existing
+remaining payment validity resumes and the job can be reassigned. After mutual
+confirmation, cancellation ends the job rather than reopening it for
+reassignment, because its booking payment has expired.
+
+Both job participants update their own progress with
+`PATCH /api/v1/jobs/mine/{{jobId}}/progress` (customer) or
+`PATCH /api/v1/jobs/technician/mine/{{jobId}}/progress` (technician):
 
 ```json
 {
@@ -128,72 +276,38 @@ The response is a job object as shown in [Job response](#job-response). A newly 
 }
 ```
 
-Allowed progress values are `STARTED`, `IN_PROGRESS`, `COMPLETED`, and `FAILED`, subject to the transition rules in [Job status](#job-status). The response is the updated job object.
+Progress values are `STARTED`, `IN_PROGRESS`, `COMPLETED`, and `FAILED`.
+Overall job status becomes `COMPLETED` only when both sides mark it completed;
+either side marking it failed makes the job `FAILED`.
 
-### Retry dispatch or cancel a job
+Pause and resume are mutual actions. Both participants call the corresponding
+endpoint for the same job; the state changes only after both requests:
 
-`POST /jobs/mine/:jobId/retry-dispatch` and `DELETE /jobs/mine/:jobId` have no request body. Both return the resulting job object. Retry is useful when `dispatchStatus` is `EXHAUSTED`; cancellation is allowed only while the job is open and unassigned.
+- Customer: `POST /api/v1/jobs/mine/{{jobId}}/pause` or `/resume`
+- Technician: `POST /api/v1/jobs/technician/mine/{{jobId}}/pause` or `/resume`
 
-### Add or remove attachments
-
-`POST /jobs/mine/:jobId/media` uses `multipart/form-data` with the same `photos` and `video` file fields and file limits as job creation. At least one file must be provided. It returns the updated job object.
-
-`DELETE /jobs/mine/:jobId/media/:mediaId` has no request body and returns the updated job object.
-
-The limits of five photos and one video apply to all attachments on the job, not each upload request. Combined attachment size cannot exceed 75 MiB.
+These requests have no body. A mutually paused job has `status: "PAUSED"` and
+releases the technician to accept another job. Mutual resume sets the job back
+to `ASSIGNED` and the technician offline; the technician cannot resume if
+another assigned job is still active.
 
 ## Technician endpoints
 
-| Method | Path | Purpose |
+| Method | URL | Purpose |
 | --- | --- | --- |
-| `GET` | `/jobs/technician/offers` | List current offers and the technician's offer history |
-| `POST` | `/jobs/technician/offers/:offerId/accept` | Accept the current offer |
-| `POST` | `/jobs/technician/offers/:offerId/reject` | Reject the current offer and dispatch to the next match |
-| `GET` | `/jobs/technician/mine` | List all assigned and past jobs |
-| `GET` | `/jobs/technician/mine/:jobId` | Get a job assigned to the current technician |
-| `PATCH` | `/jobs/technician/mine/:jobId/progress` | Update technician progress |
-| `POST` | `/jobs/technician/mine/:jobId/drop` | Drop an assigned job with a reason |
+| `GET` | `/api/v1/jobs/technician/offers` | List current and past offers |
+| `POST` | `/api/v1/jobs/technician/offers/:offerId/accept` | Accept an offer |
+| `POST` | `/api/v1/jobs/technician/offers/:offerId/reject` | Reject an offer |
+| `GET` | `/api/v1/jobs/technician/mine` | List visible current and past jobs |
+| `GET` | `/api/v1/jobs/technician/mine/:jobId` | Read an assigned or previously assigned job |
+| `POST` | `/api/v1/jobs/technician/mine/:jobId/confirm-cooperation` | Technician confirms agreement with the job owner |
+| `PATCH` | `/api/v1/jobs/technician/mine/:jobId/progress` | Update technician progress |
+| `POST` | `/api/v1/jobs/technician/mine/:jobId/drop` | Request cancellation with a reason |
+| `POST` | `/api/v1/jobs/technician/mine/:jobId/pause` | Request a mutual pause |
+| `POST` | `/api/v1/jobs/technician/mine/:jobId/resume` | Request a mutual resume |
+| `DELETE` | `/api/v1/jobs/technician/mine/:jobId` | Hide a completed/cancelled job from technician history |
 
-### List and respond to offers
-
-`GET /jobs/technician/offers` returns an array:
-
-```json
-[
-  {
-    "id": "f0ab9447-04fb-40f6-86aa-e714de851825",
-    "status": "OFFERED",
-    "round": 1,
-    "matchScore": 94,
-    "distanceMeters": 1200,
-    "offeredAt": "2026-10-12T13:00:00.000Z",
-    "expiresAt": "2026-10-12T13:05:00.000Z",
-    "respondedAt": null,
-    "rejectionReason": null,
-    "dropReason": null,
-    "job": {
-      "id": "a497ee8b-205a-4f5c-9e8a-6352f2207bd4",
-      "service": "Plumbing",
-      "description": "Repair a leaking kitchen tap and check the connection.",
-      "locationAddress": "Kimihurura, Kigali",
-      "latitude": -1.9536,
-      "longitude": 30.0606,
-      "offeredAmount": 25000,
-      "currency": "RWF",
-      "priority": "HIGH",
-      "status": "OPEN",
-      "createdAt": "2026-10-12T12:59:00.000Z",
-      "media": []
-    }
-  }
-]
-```
-
-An active offer (`status: "OFFERED"`) can include its media. Historical offers include `REJECTED`, `EXPIRED`, `ACCEPTED`, or `DROPPED` status; their `job.media` is empty.
-
-`POST /jobs/technician/offers/:offerId/accept` has no request body and returns the assigned job object using the technician's [job response](#job-response) shape.
-
-`POST /jobs/technician/offers/:offerId/reject` accepts an optional reason:
+Reject an offer with an optional reason:
 
 ```json
 {
@@ -201,53 +315,44 @@ An active offer (`status: "OFFERED"`) can include its media. Historical offers i
 }
 ```
 
-Successful response:
+Rejecting or cancelling jobs lowers future match scores by five points per
+event, capped at a 40-point penalty. Rejecting is immediate. Dropping an
+accepted job requires a reason and remains assigned until an administrator
+approves the cancellation request.
 
-```json
-{
-  "message": "Job offer rejected."
-}
-```
+A technician cannot accept another job while a job is `ASSIGNED`. A mutually
+`PAUSED` job does not block accepting another job. Only `COMPLETED` or
+`CANCELLED` jobs can be hidden from the technician's history.
 
-### Read assigned jobs
+## Administrator endpoints
 
-`GET /jobs/technician/mine` returns a JSON array of technician job response objects. `GET /jobs/technician/mine/:jobId` returns one job object directly. Technicians only see jobs assigned to them and offers sent to them; there is no public feed of untaken jobs.
-
-### Update progress or drop a job
-
-`PATCH /jobs/technician/mine/:jobId/progress` accepts:
-
-```json
-{
-  "status": "COMPLETED"
-}
-```
-
-Allowed progress values and transitions are described in [Job status](#job-status). The response is the updated job object.
-
-`POST /jobs/technician/mine/:jobId/drop` requires a reason:
-
-```json
-{
-  "reason": "My vehicle broke down and I cannot reach the location."
-}
-```
-
-Successful response:
-
-```json
-{
-  "message": "Job dropped and offered to the next eligible technician."
-}
-```
-
-## Admin endpoints
-
-| Method | Path | Purpose |
+| Method | URL | Purpose |
 | --- | --- | --- |
-| `GET` | `/admin/jobs` | List all jobs with matching offers and assignment history |
-| `GET` | `/admin/jobs/summary` | Dashboard job counts (active, completed, open disputes) |
-| `GET` | `/admin/jobs/:jobId` | Get full details for a job |
+| `GET` | `/api/v1/admin/jobs` | List all jobs, offers, and assignment history |
+| `GET` | `/api/v1/admin/jobs/summary` | Dashboard job counts |
+| `POST` | `/api/v1/admin/jobs` | Create and dispatch a job on a customer's behalf |
+| `GET` | `/api/v1/admin/jobs/cancellation-requests` | List technician cancellation requests |
+| `PATCH` | `/api/v1/admin/jobs/cancellation-requests/:requestId` | Approve or reject a technician cancellation |
+| `GET` | `/api/v1/admin/jobs/:jobId` | Get a job |
+| `PATCH` | `/api/v1/admin/jobs/:jobId` | Edit job fields; open jobs are re-matched |
+| `POST` | `/api/v1/admin/jobs/:jobId/cancel` | Cancel an open or assigned job |
+| `POST` | `/api/v1/admin/jobs/:jobId/reassign` | Reassign an open or assigned job |
+| `DELETE` | `/api/v1/admin/jobs/:jobId` | Permanently delete a completed/cancelled job |
+
+Review a technician cancellation:
+
+```json
+{
+  "decision": "APPROVE",
+  "reviewNote": "Cancellation approved."
+}
+```
+
+`decision` is `APPROVE` or `REJECT`. Approval releases the technician and
+resumes the payment's remaining validity; rejection leaves the assignment in
+place. Admins can permanently delete only completed or cancelled jobs.
+Payment records and audit history are retained. User-level `DELETE` endpoints
+only hide jobs and never permanently delete them.
 
 ## Disputes
 
@@ -276,180 +381,38 @@ Example admin response:
 
 ```json
 {
-  "id": "a497ee8b-205a-4f5c-9e8a-6352f2207bd4",
-  "service": "Plumbing",
-  "serviceCategory": {
-    "id": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
-    "name": "Plumbing",
-    "slug": "plumbing"
-  },
-  "otherServiceName": null,
-  "description": "Repair a leaking kitchen tap and check the connection.",
-  "location": {
-    "address": "Kimihurura, Kigali",
-    "latitude": -1.9536,
-    "longitude": 30.0606
-  },
-  "offeredAmount": 25000,
-  "currency": "RWF",
-  "priority": "HIGH",
-  "status": "ASSIGNED",
-  "dispatchStatus": "STOPPED",
-  "customerProgress": "PENDING",
-  "technicianProgress": "STARTED",
-  "assignedAt": "2026-10-12T13:00:00.000Z",
-  "completedAt": null,
-  "createdAt": "2026-10-12T12:59:00.000Z",
-  "updatedAt": "2026-10-12T13:00:00.000Z",
-  "media": [],
-  "currentTechnician": {
-    "id": "8a6541c3-1958-48e7-96c4-0e465a3e57e7",
-    "fullName": "Alex Technician",
-    "profile": {
-      "gender": "MALE",
-      "yearsOfExperience": 8,
-      "serviceExperiences": [
-        {
-          "categoryId": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
-          "category": {
-            "id": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
-            "name": "Plumbing",
-            "slug": "plumbing"
-          },
-          "customName": null,
-          "yearsOfExperience": 8
-        }
-      ],
-      "publicLocationLabel": "Kigali",
-      "profilePictureUrl": null
-    }
-  },
-  "customer": {
-    "id": "01a37f89-3ee1-42e3-89ae-186ed15fc3a1",
-    "fullName": "Sam Customer",
-    "phoneNumber": "+250790000000",
-    "email": "sam@example.test"
-  },
-  "assignmentHistory": [
-    {
-      "technicianId": "8a6541c3-1958-48e7-96c4-0e465a3e57e7",
-      "technicianName": "Alex Technician",
-      "acceptedAt": "2026-10-12T13:00:00.000Z",
-      "endedAt": null,
-      "endReason": null,
-      "reason": null
-    }
-  ],
-  "offers": [
-    {
-      "id": "f0ab9447-04fb-40f6-86aa-e714de851825",
-      "technicianId": "8a6541c3-1958-48e7-96c4-0e465a3e57e7",
-      "technicianName": "Alex Technician",
-      "round": 1,
-      "matchScore": 94,
-      "distanceMeters": 1200,
-      "status": "ACCEPTED",
-      "offeredAt": "2026-10-12T12:59:30.000Z",
-      "expiresAt": "2026-10-12T13:04:30.000Z",
-      "respondedAt": "2026-10-12T13:00:00.000Z",
-      "rejectionReason": null,
-      "dropReason": null
-    }
-  ]
-}
-```
-
-Admin listing returns every job without backend pagination; apply UI pagination and filters on the frontend. Admin approval and mutation routes are not part of this feature.
-
-### Dashboard summary
-
-`GET /admin/jobs/summary` returns the counts the admin dashboard shows. It takes no query parameters.
-
-```json
-{
   "active": 23,
   "completed": 417,
   "openDisputes": 2
 }
 ```
 
-`active` counts jobs that are still in flight (`OPEN` or `ASSIGNED`). `completed` counts jobs with `status: "COMPLETED"`. `FAILED` and `CANCELLED` jobs are terminal and are included in neither. `openDisputes` counts dispute records without an admin resolution.
+`active` counts `OPEN`, `ASSIGNED`, and `PAUSED` jobs. `completed` counts jobs
+with `status: "COMPLETED"`. `FAILED` and `CANCELLED` jobs are terminal and
+excluded. `openDisputes` counts dispute records without an admin resolution.
 
-## Job response
+## Job and payment status
 
-Customer job reads and mutations return this object directly. Technician responses use the same common fields but omit `customer` and `assignmentHistory`. If a technician has accepted the job, `currentTechnician` contains their public professional profile for every viewer. It excludes private contact details, exact home address and coordinates, national ID, and payment information. Admin responses also include the offer details shown above.
+Job statuses are `OPEN`, `ASSIGNED`, `PAUSED`, `COMPLETED`, `FAILED`, and
+`CANCELLED`. The match preview considers active, approved, online technicians
+with the matching service within 50 km. A base score uses service fit and
+distance; technician rejection/cancellation penalties are applied and scores
+below the minimum are excluded. The response includes match scores so the
+customer can select a technician.
 
-```json
-{
-  "id": "a497ee8b-205a-4f5c-9e8a-6352f2207bd4",
-  "service": "Plumbing",
-  "serviceCategory": {
-    "id": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
-    "name": "Plumbing",
-    "slug": "plumbing"
-  },
-  "otherServiceName": null,
-  "description": "Repair a leaking kitchen tap and check the connection.",
-  "location": {
-    "address": "Kimihurura, Kigali",
-    "latitude": -1.9536,
-    "longitude": 30.0606
-  },
-  "offeredAmount": 25000,
-  "currency": "RWF",
-  "priority": "HIGH",
-  "status": "OPEN",
-  "dispatchStatus": "OFFERED",
-  "customerProgress": "PENDING",
-  "technicianProgress": "PENDING",
-  "assignedAt": null,
-  "completedAt": null,
-  "createdAt": "2026-10-12T12:59:00.000Z",
-  "updatedAt": "2026-10-12T12:59:00.000Z",
-  "media": [
-    {
-      "id": "26500c63-7ba1-4b7b-b72f-1c8795c228a5",
-      "type": "PHOTO",
-      "mimeType": "image/jpeg",
-      "fileName": "leaking-tap.jpg",
-      "sizeBytes": 145000,
-      "durationSeconds": null,
-      "createdAt": "2026-10-12T12:59:00.000Z",
-      "downloadPath": "/api/v1/jobs/a497ee8b-205a-4f5c-9e8a-6352f2207bd4/media/26500c63-7ba1-4b7b-b72f-1c8795c228a5"
-    }
-  ],
-  "currentTechnician": null,
-  "customer": {
-    "id": "01a37f89-3ee1-42e3-89ae-186ed15fc3a1",
-    "fullName": "Sam Customer"
-  },
-  "assignmentHistory": []
-}
-```
+The category booking fee starts with seven days of validity. The countdown
+pauses when a technician accepts the job and resumes after an approved
+technician cancellation or customer cancellation if cooperation has not been
+confirmed. Both participants confirming cooperation expires the payment
+immediately. A payment remains paused while an assigned job is paused before
+mutual confirmation, and is marked completed when both sides complete the job.
 
-## Shared media download
+An expired payment does not automatically delete or cancel the job. The
+customer must make another payment and create a new job request. Administrators
+can extend a payment by 1–30 days; see [Booking Payments API](booking-payments.md).
 
-`GET /jobs/:jobId/media/:mediaId` returns the file bytes, not JSON. A job's `media[].downloadPath` contains the URL path. Include the access token when requesting it. Access is limited to the job owner, the technician with the current offer or assignment, and admins. Responses set `X-Content-Type-Options: nosniff`.
+## Shared job media download
 
-## Matching and dispatch
-
-Only active technicians with approved profiles, online availability, a matching service, and a location within 50 km are considered. Service matches are exact by catalog category, or by normalized service/category name for an “Other” request. The score awards 60 points for the service match and up to 40 points for proximity, decreasing linearly to zero at 50 km. Scores below 50 are excluded. Eligible technicians are offered the job sequentially from highest score to lowest, with distance as the tie-breaker. Priority is shown but does not affect ranking.
-
-Only one offer is active at a time. The technician has five minutes to accept or reject; a rejection or timeout advances to the next eligible technician. `dispatchStatus` is `PENDING` while dispatch is being scheduled, `OFFERED` while one technician has the offer, `EXHAUSTED` when there are no remaining candidates, and `STOPPED` after assignment or closure. The customer can retry an exhausted dispatch or edit the open job to start a new matching round.
-
-If dispatch scheduling fails after a job is saved, the API returns `503` and includes the job ID in its error message. Do not create a duplicate; retry using `POST /jobs/mine/:jobId/retry-dispatch` after Redis is healthy.
-
-Connected technicians may also receive a `job:offer` event on the `/events` Socket.IO namespace. Authenticate with `auth: { "accessToken": "<access-token>" }` or an `Authorization: Bearer` handshake header. REST is the source of truth; after reconnecting, fetch `/jobs/technician/offers`.
-
-## Job status
-
-Overall job `status` is `OPEN` before assignment, `ASSIGNED` while in progress, `COMPLETED` when both parties mark their progress completed, and `FAILED` if either party marks it failed. Customers can cancel only an open, unassigned job.
-
-Customer and technician progress are tracked independently. Accepting an offer sets technician progress to `STARTED`. Allowed transitions for either side:
-
-- `PENDING` → `STARTED` or `FAILED`
-- `STARTED` → `IN_PROGRESS`, `COMPLETED`, or `FAILED`
-- `IN_PROGRESS` → `COMPLETED` or `FAILED`
-- `COMPLETED` and `FAILED` are terminal
-
-A technician can drop an assigned job at any point by providing a reason. The job becomes open again, its progress resets to `PENDING`, and dispatch resumes for the next eligible technician. Assignment history retains the prior technician and drop reason.
+`GET /api/v1/jobs/:jobId/media/:mediaId` returns file bytes, not JSON.
+Authenticated access is limited to the job owner, a technician with an offer
+or assignment, and administrators.

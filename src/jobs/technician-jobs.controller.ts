@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -62,6 +63,14 @@ export class TechnicianJobsController {
     return this.jobs.getTechnicianJob(user.id, jobId);
   }
 
+  @Post('mine/:jobId/confirm-cooperation')
+  confirmCooperation(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.confirmCooperation(user.id, jobId, 'technician');
+  }
+
   @Patch('mine/:jobId/progress')
   updateProgress(
     @CurrentUser() user: AuthUser,
@@ -78,5 +87,29 @@ export class TechnicianJobsController {
     @Body() dto: DropJobDto,
   ) {
     return this.jobs.dropJob(user.id, jobId, dto);
+  }
+
+  @Post('mine/:jobId/pause')
+  pause(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.requestPause(user.id, jobId, 'technician');
+  }
+
+  @Post('mine/:jobId/resume')
+  resume(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.requestResume(user.id, jobId, 'technician');
+  }
+
+  @Delete('mine/:jobId')
+  hide(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.hideJobForUser(user.id, jobId, 'technician');
   }
 }

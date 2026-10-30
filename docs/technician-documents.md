@@ -20,10 +20,11 @@ service; job media also uses this configured driver.
 - **Documents** are verification files. A document is either a
   **`NATIONAL_ID`** (an identity card) or a **`CERTIFICATE`** (a
   qualification). Each certificate records a `certificateType` and links to a
-  service category. Every document has a review `status` set by an
-  administrator.
+  service category. Certificates are optional; the National ID card is
+  required. Every document has a review `status` set by an administrator.
 - **Verification** (`verificationStatus` on the technician profile) can only
-  become `APPROVED` once the approval checklist is satisfied.
+  become `APPROVED` once the required National ID document is accepted. An
+  accepted certificate is not required for approval.
 
 Technician routes require a `TECHNICIAN` access token. Admin routes require an
 `ADMIN` access token. Uploads use `multipart/form-data`; every other request
@@ -62,11 +63,10 @@ body is JSON with `Content-Type: application/json`.
 | `SHORT_COURSE` | Short course completion |
 | `OTHER` | Anything else |
 
-A certificate also links to the service it qualifies the technician for. The
+A certificate can link to the service it qualifies the technician for. The
 technician picks either a real service category (`categoryId`) or types a
-name (`customCategoryName`) if the service is not in the catalogue yet. The
-approval checklist specifically requires an accepted certificate of type
-`TVET_CERTIFICATE`.
+name (`customCategoryName`) if the service is not in the catalogue yet.
+Certificates are optional and are not part of the approval checklist.
 
 ## Document statuses
 

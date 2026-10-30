@@ -27,7 +27,7 @@ export class CatalogService {
     return this.prisma.serviceCategory.findMany({
       where: { isActive: true },
       orderBy: { name: 'asc' },
-      select: { id: true, name: true, slug: true },
+      select: { id: true, name: true, slug: true, bookingFee: true },
     });
   }
 
@@ -39,7 +39,7 @@ export class CatalogService {
         name: { contains: name.trim(), mode: 'insensitive' },
       },
       orderBy: { name: 'asc' },
-      select: { id: true, name: true, slug: true },
+      select: { id: true, name: true, slug: true, bookingFee: true },
     });
   }
 
@@ -52,7 +52,7 @@ export class CatalogService {
   async getActiveById(id: string) {
     const category = await this.prisma.serviceCategory.findFirst({
       where: { id, isActive: true },
-      select: { id: true, name: true, slug: true },
+      select: { id: true, name: true, slug: true, bookingFee: true },
     });
     if (!category) throw new NotFoundException('Service category not found.');
     return category;
@@ -87,7 +87,7 @@ export class CatalogService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const category = await tx.serviceCategory.create({
-          data: { name, slug },
+          data: { name, slug, bookingFee: dto.bookingFee },
         });
         await this.audit.log(
           {
@@ -107,9 +107,13 @@ export class CatalogService {
 
   // Updates category data and records the change atomically.
   async update(id: string, dto: UpdateCategoryDto, actorId: string) {
-    if (dto.name === undefined && dto.isActive === undefined) {
+    if (
+      dto.name === undefined &&
+      dto.isActive === undefined &&
+      dto.bookingFee === undefined
+    ) {
       throw new BadRequestException(
-        'Provide a category name or isActive value to update.',
+        'Provide a category name, bookingFee, or isActive value to update.',
       );
     }
     const name = dto.name?.trim();
@@ -123,7 +127,12 @@ export class CatalogService {
       return await this.prisma.$transaction(async (tx) => {
         const category = await tx.serviceCategory.update({
           where: { id },
-          data: { name, slug, isActive: dto.isActive },
+          data: {
+            name,
+            slug,
+            isActive: dto.isActive,
+            bookingFee: dto.bookingFee,
+          },
         });
         await this.audit.log(
           {
@@ -134,6 +143,9 @@ export class CatalogService {
             metadata: {
               ...(name !== undefined ? { name } : {}),
               ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+              ...(dto.bookingFee !== undefined
+                ? { bookingFee: dto.bookingFee }
+                : {}),
             },
           },
           tx,

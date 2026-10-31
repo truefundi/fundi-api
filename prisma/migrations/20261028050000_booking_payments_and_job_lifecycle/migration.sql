@@ -14,6 +14,9 @@ CREATE TYPE "CancellationRequestStatus" AS ENUM ('PENDING', 'APPROVED', 'REJECTE
 ALTER TABLE "users"
   ADD COLUMN "phoneVerifiedAt" TIMESTAMP(3);
 
+ALTER TABLE "service_categories"
+  ADD COLUMN "bookingFee" INTEGER;
+
 ALTER TABLE "technician_profiles"
   ADD COLUMN "nationalIdEncrypted" TEXT,
   ADD COLUMN "nationalIdHash" TEXT,

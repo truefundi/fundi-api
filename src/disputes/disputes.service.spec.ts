@@ -64,13 +64,15 @@ const createService = () => {
     (callback: (tx: unknown) => Promise<unknown>) => callback(prisma),
   );
   const audit = { log: jest.fn() };
+  const notifications = { create: jest.fn().mockResolvedValue({}) };
   const service = new DisputesService(
     prisma as unknown as PrismaService,
     jobs as unknown as JobsService,
     conversations as unknown as ConversationsService,
     audit as unknown as AuditService,
+    notifications as any,
   );
-  return { service, jobs, conversations, prisma, audit };
+  return { service, jobs, conversations, prisma, audit, notifications };
 };
 
 describe('DisputesService', () => {

@@ -369,7 +369,7 @@ export class AdminAuthService {
   // Seconds the access token stays valid, so the client knows when to refresh.
   accessTokenSeconds(): number {
     return this.durationToSeconds(
-      this.configService.get<string>('adminAuth.accessExpiresIn', '15m'),
+      this.configService.get<string>('adminAuth.accessExpiresIn', '1d'),
     );
   }
 
@@ -377,7 +377,7 @@ export class AdminAuthService {
   // set from the same number as the stored session row and the two cannot drift.
   refreshTokenSeconds(): number {
     return this.durationToSeconds(
-      this.configService.get<string>('adminAuth.refreshExpiresIn', '12h'),
+      this.configService.get<string>('adminAuth.refreshExpiresIn', '5d'),
     );
   }
 
@@ -506,14 +506,20 @@ export class AdminAuthService {
     const refreshSecret =
       this.configService.get<string>('jwt.refreshSecret') || 'default_dev_refresh_secret_32chars';
 
-    const accessToken = await this.jwtService.signAsync(payload, {
-      secret: accessSecret,
-      expiresIn: this.configService.get<string>('adminAuth.accessExpiresIn', '15m') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
-    });
-    const refreshToken = await this.jwtService.signAsync(payload, {
-      secret: refreshSecret,
-      expiresIn: this.configService.get<string>('adminAuth.refreshExpiresIn', '12h') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
-    });
+    const accessToken = await this.jwtService.signAsync(
+      { ...payload, typ: 'access' },
+      {
+        secret: accessSecret,
+        expiresIn: this.configService.get<string>('adminAuth.accessExpiresIn', '1d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      },
+    );
+    const refreshToken = await this.jwtService.signAsync(
+      { ...payload, typ: 'refresh' },
+      {
+        secret: refreshSecret,
+        expiresIn: this.configService.get<string>('adminAuth.refreshExpiresIn', '5d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      },
+    );
 
     return { accessToken, refreshToken, sessionId };
   }

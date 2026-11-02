@@ -843,7 +843,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Home Repair\",\n  \"bookingFee\": 1000\n}",
+              "raw": "{\n  \"name\": \"Home Repair\",\n  \"visitFee\": 1000\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -910,7 +910,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Home Maintenance\",\n  \"isActive\": true,\n  \"bookingFee\": 1500\n}",
+              "raw": "{\n  \"name\": \"Home Maintenance\",\n  \"isActive\": true,\n  \"visitFee\": 1500\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1801,7 +1801,7 @@
               }
             ],
             "url": "{{baseUrl}}/api/v1/payments/mock",
-            "description": "Save response.id as paymentId. The amount is loaded from the category bookingFee and is valid for seven days.",
+            "description": "Save response.id as paymentId. The amount is loaded from the category visitFee and is valid for seven days.",
             "auth": {
               "type": "bearer",
               "bearer": [

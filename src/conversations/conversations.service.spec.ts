@@ -155,12 +155,14 @@ function createService(initialConversation: AnyRecord | null) {
   );
   const audit = { log: jest.fn().mockResolvedValue(undefined) };
   const jobs = { dropJob: jest.fn().mockResolvedValue({ message: 'dropped' }) };
+  const notifications = { create: jest.fn().mockResolvedValue({}) };
   const service = new ConversationsService(
     prisma as unknown as PrismaService,
     audit as unknown as AuditService,
     jobs as unknown as JobsService,
+    notifications as any,
   );
-  return { service, prisma, audit, jobs };
+  return { service, prisma, audit, jobs, notifications };
 }
 
 describe('ConversationsService', () => {

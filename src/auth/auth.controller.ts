@@ -96,7 +96,7 @@ export class AuthController {
   // Returns the authenticated account's full record.
   @Get('me')
   @UseGuards(AuthGuard('jwt'))
-  @ApiBearerAuth()
+  @ApiBearerAuth('accessToken')
   @ApiOperation({ summary: 'Get the current authenticated user' })
   @ApiResponse({ status: 200, description: 'One full user record', type: UserResponseDto })
   @ApiTokenRequired()
@@ -124,7 +124,7 @@ export class AuthController {
   // Revokes the submitted refresh token for the authenticated account.
   @Post('logout')
   @UseGuards(AuthGuard('jwt'))
-  @ApiBearerAuth()
+  @ApiBearerAuth('accessToken')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Revoke a refresh token',

@@ -59,6 +59,7 @@ describe('JobsService location matching', () => {
       undefined as never,
       undefined as never,
       undefined as never,
+      undefined as never,
     );
     return { service, prisma };
   };
@@ -230,6 +231,7 @@ describe('JobsService cooperation confirmation', () => {
       undefined as never,
       undefined as never,
       undefined as never,
+      undefined as never,
     );
     jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as never);
     jest.spyOn(service, 'getTechnicianJob').mockResolvedValue({} as never);
@@ -303,6 +305,7 @@ describe('JobsService.summaryForAdmin', () => {
     };
     const service = new JobsService(
       prisma as unknown as PrismaService,
+      undefined as unknown as never,
       undefined as unknown as never,
       undefined as unknown as never,
       undefined as unknown as never,

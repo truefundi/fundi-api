@@ -20,6 +20,7 @@ import {
   JobProgressStatus,
   JobCooperationStatus,
   JobStatus,
+  NotificationType,
   BookingPaymentStatus,
   CancellationRequestStatus,
   CancellationRequester,
@@ -36,6 +37,7 @@ import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { EventsGateway } from '../websockets/events.gateway';
+import { NotificationsService } from '../notifications/notifications.service';
 import { canRespondToOffer, isOfferExpired } from '../conversations/negotiation.util';
 import {
   JOB_MATCH_RADIUS_METERS,
@@ -43,6 +45,7 @@ import {
   JOB_OFFER_RESPONSE_SECONDS,
 } from './job.constants';
 import { AdminCreateJobDto } from './dto/admin-create-job.dto';
+import { AdminRateJobDto } from './dto/admin-rate-job.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import {
   DropJobDto,
@@ -155,6 +158,7 @@ export class JobsService {
     private readonly storage: StorageService,
     private readonly audit: AuditService,
     private readonly events: EventsGateway,
+    private readonly notifications: NotificationsService,
     @InjectQueue('job-dispatch') private readonly dispatchQueue: Queue,
     private readonly geocoding: GeocodingService,
   ) {}
@@ -922,6 +926,19 @@ export class JobsService {
       currency: offer.job.currency,
       priority: offer.job.priority,
     });
+    await this.notifications
+      .create({
+        userId: offer.technician.userId,
+        type: NotificationType.JOB_OFFER,
+        title: 'New job offer',
+        body: 'You have a new job offer.',
+        data: {
+          offerId: offer.id,
+          jobId: offer.jobId,
+          dedupeKey: `job-offer:${offer.id}`,
+        },
+      })
+      .catch(() => undefined);
     return this.getCustomerJob(customerId, jobId);
   }
 
@@ -1238,6 +1255,63 @@ export class JobsService {
         tx,
       );
     });
+  }
+
+  /**
+   * Records the customer's rating for a completed job on their behalf. The
+   * admin dashboard uses this when a rating is collected after a dispute.
+   */
+  async adminRate(jobId: string, dto: AdminRateJobDto, adminId: string) {
+    const job = await this.findJob(jobId);
+    if (
+      job.status !== JobStatus.COMPLETED &&
+      job.status !== JobStatus.ASSIGNED
+    ) {
+      throw new ConflictException(
+        'Only an assigned or completed job can be rated.',
+      );
+    }
+    const comment = dto.comment?.trim() || null;
+    const ratedAt = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      await tx.job.update({
+        where: { id: jobId },
+        data: {
+          ratingOverall: dto.overall,
+          ratingQuality: dto.quality,
+          ratingProfessionalism: dto.professionalism,
+          ratingArrival: dto.arrival,
+          ratingCommunication: dto.communication,
+          ratingValue: dto.value,
+          ratingComment: comment,
+          ratedAt,
+        },
+      });
+      await this.audit.log(
+        {
+          entityType: 'Job',
+          entityId: jobId,
+          action: 'JOB_RATED',
+          actorId: adminId,
+          metadata: { ...dto, comment },
+        },
+        tx,
+      );
+    });
+
+    const updated = await this.findJob(jobId);
+    if (this.notifications && updated.technician?.userId) {
+      await this.notifications
+        .create({
+          userId: updated.technician.userId,
+          type: NotificationType.SYSTEM,
+          title: 'You received a rating',
+          body: `A customer rated your work ${dto.overall}/5.`,
+          data: { jobId, rating: dto.overall, dedupeKey: `job-rated:${jobId}` },
+        })
+        .catch(() => undefined);
+    }
+    return this.toResponse(updated, 'admin');
   }
 
   async retryDispatch(customerId: string, jobId: string) {
@@ -1775,6 +1849,24 @@ export class JobsService {
         tx,
       );
     });
+    if (this.notifications) {
+      const recipients = [job.customerId, job.technician?.userId].filter(
+        (id): id is string => Boolean(id),
+      );
+      for (const recipient of new Set(recipients)) {
+        await this.notifications
+          .create({
+            userId: recipient,
+            type: NotificationType.JOB_CANCELLED,
+            title: 'Job cancelled',
+            body: trimmedReason
+              ? `The job was cancelled by Fundi admin: ${trimmedReason}`
+              : 'The job was cancelled by Fundi admin.',
+            data: { jobId, dedupeKey: `job-cancelled:${jobId}` },
+          })
+          .catch(() => undefined);
+      }
+    }
     return this.getForAdmin(jobId);
   }
 
@@ -1797,7 +1889,7 @@ export class JobsService {
       select: {
         id: true,
         verificationStatus: true,
-        user: { select: { fullName: true, role: true, status: true } },
+        user: { select: { id: true, fullName: true, role: true, status: true } },
       },
     });
     if (!technician || technician.user.role !== UserRole.TECHNICIAN) {
@@ -1903,6 +1995,17 @@ export class JobsService {
         tx,
       );
     });
+    if (this.notifications) {
+      await this.notifications
+        .create({
+          userId: technician.user.id,
+          type: NotificationType.JOB_ASSIGNED,
+          title: 'New job assigned',
+          body: 'Fundi admin assigned a job to you.',
+          data: { jobId, dedupeKey: `job-reassigned:${jobId}:${technician.id}` },
+        })
+        .catch(() => undefined);
+    }
     return this.getForAdmin(jobId);
   }
 
@@ -2186,6 +2289,17 @@ export class JobsService {
       throw error;
     }
     const job = await this.findJobByTechnician(technicianUserId, offerId);
+    if (this.notifications) {
+      await this.notifications
+        .create({
+          userId: job.customerId,
+          type: NotificationType.JOB_ASSIGNED,
+          title: 'Technician assigned',
+          body: 'A technician accepted your job and will contact you shortly.',
+          data: { jobId: job.id, dedupeKey: `job-assigned:${job.id}` },
+        })
+        .catch(() => undefined);
+    }
     return this.toResponse(job, 'technician');
   }
 
@@ -2348,6 +2462,36 @@ export class JobsService {
       );
     });
     const updated = await this.findJob(jobId);
+    if (
+      this.notifications &&
+      (updated.status === JobStatus.COMPLETED ||
+        updated.status === JobStatus.FAILED)
+    ) {
+      const completed = updated.status === JobStatus.COMPLETED;
+      const recipients = [updated.customerId, updated.technician?.userId].filter(
+        (id): id is string => Boolean(id),
+      );
+      for (const recipient of new Set(recipients)) {
+        await this.notifications
+          .create({
+            userId: recipient,
+            type: completed
+              ? NotificationType.JOB_COMPLETED
+              : NotificationType.JOB_CANCELLED,
+            title: completed ? 'Job completed' : 'Job ended',
+            body: completed
+              ? 'The job has been marked as completed by both parties.'
+              : 'The job was marked as failed.',
+            data: {
+              jobId,
+              dedupeKey: completed
+                ? `job-completed:${jobId}`
+                : `job-failed:${jobId}`,
+            },
+          })
+          .catch(() => undefined);
+      }
+    }
     return this.toResponse(updated, side);
   }
 
@@ -3003,6 +3147,19 @@ export class JobsService {
       assignedAt: job.assignedAt,
       completedAt: job.completedAt,
       cancellationReason: job.cancellationReason,
+      rating:
+        job.ratingOverall === null
+          ? null
+          : {
+              overall: job.ratingOverall,
+              quality: job.ratingQuality,
+              professionalism: job.ratingProfessionalism,
+              arrival: job.ratingArrival,
+              communication: job.ratingCommunication,
+              value: job.ratingValue,
+              comment: job.ratingComment ?? '',
+              ratedAt: job.ratedAt,
+            },
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       media: await this.mediaResponse(job.id, job.media),

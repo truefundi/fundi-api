@@ -245,7 +245,6 @@ export class AdminAuthController {
   // half-finished sign-in.
   @Get('me')
   @Auth(UserRole.ADMIN)
-  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Get the authenticated administrator' })
   @ApiResponse({
     status: 200,

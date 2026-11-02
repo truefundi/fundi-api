@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiCookieAuth } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { UsersService } from './users.service';
 import { RolesGuard } from '../auth/roles.guard';
@@ -30,7 +30,7 @@ export class UsersController {
   @Patch('me')
   @BearerOnly()
   @UseGuards(AuthGuard('jwt'))
-  @ApiBearerAuth()
+  @ApiBearerAuth('accessToken')
   @ApiOperation({ summary: 'Update the current account profile' })
   @ApiResponse({ status: 200, description: 'The updated user record', type: UserResponseDto })
   @ApiTokenRequired()
@@ -45,7 +45,7 @@ export class UsersController {
   @Delete('me')
   @BearerOnly()
   @UseGuards(AuthGuard('jwt'))
-  @ApiBearerAuth()
+  @ApiBearerAuth('accessToken')
   @ApiOperation({
     summary: 'Delete the current account',
     description: 'Permanent. Cascades to the account refresh-token rows.',
@@ -62,7 +62,7 @@ export class UsersController {
   @Post()
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
-  @ApiBearerAuth()
+  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Create a user (admin only)' })
   @ApiResponse({ status: 201, description: 'The created user record', type: UserResponseDto })
   @ApiTokenRequired()
@@ -77,7 +77,7 @@ export class UsersController {
   @Get()
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
-  @ApiBearerAuth()
+  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({
     summary: 'List users with pagination, filters, and search (admin only)',
     description:
@@ -100,7 +100,7 @@ export class UsersController {
   @Get('search')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
-  @ApiBearerAuth()
+  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({
     summary: 'Search users by phone number, full name, or email (admin only)',
     description:
@@ -118,7 +118,7 @@ export class UsersController {
   @Get('by-email')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
-  @ApiBearerAuth()
+  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Get a user by email (admin only)' })
   @ApiResponse({ status: 200, description: 'One full user record', type: UserResponseDto })
   @ApiBadRequest('The `email` query parameter is required.')
@@ -134,7 +134,7 @@ export class UsersController {
   @Get(':id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
-  @ApiBearerAuth()
+  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Get a user by ID (admin only)' })
   @ApiResponse({ status: 200, description: 'One full user record', type: UserResponseDto })
   @ApiBadRequest('The `id` path parameter must be a valid UUID.')
@@ -149,7 +149,7 @@ export class UsersController {
   @Patch(':id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
-  @ApiBearerAuth()
+  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Update a user (admin only)' })
   @ApiResponse({ status: 200, description: 'The updated user record', type: UserResponseDto })
   @ApiNotFound('No user was found with that ID.')
@@ -165,7 +165,7 @@ export class UsersController {
   @Patch(':id/status')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
-  @ApiBearerAuth()
+  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({
     summary: 'Change a user status (admin only)',
     description: 'Setting `INACTIVE` blocks that account from logging in and from using existing sessions.',
@@ -186,7 +186,7 @@ export class UsersController {
   @Delete(':id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('ADMIN')
-  @ApiBearerAuth()
+  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Delete a user (admin only)' })
   @ApiResponse({ status: 200, description: 'The account was deleted' })
   @ApiNotFound('No user was found with that ID.')

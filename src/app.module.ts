@@ -16,6 +16,7 @@ import { AdminModule } from './admin/admin.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { PaymentsModule } from './payments/payments.module';
 import { DisputesModule } from './disputes/disputes.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { DisputesModule } from './disputes/disputes.module';
     ConversationsModule,
     PaymentsModule,
     DisputesModule,
+    NotificationsModule,
     HealthModule,
   ],
   controllers: [AppController],

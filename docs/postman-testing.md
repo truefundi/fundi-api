@@ -395,7 +395,7 @@ body.
 ```json
 {
   "name": "Home Repair",
-  "bookingFee": 1000
+  "visitFee": 1000
 }
 ```
 
@@ -423,13 +423,13 @@ authentication.
 {
   "name": "Home Maintenance",
   "isActive": true,
-  "bookingFee": 1500
+  "visitFee": 1500
 }
 ```
 
-`bookingFee` is a positive integer in RWF. A category without a fee cannot be
+`visitFee` is a positive integer in RWF. A category without a fee cannot be
 used for a paid job request. At least one of `name`, `isActive`, or
-`bookingFee` is required.
+`visitFee` is required.
 
 ### Deactivate a category (admin)
 
@@ -841,7 +841,7 @@ the response.
 ```
 
 `phoneNumber` is optional and defaults to the customer's account phone. The
-amount is read from the category's configured `bookingFee`; save the returned
+amount is read from the category's configured `visitFee`; save the returned
 `id` as `paymentId`. This development-only endpoint does not transfer money.
 
 ### Record payment data processed by a frontend

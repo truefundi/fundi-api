@@ -12,14 +12,14 @@ describe('PaymentsService mock booking payments', () => {
   const fixedNow = new Date('2026-10-28T12:00:00.000Z');
 
   const createService = (
-    bookingFee: number | null = 1000,
+    visitFee: number | null = 1000,
     configured = true,
     environment = 'development',
   ) => {
     const category = {
       id: 'category-1',
       name: 'Plumbing',
-      bookingFee,
+      visitFee,
     };
     const paymentCreate = jest.fn(
       ({ data }: { data: Record<string, unknown> }) => Promise.resolve(data),
@@ -106,7 +106,7 @@ describe('PaymentsService mock booking payments', () => {
         id: 'job-1',
         customerId: 'customer-1',
         status: 'COMPLETED',
-        serviceCategory: { id: 'category-1', bookingFee: 1000 },
+        serviceCategory: { id: 'category-1', visitFee: 1000 },
         bookingPayment: null,
       };
       const existingPayment = overrides.payment ?? {
@@ -233,7 +233,7 @@ describe('PaymentsService mock booking payments', () => {
       externalPaymentId: expect.stringMatching(/^mock_/),
       status: 'SUCCESS',
       bookingStatus: 'VALID',
-      serviceCategory: { id: 'category-1', bookingFee: 1000 },
+      serviceCategory: { id: 'category-1', visitFee: 1000 },
       phoneNumber: '+250788123456',
       amount: 1000,
       currency: 'RWF',

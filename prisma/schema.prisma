@@ -28,6 +28,7 @@ model User {
   bookingPayments    BookingPayment[]
   phoneVerifications CustomerPhoneVerification[]
   resolvedDisputes  Dispute[]          @relation("DisputeResolver")
+  notifications     Notification[]
 
   @@map("users")
 }
@@ -45,16 +46,23 @@ model RefreshToken {
 }
 
 model ServiceCategory {
-  id              String               @id @default(uuid())
-  name            String               @unique
-  slug            String               @unique
-  isActive        Boolean              @default(true)
-  bookingFee      Int?
-  createdAt       DateTime             @default(now())
-  jobs            Job[]                @relation("JobServiceCategory")
-  technicians     TechnicianCategory[]
-  documents       TechnicianDocument[]
-  bookingPayments BookingPayment[]
+  id                 String               @id @default(uuid())
+  name               String               @unique
+  slug               String               @unique
+  description        String               @default("")
+  /// Service group shown in the admin dashboard: "Home Services" or "Car Services".
+  category           String               @default("Home Services")
+  /// Booking (visit/diagnostic) fee charged for this service, in RWF.
+  visitFee           Int                  @default(0)
+  /// Booking fee used when the customer marks the request as an emergency, in RWF.
+  emergencyVisitFee  Int                  @default(0)
+  isActive           Boolean              @default(true)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  jobs               Job[]                @relation("JobServiceCategory")
+  technicians        TechnicianCategory[]
+  documents          TechnicianDocument[]
+  bookingPayments    BookingPayment[]
 
   @@map("service_categories")
 }
@@ -168,6 +176,14 @@ model Job {
   technicianResumeRequestedAt DateTime?
   assignedAt                  DateTime?
   completedAt                 DateTime?
+  ratingOverall               Int?
+  ratingQuality               Int?
+  ratingProfessionalism       Int?
+  ratingArrival               Int?
+  ratingCommunication         Int?
+  ratingValue                 Int?
+  ratingComment               String?
+  ratedAt                     DateTime?
   createdAt                   DateTime                   @default(now())
   updatedAt                   DateTime                   @updatedAt
   assignmentHistory           JobAssignmentHistory[]
@@ -330,6 +346,22 @@ model Dispute {
 
   @@index([resolvedAt, openedAt])
   @@map("disputes")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
 }
 
 model AuditLog {
@@ -591,4 +623,21 @@ enum DisputeOutcome {
   CUSTOMER
   TECHNICIAN
   PARTIAL
+}
+
+enum NotificationType {
+  JOB_OFFER
+  JOB_ASSIGNED
+  JOB_ACCEPTED
+  JOB_COMPLETED
+  JOB_CANCELLED
+  CONVERSATION_MESSAGE
+  OFFER_SENT
+  OFFER_ACCEPTED
+  OFFER_DECLINED
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+  DOCUMENT_APPROVED
+  DOCUMENT_REJECTED
+  SYSTEM
 }

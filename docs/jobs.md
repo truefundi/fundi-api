@@ -14,7 +14,7 @@ The technician has five minutes to accept or reject a proposal.
 ## Booking flow
 
 1. List service categories with `GET /catalog/categories`; select a category
-   with a configured positive `bookingFee`.
+   with a configured positive `visitFee`.
 2. Preview matches using `GET /jobs/matching-technicians`.
 3. Pay the booking fee using `POST /payments/mock`. This development-only
    payment is not a real money transfer.

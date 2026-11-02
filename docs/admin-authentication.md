@@ -4,7 +4,7 @@ An administrator supplies an email address and a password, then a six-digit code
 
 The second factor is a time-based one-time password computed on the administrator's own device. Nothing is sent anywhere: there is no SMS provider to configure, no code to intercept in transit, and no `2fa/resend` endpoint, because there is nothing to resend.
 
-This is a separate flow from [phone authentication](authentication.md), where customers and technicians receive bearer tokens they hold themselves. An administrator never handles a token at all: the session lives entirely in `httpOnly` cookies that no script on the page can read.
+This is a separate flow from [phone authentication](authentication.md), where customers and technicians receive bearer tokens they hold themselves. An administrator never handles a token at all: the session lives entirely in `httpOnly` cookies that no script on the page can read. The phone-OTP endpoints refuse `ADMIN` accounts outright, and every admin route accepts only the session cookie, so an administrator identity presented as a bearer token is rejected even if one were ever issued.
 
 Only the provisioning script can set an administrator's password. No route writes `passwordHash`, so the password that makes an account able to sign in here is reachable only by `npm run prisma:seed-admin`. An administrator row created through `POST /api/v1/users`, or promoted later through `PATCH /api/v1/users/:id`, has no password and cannot complete sign-in until the script has run for it.
 
@@ -195,8 +195,8 @@ Two further restrictions exist because cookies travel automatically. `PATCH` and
 | `ADMIN_TOTP_ISSUER` | `Fundi` | Label shown in the app. Must match in both the `otpauth://` label and its query parameter. |
 | `ADMIN_TOTP_WINDOW` | `1` | Clock-drift tolerance in 30-second steps either side. |
 | `ADMIN_TOTP_ENCRYPTION_KEY` | none | 64 hex characters. Encrypts the authenticator secret at rest. Sign-in fails with `503` until set. |
-| `ADMIN_ACCESS_EXPIRES_IN` | `15m` | Access token lifetime. |
-| `ADMIN_REFRESH_EXPIRES_IN` | `12h` | Refresh token and matching database row. |
+| `ADMIN_ACCESS_EXPIRES_IN` | `1d` | Access token lifetime. |
+| `ADMIN_REFRESH_EXPIRES_IN` | `5d` | Refresh token and matching database row. |
 | `ADMIN_COOKIE_SAME_SITE` | `lax` | Cookie `SameSite` flag. |
 | `ADMIN_COOKIE_SECURE` | `true` in production | Cookie `Secure` flag. |
 | `ADMIN_COOKIE_DOMAIN` | unset | Cookie domain. Leave unset to keep cookies host-only. |

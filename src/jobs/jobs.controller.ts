@@ -26,6 +26,7 @@ import { UpdateJobDto } from './dto/update-job.dto';
 import { JobUpload } from './job-media.util';
 import { JobsService } from './jobs.service';
 import { AuthService } from '../auth/auth.service';
+import { CreateJobMultipartDto } from './dto/create-job-multipart.dto';
 import { VerifyJobPhoneDto } from './dto/verify-job-phone.dto';
 import { CancelJobDto } from './dto/cancel-job.dto';
 import {
@@ -133,7 +134,7 @@ export class JobsController {
   })
   create(
     @CurrentUser() user: AuthUser,
-    @Body() dto: CreateJobDto,
+    @Body() dto: CreateJobMultipartDto,
     @UploadedFiles() files: JobUploadFields,
   ) {
     return this.jobs.create(user.id, dto, files.photos ?? [], files.video?.[0]);

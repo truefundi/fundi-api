@@ -7,7 +7,7 @@ are prefixed with `/api/v1`.
 Customer payment endpoints accept a customer or technician bearer token.
 Administrator endpoints require an administrator session or token.
 
-Administrators configure a positive integer `bookingFee` in RWF on each
+Administrators configure a positive integer `visitFee` in RWF on each
 service category. A customer must pay that exact fee before creating a job
 for the category. A mock payment is valid for seven days unless an administrator
 extends its lifetime.
@@ -29,7 +29,7 @@ Request:
 ```
 
 `phoneNumber` is optional. The amount is not accepted from the client; it is
-read from the category's configured `bookingFee`.
+read from the category's configured `visitFee`.
 
 Success response (`201`):
 
@@ -42,7 +42,7 @@ Success response (`201`):
   "serviceCategory": {
     "id": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
     "name": "Plumbing",
-    "bookingFee": 1000
+    "visitFee": 1000
   },
   "phoneNumber": "+250788123456",
   "amount": 1000,

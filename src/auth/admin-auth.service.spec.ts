@@ -364,7 +364,8 @@ describe('AdminAuthService', () => {
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
       });
-      expect(result.expiresInSeconds).toBe(900);
+      // Falls back to the configured default when ADMIN_ACCESS_EXPIRES_IN is unset.
+      expect(result.expiresInSeconds).toBe(86400);
     });
 
     // Clock skew between the server and a phone is normal, so the neighbouring step

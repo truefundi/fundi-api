@@ -1,6 +1,6 @@
 # Service Categories API
 
-The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Administrators set each category's positive `bookingFee` in RWF. A category without a configured fee cannot be used to create a paid job request. Send `Content-Type: application/json` for requests with a body.
+The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Administrators set each category's description, dashboard grouping, and positive `visitFee`/`emergencyVisitFee` in RWF. A category without a configured fee cannot be used to create a paid job request. Send `Content-Type: application/json` for requests with a body.
 
 For local development, seed the initial sample catalog with `npm run prisma:seed`. The seed operation is safe to rerun because it upserts categories by slug.
 
@@ -18,7 +18,10 @@ Success response (`200`):
     "id": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
     "name": "Plumbing",
     "slug": "plumbing",
-    "bookingFee": 1000
+    "description": "Leak repairs, pipe fitting, and drain unblocking.",
+    "category": "Home Services",
+    "visitFee": 1000,
+    "emergencyVisitFee": 1500
   }
 ]
 ```
@@ -34,7 +37,10 @@ Success response (`200`):
   "id": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
   "name": "Plumbing",
   "slug": "plumbing",
-  "bookingFee": 1000
+  "description": "Leak repairs, pipe fitting, and drain unblocking.",
+  "category": "Home Services",
+  "visitFee": 1000,
+  "emergencyVisitFee": 1500
 }
 ```
 
@@ -48,14 +54,17 @@ All administrator endpoints require `Authorization: Bearer <admin-access-token>`
 
 ### `POST /api/v1/catalog/categories`
 
-Creates a category. The name is trimmed; a URL-friendly slug is generated automatically.
+Creates a category. The name is trimmed; a URL-friendly slug is generated automatically. `category` groups the service in the dashboard, and both fees are non-negative integers in RWF.
 
 Request:
 
 ```json
 {
   "name": "Home Repair",
-  "bookingFee": 1000
+  "category": "Home Services",
+  "description": "General household repairs.",
+  "visitFee": 1000,
+  "emergencyVisitFee": 1500
 }
 ```
 
@@ -66,7 +75,10 @@ Success response (`201`):
   "id": "generated-category-id",
   "name": "Home Repair",
   "slug": "home-repair",
-  "bookingFee": 1000,
+  "description": "General household repairs.",
+  "category": "Home Services",
+  "visitFee": 1000,
+  "emergencyVisitFee": 1500,
   "isActive": true,
   "createdAt": "2026-10-01T10:00:00.000Z"
 }
@@ -92,7 +104,7 @@ Success response (`200`): one full category record.
 
 ### `PATCH /api/v1/catalog/categories/:id`
 
-Update a category name, its availability, or booking fee. At least one field is required. `bookingFee` must be a positive integer in RWF. Changing the name also regenerates its slug.
+Update a category name, description, dashboard grouping, availability, or fees. At least one field is required. `visitFee` and `emergencyVisitFee` must be non-negative integers in RWF. Changing the name also regenerates its slug.
 
 Request:
 
@@ -100,7 +112,8 @@ Request:
 {
   "name": "Home Maintenance",
   "isActive": true,
-  "bookingFee": 1500
+  "visitFee": 1500,
+  "emergencyVisitFee": 2000
 }
 ```
 
@@ -119,7 +132,7 @@ Success response (`200`):
     "id": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
     "name": "Plumbing",
     "slug": "plumbing",
-    "bookingFee": 1000,
+    "visitFee": 1000,
     "isActive": false,
     "createdAt": "2026-10-01T10:00:00.000Z"
   }

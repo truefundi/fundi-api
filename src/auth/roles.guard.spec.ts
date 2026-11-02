@@ -12,11 +12,12 @@ describe('RolesGuard', () => {
     return new RolesGuard(reflector);
   };
 
-  // Minimal execution context whose request carries an optional authenticated user.
-  const createContext = (role?: string): ExecutionContext =>
+  // Minimal execution context whose request carries an optional authenticated user
+  // and the way the JWT strategy matched the credential.
+  const createContext = (role?: string, authMethod?: 'bearer' | 'cookie'): ExecutionContext =>
     ({
       switchToHttp: () => ({
-        getRequest: () => (role ? { user: { role } } : {}),
+        getRequest: () => (role ? { user: { role }, authMethod } : {}),
       }),
       getHandler: () => undefined,
       getClass: () => class {},
@@ -26,18 +27,26 @@ describe('RolesGuard', () => {
     expect(createGuard([]).canActivate(createContext())).toBe(true);
   });
 
-  it('allows an ADMIN user', () => {
-    expect(createGuard(['ADMIN']).canActivate(createContext('ADMIN'))).toBe(true);
+  it('allows an ADMIN user authenticated by the admin cookie', () => {
+    expect(createGuard(['ADMIN']).canActivate(createContext('ADMIN', 'cookie'))).toBe(true);
+  });
+
+  // The phone-OTP flow hands out bearer tokens, so an ADMIN arriving that way must
+  // never be treated as a dashboard session.
+  it('rejects an ADMIN user authenticated by a bearer token', () => {
+    expect(() => createGuard(['ADMIN']).canActivate(createContext('ADMIN', 'bearer'))).toThrow(
+      ForbiddenException,
+    );
   });
 
   it('rejects a CUSTOMER user with 403', () => {
-    expect(() => createGuard(['ADMIN']).canActivate(createContext('CUSTOMER'))).toThrow(
+    expect(() => createGuard(['ADMIN']).canActivate(createContext('CUSTOMER', 'bearer'))).toThrow(
       ForbiddenException,
     );
   });
 
   it('rejects a TECHNICIAN user with 403', () => {
-    expect(() => createGuard(['ADMIN']).canActivate(createContext('TECHNICIAN'))).toThrow(
+    expect(() => createGuard(['ADMIN']).canActivate(createContext('TECHNICIAN', 'bearer'))).toThrow(
       ForbiddenException,
     );
   });

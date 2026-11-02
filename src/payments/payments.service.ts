@@ -34,11 +34,11 @@ export class PaymentsService {
   async createMockPayment(customerId: string, dto: CreateMockPaymentDto) {
     const category = await this.prisma.serviceCategory.findFirst({
       where: { id: dto.serviceCategoryId, isActive: true },
-      select: { id: true, name: true, bookingFee: true },
+      select: { id: true, name: true, visitFee: true },
     });
     if (!category) throw new NotFoundException('Service category not found.');
-    const bookingFee = category.bookingFee;
-    if (bookingFee === null || bookingFee <= 0) {
+    const visitFee = category.visitFee;
+    if (visitFee === null || visitFee <= 0) {
       throw new BadRequestException(
         'This service category does not have a booking fee configured yet.',
       );
@@ -70,7 +70,7 @@ export class PaymentsService {
           externalPaymentId,
           customerId,
           category.id,
-          bookingFee,
+          visitFee,
           phoneNumber,
           paidAt.toISOString(),
         ].join(':'),
@@ -86,7 +86,7 @@ export class PaymentsService {
           paymentKeyId: key,
           signature,
           phoneNumber,
-          amount: bookingFee,
+          amount: visitFee,
           paidAt,
           validUntil,
           status: BookingPaymentStatus.VALID,
@@ -102,7 +102,7 @@ export class PaymentsService {
           metadata: {
             externalPaymentId,
             serviceCategoryId: category.id,
-            amount: bookingFee,
+            amount: visitFee,
             phoneNumber,
             paidAt: paidAt.toISOString(),
           },
@@ -140,10 +140,10 @@ export class PaymentsService {
     }
     const category = await this.prisma.serviceCategory.findFirst({
       where: { id: dto.serviceCategoryId, isActive: true },
-      select: { id: true, name: true, bookingFee: true },
+      select: { id: true, name: true, visitFee: true },
     });
     if (!category) throw new NotFoundException('Service category not found.');
-    if (!category.bookingFee || category.bookingFee !== dto.amount) {
+    if (!category.visitFee || category.visitFee !== dto.amount) {
       throw new BadRequestException(
         'The submitted payment amount must match the service category booking fee.',
       );
@@ -409,7 +409,7 @@ export class PaymentsService {
     const job = await this.prisma.job.findUnique({
       where: { id: dto.jobId },
       include: {
-        serviceCategory: { select: { id: true, bookingFee: true } },
+        serviceCategory: { select: { id: true, visitFee: true } },
         bookingPayment: { select: { id: true } },
       },
     });
@@ -418,7 +418,7 @@ export class PaymentsService {
         'Payments can only be recorded for completed jobs.',
       );
     }
-    if (!job.serviceCategory?.bookingFee || job.serviceCategory.bookingFee <= 0) {
+    if (!job.serviceCategory?.visitFee || job.serviceCategory.visitFee <= 0) {
       throw new BadRequestException(
         'The completed job category has no valid booking fee.',
       );
@@ -437,7 +437,7 @@ export class PaymentsService {
       );
     }
     const id = randomUUID();
-    const amount = job.serviceCategory.bookingFee;
+    const amount = job.serviceCategory.visitFee;
     const signature = this.signPayment(
       secret,
       id,

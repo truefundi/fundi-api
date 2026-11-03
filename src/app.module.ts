@@ -17,6 +17,7 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { PaymentsModule } from './payments/payments.module';
 import { DisputesModule } from './disputes/disputes.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     PaymentsModule,
     DisputesModule,
     NotificationsModule,
+    ChatModule,
     HealthModule,
   ],
   controllers: [AppController],

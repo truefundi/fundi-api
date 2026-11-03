@@ -43,6 +43,12 @@ export class CreateCategoryDto {
   emergencyVisitFee?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2_000_000_000)
+  sosBookingFee?: number;
+
+  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
 }
@@ -81,4 +87,10 @@ export class UpdateCategoryDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2_000_000_000)
+  sosBookingFee?: number;
 }

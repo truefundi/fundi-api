@@ -6,15 +6,18 @@ administrator session or token. JSON endpoints use
 `Content-Type: application/json`. Job creation and media uploads use
 `multipart/form-data`.
 
-The booking flow is owner-selected: a logged-in customer or technician previews
-eligible technicians, makes a category booking-fee payment, verifies their
-phone for this request, creates the job, then proposes one matching technician.
-The technician has five minutes to accept or reject a proposal.
+For a normal request, a logged-in customer or technician previews eligible
+technicians, pays the normal category booking fee, verifies their phone for
+this request, creates the job, then proposes one matching technician. For an
+SOS request, the owner pays the higher SOS fee and creates the request through
+the SOS endpoint; the system automatically offers it to eligible technicians
+in match order, one at a time, with 30 seconds to respond to each offer.
 
 ## Booking flow
 
 1. List service categories with `GET /catalog/categories`; select a category
-   with a configured positive `visitFee`.
+   with a configured positive `visitFee` and, for SOS requests, a higher
+   `sosBookingFee`.
 2. Preview matches using `GET /jobs/matching-technicians`.
 3. Pay the booking fee using `POST /payments/mock`. This development-only
    payment is not a real money transfer.
@@ -30,27 +33,28 @@ and administrator extensions.
 
 ## Customer and technician job-owner endpoints
 
-| Method | URL | Purpose |
-| --- | --- | --- |
-| `POST` | `/api/v1/jobs/phone-verification/request` | Customer or technician: send a phone OTP for this job request |
-| `POST` | `/api/v1/jobs/phone-verification/verify` | Verify that OTP |
-| `GET` | `/api/v1/jobs/matching-technicians?...` | Preview scored matches before paying |
-| `POST` | `/api/v1/jobs/matching-technicians/geocode` | Geocode one or more named places and preview nearby technicians |
-| `POST` | `/api/v1/jobs/matching-technicians/by-location-name` | Match technician location labels against place-name text |
-| `POST` | `/api/v1/jobs` | Customer or technician: create a paid job request and optionally upload media |
-| `GET` | `/api/v1/jobs/mine` | List this user's visible jobs |
-| `GET` | `/api/v1/jobs/mine/:jobId` | Read one owned job |
-| `POST` | `/api/v1/jobs/mine/:jobId/requests` | Propose a matching technician |
-| `POST` | `/api/v1/jobs/mine/:jobId/confirm-cooperation` | Customer confirms agreement with the assigned technician |
-| `PATCH` | `/api/v1/jobs/mine/:jobId` | Edit an open, unassigned job |
-| `PATCH` | `/api/v1/jobs/mine/:jobId/progress` | Update customer progress |
-| `POST` | `/api/v1/jobs/mine/:jobId/cancel` | Cancel with a reason |
-| `POST` | `/api/v1/jobs/mine/:jobId/pause` | Request a mutual pause |
-| `POST` | `/api/v1/jobs/mine/:jobId/resume` | Request a mutual resume |
-| `DELETE` | `/api/v1/jobs/mine/:jobId` | Hide a completed/cancelled job from the job owner's history |
-| `POST` | `/api/v1/jobs/mine/:jobId/retry-dispatch` | Retry a pending dispatch after a scheduling issue |
-| `POST` | `/api/v1/jobs/mine/:jobId/media` | Add media to an editable job |
-| `DELETE` | `/api/v1/jobs/mine/:jobId/media/:mediaId` | Remove media from an editable job |
+| Method   | URL                                                  | Purpose                                                                       |
+| -------- | ---------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `POST`   | `/api/v1/jobs/phone-verification/request`            | Customer or technician: send a phone OTP for this job request                 |
+| `POST`   | `/api/v1/jobs/phone-verification/verify`             | Verify that OTP                                                               |
+| `GET`    | `/api/v1/jobs/matching-technicians?...`              | Preview scored matches before paying                                          |
+| `POST`   | `/api/v1/jobs/matching-technicians/geocode`          | Geocode one or more named places and preview nearby technicians               |
+| `POST`   | `/api/v1/jobs/matching-technicians/by-location-name` | Match technician location labels against place-name text                      |
+| `POST`   | `/api/v1/jobs`                                       | Customer or technician: create a paid job request and optionally upload media |
+| `POST`   | `/api/v1/jobs/sos`                                   | Customer or technician: create an SOS job and automatically dispatch offers   |
+| `GET`    | `/api/v1/jobs/mine`                                  | List this user's visible jobs                                                 |
+| `GET`    | `/api/v1/jobs/mine/:jobId`                           | Read one owned job                                                            |
+| `POST`   | `/api/v1/jobs/mine/:jobId/requests`                  | Propose a matching technician                                                 |
+| `POST`   | `/api/v1/jobs/mine/:jobId/confirm-cooperation`       | Customer confirms agreement with the assigned technician                      |
+| `PATCH`  | `/api/v1/jobs/mine/:jobId`                           | Edit an open, unassigned job                                                  |
+| `PATCH`  | `/api/v1/jobs/mine/:jobId/progress`                  | Update customer progress                                                      |
+| `POST`   | `/api/v1/jobs/mine/:jobId/cancel`                    | Cancel with a reason                                                          |
+| `POST`   | `/api/v1/jobs/mine/:jobId/pause`                     | Request a mutual pause                                                        |
+| `POST`   | `/api/v1/jobs/mine/:jobId/resume`                    | Request a mutual resume                                                       |
+| `DELETE` | `/api/v1/jobs/mine/:jobId`                           | Hide a completed/cancelled job from the job owner's history                   |
+| `POST`   | `/api/v1/jobs/mine/:jobId/retry-dispatch`            | Retry a pending dispatch after a scheduling issue                             |
+| `POST`   | `/api/v1/jobs/mine/:jobId/media`                     | Add media to an editable job                                                  |
+| `DELETE` | `/api/v1/jobs/mine/:jobId/media/:mediaId`            | Remove media from an editable job                                             |
 
 ### Verify a phone number for a job
 
@@ -172,6 +176,7 @@ the JSON is a shape reference, not a raw JSON body:
   "paymentId": "a44a6586-6681-46ae-9c4a-86b4a83ae218",
   "phoneVerificationId": "8ae5cc0d-578a-4f4f-870d-700c4fb4b108",
   "serviceCategoryId": "{{categoryId}}",
+  "requestType": "NORMAL",
   "description": "Repair a leaking kitchen tap and check the connection.",
   "locationAddress": "Kimihurura, Kigali",
   "latitude": -1.9536,
@@ -184,7 +189,8 @@ the JSON is a shape reference, not a raw JSON body:
 Required form fields: `paymentId`, `phoneVerificationId`, exactly one of
 `serviceCategoryId` or `otherServiceName`, `description`, `locationAddress`,
 `latitude`, `longitude`, and `offeredAmount`. A payment must belong to this
-customer, be unused, be valid, and match the selected category. Custom
+customer, be unused, be valid, and match the selected category and
+`requestType` (`NORMAL` by default). Custom
 `otherServiceName` requests can be previewed but cannot currently be booked:
 the payment workflow requires a `serviceCategoryId`. Choose a configured
 category to create a paid request. The phone verification is consumed when the
@@ -193,6 +199,33 @@ job is created.
 Optional files: up to five `photos` (JPEG, PNG, or WebP; 5 MiB each) and one
 `video` (MP4; up to 50 MiB and 30 seconds). Use repeated `photos` fields for
 multiple images. For jobs without attachments, the request may use JSON.
+
+### Create an SOS job
+
+**POST** `/api/v1/jobs/sos` — customer or technician bearer token; use
+**Body → form-data**. First create an SOS payment (`requestType: "SOS"`) and
+verify the job owner's phone number. Submit the same fields as job creation:
+`paymentId`, `phoneVerificationId`, `serviceCategoryId`, `description`,
+`locationAddress`, `latitude`, `longitude`, and `offeredAmount`. Optional
+`priority`, `photos`, and `video` are supported. This route sets the job type
+to `SOS` and automatically sends an offer to the highest-ranked matching
+approved, online technician.
+
+Each offer remains open for 30 seconds. Rejection or timeout sends the SOS
+request to the next matching technician who has not already received an offer.
+If the queue is exhausted, the job is left open and can be retried or manually
+proposed to any eligible match using `POST /api/v1/jobs/mine/{{jobId}}/requests`.
+That manual proposal can intentionally include a technician who already
+received or released the SOS request.
+
+If a technician accepts but releases an SOS job before both parties confirm
+cooperation, the payment's remaining validity resumes and the job returns to
+the queue. The releasing technician is skipped for automatic redispatch. If
+both parties have confirmed cooperation, a later release follows the normal
+admin-reviewed cancellation path and does not restart the queue.
+If the customer cancels an assigned SOS job before confirming cooperation, the
+assignment is released and automatic dispatch continues with the next eligible
+technician, provided the payment remains valid.
 
 ### Propose a technician
 
@@ -293,19 +326,19 @@ another assigned job is still active.
 
 ## Technician endpoints
 
-| Method | URL | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/v1/jobs/technician/offers` | List current and past offers |
-| `POST` | `/api/v1/jobs/technician/offers/:offerId/accept` | Accept an offer |
-| `POST` | `/api/v1/jobs/technician/offers/:offerId/reject` | Reject an offer |
-| `GET` | `/api/v1/jobs/technician/mine` | List visible current and past jobs |
-| `GET` | `/api/v1/jobs/technician/mine/:jobId` | Read an assigned or previously assigned job |
-| `POST` | `/api/v1/jobs/technician/mine/:jobId/confirm-cooperation` | Technician confirms agreement with the job owner |
-| `PATCH` | `/api/v1/jobs/technician/mine/:jobId/progress` | Update technician progress |
-| `POST` | `/api/v1/jobs/technician/mine/:jobId/drop` | Request cancellation with a reason |
-| `POST` | `/api/v1/jobs/technician/mine/:jobId/pause` | Request a mutual pause |
-| `POST` | `/api/v1/jobs/technician/mine/:jobId/resume` | Request a mutual resume |
-| `DELETE` | `/api/v1/jobs/technician/mine/:jobId` | Hide a completed/cancelled job from technician history |
+| Method   | URL                                                       | Purpose                                                |
+| -------- | --------------------------------------------------------- | ------------------------------------------------------ |
+| `GET`    | `/api/v1/jobs/technician/offers`                          | List current and past offers                           |
+| `POST`   | `/api/v1/jobs/technician/offers/:offerId/accept`          | Accept an offer                                        |
+| `POST`   | `/api/v1/jobs/technician/offers/:offerId/reject`          | Reject an offer                                        |
+| `GET`    | `/api/v1/jobs/technician/mine`                            | List visible current and past jobs                     |
+| `GET`    | `/api/v1/jobs/technician/mine/:jobId`                     | Read an assigned or previously assigned job            |
+| `POST`   | `/api/v1/jobs/technician/mine/:jobId/confirm-cooperation` | Technician confirms agreement with the job owner       |
+| `PATCH`  | `/api/v1/jobs/technician/mine/:jobId/progress`            | Update technician progress                             |
+| `POST`   | `/api/v1/jobs/technician/mine/:jobId/drop`                | Request cancellation with a reason                     |
+| `POST`   | `/api/v1/jobs/technician/mine/:jobId/pause`               | Request a mutual pause                                 |
+| `POST`   | `/api/v1/jobs/technician/mine/:jobId/resume`              | Request a mutual resume                                |
+| `DELETE` | `/api/v1/jobs/technician/mine/:jobId`                     | Hide a completed/cancelled job from technician history |
 
 Reject an offer with an optional reason:
 
@@ -326,18 +359,18 @@ A technician cannot accept another job while a job is `ASSIGNED`. A mutually
 
 ## Administrator endpoints
 
-| Method | URL | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/v1/admin/jobs` | List all jobs, offers, and assignment history |
-| `GET` | `/api/v1/admin/jobs/summary` | Dashboard job counts |
-| `POST` | `/api/v1/admin/jobs` | Create and dispatch a job on a customer's behalf |
-| `GET` | `/api/v1/admin/jobs/cancellation-requests` | List technician cancellation requests |
-| `PATCH` | `/api/v1/admin/jobs/cancellation-requests/:requestId` | Approve or reject a technician cancellation |
-| `GET` | `/api/v1/admin/jobs/:jobId` | Get a job |
-| `PATCH` | `/api/v1/admin/jobs/:jobId` | Edit job fields; open jobs are re-matched |
-| `POST` | `/api/v1/admin/jobs/:jobId/cancel` | Cancel an open or assigned job |
-| `POST` | `/api/v1/admin/jobs/:jobId/reassign` | Reassign an open or assigned job |
-| `DELETE` | `/api/v1/admin/jobs/:jobId` | Permanently delete a completed/cancelled job |
+| Method   | URL                                                   | Purpose                                          |
+| -------- | ----------------------------------------------------- | ------------------------------------------------ |
+| `GET`    | `/api/v1/admin/jobs`                                  | List all jobs, offers, and assignment history    |
+| `GET`    | `/api/v1/admin/jobs/summary`                          | Dashboard job counts                             |
+| `POST`   | `/api/v1/admin/jobs`                                  | Create and dispatch a job on a customer's behalf |
+| `GET`    | `/api/v1/admin/jobs/cancellation-requests`            | List technician cancellation requests            |
+| `PATCH`  | `/api/v1/admin/jobs/cancellation-requests/:requestId` | Approve or reject a technician cancellation      |
+| `GET`    | `/api/v1/admin/jobs/:jobId`                           | Get a job                                        |
+| `PATCH`  | `/api/v1/admin/jobs/:jobId`                           | Edit job fields; open jobs are re-matched        |
+| `POST`   | `/api/v1/admin/jobs/:jobId/cancel`                    | Cancel an open or assigned job                   |
+| `POST`   | `/api/v1/admin/jobs/:jobId/reassign`                  | Reassign an open or assigned job                 |
+| `DELETE` | `/api/v1/admin/jobs/:jobId`                           | Permanently delete a completed/cancelled job     |
 
 Review a technician cancellation:
 
@@ -358,12 +391,12 @@ only hide jobs and never permanently delete them.
 
 Either the customer who owns a job or its currently assigned technician can open one dispute after a technician has been assigned. The reason must be 10–2,000 characters. A second dispute for the same job returns `409 Conflict`.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `POST` | `/jobs/:jobId/disputes` | Customer or assigned technician opens a dispute |
-| `GET` | `/admin/disputes` | List open disputes; use `?state=resolved` for resolved disputes |
-| `GET` | `/admin/disputes/:jobId` | Read the disputed job and its conversation |
-| `POST` | `/admin/disputes/:jobId/resolve` | Record the admin decision |
+| Method | Path                             | Purpose                                                         |
+| ------ | -------------------------------- | --------------------------------------------------------------- |
+| `POST` | `/jobs/:jobId/disputes`          | Customer or assigned technician opens a dispute                 |
+| `GET`  | `/admin/disputes`                | List open disputes; use `?state=resolved` for resolved disputes |
+| `GET`  | `/admin/disputes/:jobId`         | Read the disputed job and its conversation                      |
+| `POST` | `/admin/disputes/:jobId/resolve` | Record the admin decision                                       |
 
 Open a dispute with:
 

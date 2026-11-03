@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { JobPriority } from '@prisma/client';
+import { JobPriority, JobRequestType } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
   Allow,
@@ -16,6 +16,16 @@ import {
 } from 'class-validator';
 
 export class CreateJobDto {
+  @ApiProperty({
+    required: false,
+    enum: JobRequestType,
+    default: JobRequestType.NORMAL,
+    description: 'SOS requests automatically rotate through matching technicians.',
+  })
+  @IsOptional()
+  @IsEnum(JobRequestType)
+  requestType?: JobRequestType;
+
   @IsUUID('4')
   paymentId!: string;
 

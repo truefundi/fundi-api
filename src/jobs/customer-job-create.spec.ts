@@ -9,6 +9,7 @@ describe('JobsService customer job creation', () => {
       id: 'payment-1',
       status: 'VALID',
       validUntil: new Date(Date.now() + 60_000),
+      requestType: 'NORMAL',
     });
     const paymentUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const verificationFindFirst = jest

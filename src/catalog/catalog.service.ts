@@ -35,6 +35,7 @@ export class CatalogService {
         category: true,
         visitFee: true,
         emergencyVisitFee: true,
+        sosBookingFee: true,
       },
     });
   }
@@ -55,6 +56,7 @@ export class CatalogService {
         category: true,
         visitFee: true,
         emergencyVisitFee: true,
+        sosBookingFee: true,
       },
     });
   }
@@ -76,6 +78,7 @@ export class CatalogService {
         category: true,
         visitFee: true,
         emergencyVisitFee: true,
+        sosBookingFee: true,
       },
     });
     if (!category) throw new NotFoundException('Service category not found.');
@@ -108,6 +111,7 @@ export class CatalogService {
       throw new BadRequestException(
         'Category name must contain letters or numbers.',
       );
+    this.assertBookingFees(dto.visitFee, dto.sosBookingFee);
     try {
       return await this.prisma.$transaction(async (tx) => {
         const category = await tx.serviceCategory.create({
@@ -119,6 +123,7 @@ export class CatalogService {
             visitFee: dto.visitFee ?? 0,
             emergencyVisitFee: dto.emergencyVisitFee ?? 0,
             isActive: dto.isActive ?? true,
+            sosBookingFee: dto.sosBookingFee ?? null,
           },
         });
         await this.audit.log(
@@ -132,6 +137,7 @@ export class CatalogService {
               category: category.category,
               visitFee: category.visitFee,
               emergencyVisitFee: category.emergencyVisitFee,
+              sosBookingFee: category.sosBookingFee,
             },
           },
           tx,
@@ -151,7 +157,8 @@ export class CatalogService {
       dto.category === undefined &&
       dto.visitFee === undefined &&
       dto.emergencyVisitFee === undefined &&
-      dto.isActive === undefined
+      dto.isActive === undefined &&
+      dto.sosBookingFee === undefined
     ) {
       throw new BadRequestException(
         'Provide a category name, description, category, fee, or isActive value to update.',
@@ -170,6 +177,16 @@ export class CatalogService {
       dto.category === undefined ? undefined : dto.category.trim();
     try {
       return await this.prisma.$transaction(async (tx) => {
+        const current = await tx.serviceCategory.findUnique({
+          where: { id },
+          select: { visitFee: true, sosBookingFee: true },
+        });
+        if (!current)
+          throw new NotFoundException('Service category not found.');
+        this.assertBookingFees(
+          dto.visitFee ?? current.visitFee,
+          dto.sosBookingFee ?? current.sosBookingFee,
+        );
         const updated = await tx.serviceCategory.update({
           where: { id },
           data: {
@@ -180,6 +197,7 @@ export class CatalogService {
             visitFee: dto.visitFee,
             emergencyVisitFee: dto.emergencyVisitFee,
             isActive: dto.isActive,
+            sosBookingFee: dto.sosBookingFee,
           },
         });
         await this.audit.log(
@@ -197,6 +215,9 @@ export class CatalogService {
                 ? { emergencyVisitFee: dto.emergencyVisitFee }
                 : {}),
               ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+              ...(dto.sosBookingFee !== undefined
+                ? { sosBookingFee: dto.sosBookingFee }
+                : {}),
             },
           },
           tx,
@@ -205,6 +226,23 @@ export class CatalogService {
       });
     } catch (e) {
       this.rethrow(e);
+    }
+  }
+
+  private assertBookingFees(
+    bookingFee: number | null | undefined,
+    sosBookingFee: number | null | undefined,
+  ) {
+    if (
+      bookingFee !== null &&
+      bookingFee !== undefined &&
+      sosBookingFee !== null &&
+      sosBookingFee !== undefined &&
+      sosBookingFee <= bookingFee
+    ) {
+      throw new BadRequestException(
+        'The SOS booking fee must be higher than the normal booking fee.',
+      );
     }
   }
 

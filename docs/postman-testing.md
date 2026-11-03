@@ -13,20 +13,22 @@ collection named `fundi-api`; it does not merge into an existing collection.
 
 Create a Postman environment with:
 
-| Variable | Example value |
-| --- | --- |
-| `baseUrl` | `http://localhost:3000` |
-| `customerToken` | Access token from phone OTP verification |
+| Variable          | Example value                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------- |
+| `baseUrl`         | `http://localhost:3000`                                                               |
+| `customerToken`   | Access token from phone OTP verification                                              |
 | `technicianToken` | Access token for technician routes (or a customer token when converting that account) |
-| `jobId` | A job UUID returned by the API |
-| `offerId` | An offer UUID returned by the API |
-| `mediaId` | A media UUID returned by the API |
-| `userId` | A user UUID returned by the API |
-| `technicianId` | A technician profile UUID returned by the API |
-| `categoryId` | A service category UUID returned by the API |
-| `paymentId` | A booking payment UUID returned by the mock-payment endpoint |
-| `verificationId` | A job phone-verification UUID returned by the OTP request |
-| `documentId` | A technician document UUID returned by the API |
+| `jobId`           | A job UUID returned by the API                                                        |
+| `offerId`         | An offer UUID returned by the API                                                     |
+| `mediaId`         | A media UUID returned by the API                                                      |
+| `userId`          | A user UUID returned by the API                                                       |
+| `technicianId`    | A technician profile UUID returned by the API                                         |
+| `categoryId`      | A service category UUID returned by the API                                           |
+| `paymentId`       | A booking payment UUID returned by the mock-payment endpoint                          |
+| `verificationId`  | A job phone-verification UUID returned by the OTP request                             |
+| `documentId`      | A technician document UUID returned by the API                                        |
+| `chatRoomId`      | A chat room UUID returned for an accepted job assignment                              |
+| `chatMessageId`   | A chat message UUID returned by a send/list request                                   |
 
 Use `{{baseUrl}}` at the start of every URL below. For JSON requests, choose
 **Body → raw → JSON** and send `Content-Type: application/json`.
@@ -67,11 +69,11 @@ token must not be used for admin routes.
 
 ## Service status and root
 
-| Method | URL | Auth | Request body |
-| --- | --- | --- | --- |
-| GET | `{{baseUrl}}/` | None | None |
-| GET | `{{baseUrl}}/api/v1/health` | None | None |
-| GET | `{{baseUrl}}/favicon.ico` | None | None |
+| Method | URL                         | Auth | Request body |
+| ------ | --------------------------- | ---- | ------------ |
+| GET    | `{{baseUrl}}/`              | None | None         |
+| GET    | `{{baseUrl}}/api/v1/health` | None | None         |
+| GET    | `{{baseUrl}}/favicon.ico`   | None | None         |
 
 ## Customer and technician phone authentication
 
@@ -395,7 +397,11 @@ body.
 ```json
 {
   "name": "Home Repair",
-  "visitFee": 1000
+  "category": "Home Services",
+  "description": "General household repairs.",
+  "visitFee": 1000,
+  "emergencyVisitFee": 1500,
+  "sosBookingFee": 2500
 }
 ```
 
@@ -422,14 +428,17 @@ authentication.
 ```json
 {
   "name": "Home Maintenance",
+  "description": "General maintenance and repairs.",
   "isActive": true,
-  "visitFee": 1500
+  "visitFee": 1500,
+  "emergencyVisitFee": 2000,
+  "sosBookingFee": 3500
 }
 ```
 
-`visitFee` is a positive integer in RWF. A category without a fee cannot be
-used for a paid job request. At least one of `name`, `isActive`, or
-`visitFee` is required.
+`visitFee` and `emergencyVisitFee` are non-negative integer amounts in RWF.
+When configured, `sosBookingFee` is positive and higher than `visitFee`. At least one of
+`name`, `isActive`, `visitFee`, or `sosBookingFee` is required.
 
 ### Deactivate a category (admin)
 
@@ -681,23 +690,23 @@ technician bearer token; no body.
 **POST** `{{baseUrl}}/api/v1/technicians/profile/documents` — technician
 bearer token. In form-data add:
 
-| Key | Type | Example |
-| --- | --- | --- |
-| `file` | File | Select a JPEG, PNG, WebP, or PDF file (maximum 5 MiB) |
-| `type` | Text | `NATIONAL_ID` |
-| `title` | Text | `National ID card` |
+| Key     | Type | Example                                               |
+| ------- | ---- | ----------------------------------------------------- |
+| `file`  | File | Select a JPEG, PNG, WebP, or PDF file (maximum 5 MiB) |
+| `type`  | Text | `NATIONAL_ID`                                         |
+| `title` | Text | `National ID card`                                    |
 
 ### Upload a certificate
 
 Use the same **POST** URL and add these form-data fields:
 
-| Key | Type | Example |
-| --- | --- | --- |
-| `file` | File | Select the certificate PDF/image |
-| `type` | Text | `CERTIFICATE` |
-| `title` | Text | `TVET Certificate - Plumbing` |
-| `certificateType` | Text | `TVET_CERTIFICATE` |
-| `categoryId` | Text | `{{categoryId}}` |
+| Key               | Type | Example                          |
+| ----------------- | ---- | -------------------------------- |
+| `file`            | File | Select the certificate PDF/image |
+| `type`            | Text | `CERTIFICATE`                    |
+| `title`           | Text | `TVET Certificate - Plumbing`    |
+| `certificateType` | Text | `TVET_CERTIFICATE`               |
+| `categoryId`      | Text | `{{categoryId}}`                 |
 
 Use either `categoryId` or `customCategoryName`, not both. For an uncatalogued
 service, replace `categoryId` with a text field `customCategoryName`, for
@@ -836,13 +845,16 @@ the response.
 ```json
 {
   "serviceCategoryId": "{{categoryId}}",
+  "requestType": "SOS",
   "phoneNumber": "+250788123456"
 }
 ```
 
-`phoneNumber` is optional and defaults to the customer's account phone. The
-amount is read from the category's configured `visitFee`; save the returned
-`id` as `paymentId`. This development-only endpoint does not transfer money.
+Use `"requestType": "NORMAL"` (the default) for a normal job or `"SOS"` for an
+SOS job. `phoneNumber` is optional and defaults to the customer's account
+phone. The amount is read from `visitFee` or `sosBookingFee` according to the
+request type; save the returned `id` as `paymentId`. This development-only
+endpoint does not transfer money.
 
 ### Record payment data processed by a frontend
 
@@ -851,10 +863,11 @@ amount is read from the category's configured `visitFee`; save the returned
 ```json
 {
   "serviceCategoryId": "{{categoryId}}",
+  "requestType": "SOS",
   "externalPaymentId": "frontend-payment-20261028-001",
   "status": "SUCCESS",
   "phoneNumber": "+250788123456",
-  "amount": 1000,
+  "amount": 2500,
   "paidAt": "2026-10-28T12:00:00.000Z"
 }
 ```
@@ -864,6 +877,8 @@ but does **not** verify the external payment with a provider. The response
 includes `providerVerified: false`; it is unavailable in production. Save
 `id` as `paymentId`. A payment timestamp over seven days old is stored as
 `EXPIRED` and cannot be used to create a job.
+`requestType` is optional and defaults to `NORMAL`; when it is `SOS`, `amount`
+must equal the category's `sosBookingFee`.
 
 ### Create a job
 
@@ -871,25 +886,59 @@ includes `providerVerified: false`; it is unavailable in production. Save
 because it accepts file uploads. Add the following text fields and optional
 files; do not use raw JSON when uploading files.
 
-| Key | Type | Example |
-| --- | --- | --- |
-| `paymentId` | Text | `{{paymentId}}` |
-| `phoneVerificationId` | Text | `{{verificationId}}` |
-| `serviceCategoryId` | Text | `{{categoryId}}` |
-| `description` | Text | `Repair a leaking kitchen tap and check the connection.` |
-| `locationAddress` | Text | `Kimihurura, Kigali` |
-| `latitude` | Text | `-1.9536` |
-| `longitude` | Text | `30.0606` |
-| `offeredAmount` | Text | `25000` |
-| `priority` | Text | `HIGH` |
-| `photos` | File | Optional JPEG/PNG/WebP; up to five files |
-| `video` | File | Optional MP4; one file |
+| Key                   | Type | Example                                                  |
+| --------------------- | ---- | -------------------------------------------------------- |
+| `paymentId`           | Text | `{{paymentId}}`                                          |
+| `phoneVerificationId` | Text | `{{verificationId}}`                                     |
+| `serviceCategoryId`   | Text | `{{categoryId}}`                                         |
+| `requestType`         | Text | `NORMAL` (optional; defaults to `NORMAL`)                |
+| `description`         | Text | `Repair a leaking kitchen tap and check the connection.` |
+| `locationAddress`     | Text | `Kimihurura, Kigali`                                     |
+| `latitude`            | Text | `-1.9536`                                                |
+| `longitude`           | Text | `30.0606`                                                |
+| `offeredAmount`       | Text | `25000`                                                  |
+| `priority`            | Text | `HIGH`                                                   |
+| `photos`              | File | Optional JPEG/PNG/WebP; up to five files                 |
+| `video`               | File | Optional MP4; one file                                   |
 
 The `paymentId` must be a valid, unused payment for the selected category and
 the `phoneVerificationId` must be verified and unused. A custom
 `otherServiceName` can be used to preview matches, but cannot currently be
 booked because payments require a `serviceCategoryId`.
 Photo/video limits and sizes are described in [the Jobs API guide](./jobs.md).
+
+### Create an SOS job and automatically rotate offers
+
+**POST** `{{baseUrl}}/api/v1/jobs/sos` — customer or technician bearer token;
+use **Body → form-data**. First request and verify a fresh job phone OTP, then
+create a mock/processed payment with `"requestType": "SOS"`. Use its returned
+`paymentId` with these form-data fields:
+
+| Key                   | Type | Example                                      |
+| --------------------- | ---- | -------------------------------------------- |
+| `paymentId`           | Text | `{{paymentId}}`                              |
+| `phoneVerificationId` | Text | `{{verificationId}}`                         |
+| `serviceCategoryId`   | Text | `{{categoryId}}`                             |
+| `description`         | Text | `Urgent water leak is flooding the kitchen.` |
+| `locationAddress`     | Text | `Kimihurura, Kigali`                         |
+| `latitude`            | Text | `-1.9536`                                    |
+| `longitude`           | Text | `30.0606`                                    |
+| `offeredAmount`       | Text | `25000`                                      |
+| `priority`            | Text | `URGENT` (optional)                          |
+
+No technician ID is sent. The system offers the SOS request to the best
+currently matching approved, online technician. Each technician has five
+minutes; rejection or timeout automatically moves to the next not-yet-offered
+technician. The response includes `requestType: "SOS"`, `dispatchStatus`, and
+the current `activeOffer` (technician, match accuracy, and expiration) when an
+offer is active. If the automatic queue is exhausted, use `POST
+{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/retry-dispatch` or select a technician
+manually through the existing proposal endpoint.
+
+If the assigned SOS technician drops the job before both parties confirm
+cooperation, the system resumes the payment validity and continues the queue
+without offering it to that technician again. The owner can explicitly send a
+manual proposal to that technician using the usual `requests` endpoint.
 
 ### Propose a technician
 
@@ -1210,4 +1259,5 @@ audit snapshot of the payment data.
   authentication](./admin-authentication.md), [user management](./users.md),
   [technician onboarding](./technician-onboarding.md), [technician
   documents](./technician-documents.md), [service categories](./service-categories.md),
-  [jobs](./jobs.md), and [booking payments](./booking-payments.md) guides.
+  [jobs](./jobs.md), [booking payments](./booking-payments.md), and
+  [job chat](./chat.md) guides.

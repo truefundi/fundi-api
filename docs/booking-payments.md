@@ -7,10 +7,10 @@ are prefixed with `/api/v1`.
 Customer payment endpoints accept a customer or technician bearer token.
 Administrator endpoints require an administrator session or token.
 
-Administrators configure a positive integer `visitFee` in RWF on each
-service category. A customer must pay that exact fee before creating a job
-for the category. A mock payment is valid for seven days unless an administrator
-extends its lifetime.
+Administrators configure a positive integer `visitFee` for normal requests and
+an optional `sosBookingFee` for SOS requests, both in RWF. The SOS fee must be
+higher than the normal fee. A payment must match the selected request type's
+fee and is valid for seven days unless an administrator extends its lifetime.
 
 ## Customer endpoints
 
@@ -24,12 +24,15 @@ Request:
 ```json
 {
   "serviceCategoryId": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
+  "requestType": "NORMAL",
   "phoneNumber": "+250788123456"
 }
 ```
 
-`phoneNumber` is optional. The amount is not accepted from the client; it is
-read from the category's configured `visitFee`.
+`phoneNumber` and `requestType` are optional; the request type defaults to
+`NORMAL`. Use `SOS` to pay the category's configured `sosBookingFee`. The
+amount is not accepted from the client; normal requests use `visitFee` and SOS
+requests use `sosBookingFee`.
 
 Success response (`201`):
 
@@ -44,6 +47,7 @@ Success response (`201`):
     "name": "Plumbing",
     "visitFee": 1000
   },
+  "requestType": "NORMAL",
   "phoneNumber": "+250788123456",
   "amount": 1000,
   "currency": "RWF",
@@ -81,6 +85,7 @@ Request:
 ```json
 {
   "serviceCategoryId": "b1785204-f59a-4cc3-a9f9-94932e4a6d30",
+  "requestType": "SOS",
   "externalPaymentId": "frontend-payment-20261028-001",
   "status": "SUCCESS",
   "phoneNumber": "+250788123456",
@@ -89,7 +94,9 @@ Request:
 }
 ```
 
-The `status` must be `SUCCESS`; a recent payment is stored as `VALID`.
+The optional `requestType` is `NORMAL` by default or `SOS`. The `status` must
+be `SUCCESS`; the amount must equal the corresponding normal or SOS category
+fee. A recent payment is stored as `VALID`.
 `providerVerified` in the response is `false`. Use the returned `id` as
 `paymentId` when creating a job. If `paidAt` is already more than seven days
 old, the payment is recorded as `EXPIRED` and cannot be used for a new job.
@@ -124,13 +131,13 @@ cooperation cannot be extended.
 The following administrator routes manage only payments whose payment status
 and associated job status are both `COMPLETED`:
 
-| Method | URL | Operation |
-| --- | --- | --- |
-| `GET` | `/api/v1/admin/payments/completed` | List completed-job payments |
-| `POST` | `/api/v1/admin/payments/completed` | Reconcile a payment for a completed job that has no payment record |
-| `GET` | `/api/v1/admin/payments/completed/:paymentId` | Read one completed-job payment |
-| `PATCH` | `/api/v1/admin/payments/completed/:paymentId` | Update external payment ID, phone, and/or paid time |
-| `DELETE` | `/api/v1/admin/payments/completed/:paymentId` | Delete the payment while retaining a full audit snapshot |
+| Method   | URL                                           | Operation                                                          |
+| -------- | --------------------------------------------- | ------------------------------------------------------------------ |
+| `GET`    | `/api/v1/admin/payments/completed`            | List completed-job payments                                        |
+| `POST`   | `/api/v1/admin/payments/completed`            | Reconcile a payment for a completed job that has no payment record |
+| `GET`    | `/api/v1/admin/payments/completed/:paymentId` | Read one completed-job payment                                     |
+| `PATCH`  | `/api/v1/admin/payments/completed/:paymentId` | Update external payment ID, phone, and/or paid time                |
+| `DELETE` | `/api/v1/admin/payments/completed/:paymentId` | Delete the payment while retaining a full audit snapshot           |
 
 Create request (the amount and customer are taken from the completed job and
 its category):
@@ -159,13 +166,13 @@ the completed job's status.
 
 ## Payment statuses and lifetime
 
-| Status | Meaning |
-| --- | --- |
-| `VALID` | Paid and available to create a job |
-| `EXPIRED` | Its validity elapsed while available for reassignment, or both job participants confirmed cooperation |
-| `PAUSED` | A technician accepted the job; the remaining countdown is frozen |
-| `RESUMED` | Validity is counting down again after a cancellation/reassignment |
-| `COMPLETED` | Both customer and technician marked the job completed |
+| Status      | Meaning                                                                                               |
+| ----------- | ----------------------------------------------------------------------------------------------------- |
+| `VALID`     | Paid and available to create a job                                                                    |
+| `EXPIRED`   | Its validity elapsed while available for reassignment, or both job participants confirmed cooperation |
+| `PAUSED`    | A technician accepted the job; the remaining countdown is frozen                                      |
+| `RESUMED`   | Validity is counting down again after a cancellation/reassignment                                     |
+| `COMPLETED` | Both customer and technician marked the job completed                                                 |
 
 The initial validity is exactly seven days from `paidAt`. Assignment freezes
 the remaining validity; customer cancellation or administrator approval of a

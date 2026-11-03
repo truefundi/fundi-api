@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   BookingPaymentStatus,
   JobCooperationStatus,
+  JobRequestType,
   JobStatus,
   Prisma,
 } from '@prisma/client';
@@ -34,15 +35,16 @@ export class PaymentsService {
   async createMockPayment(customerId: string, dto: CreateMockPaymentDto) {
     const category = await this.prisma.serviceCategory.findFirst({
       where: { id: dto.serviceCategoryId, isActive: true },
-      select: { id: true, name: true, visitFee: true },
+      select: {
+        id: true,
+        name: true,
+        visitFee: true,
+        sosBookingFee: true,
+      },
     });
     if (!category) throw new NotFoundException('Service category not found.');
-    const visitFee = category.visitFee;
-    if (visitFee === null || visitFee <= 0) {
-      throw new BadRequestException(
-        'This service category does not have a booking fee configured yet.',
-      );
-    }
+    const requestType = dto.requestType ?? JobRequestType.NORMAL;
+    const bookingFee = this.bookingFeeFor(category, requestType);
 
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: customerId },
@@ -70,7 +72,8 @@ export class PaymentsService {
           externalPaymentId,
           customerId,
           category.id,
-          visitFee,
+          requestType,
+          bookingFee,
           phoneNumber,
           paidAt.toISOString(),
         ].join(':'),
@@ -86,7 +89,8 @@ export class PaymentsService {
           paymentKeyId: key,
           signature,
           phoneNumber,
-          amount: visitFee,
+          amount: bookingFee,
+          requestType,
           paidAt,
           validUntil,
           status: BookingPaymentStatus.VALID,
@@ -102,7 +106,7 @@ export class PaymentsService {
           metadata: {
             externalPaymentId,
             serviceCategoryId: category.id,
-            amount: visitFee,
+            amount: bookingFee,
             phoneNumber,
             paidAt: paidAt.toISOString(),
           },
@@ -117,6 +121,7 @@ export class PaymentsService {
       status: 'SUCCESS',
       bookingStatus: payment.status,
       serviceCategory: category,
+      requestType: payment.requestType,
       phoneNumber,
       amount: payment.amount,
       currency: 'RWF',
@@ -140,12 +145,19 @@ export class PaymentsService {
     }
     const category = await this.prisma.serviceCategory.findFirst({
       where: { id: dto.serviceCategoryId, isActive: true },
-      select: { id: true, name: true, visitFee: true },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        visitFee: true,
+        sosBookingFee: true,
+      },
     });
     if (!category) throw new NotFoundException('Service category not found.');
-    if (!category.visitFee || category.visitFee !== dto.amount) {
+    const requestType = dto.requestType ?? JobRequestType.NORMAL;
+    if (this.bookingFeeFor(category, requestType) !== dto.amount) {
       throw new BadRequestException(
-        'The submitted payment amount must match the service category booking fee.',
+        `The submitted amount must match the ${requestType} booking fee for this service category.`,
       );
     }
     const paidAt = this.parsePastDate(dto.paidAt);
@@ -173,6 +185,7 @@ export class PaymentsService {
       dto.amount,
       dto.phoneNumber,
       paidAt,
+      requestType,
     );
     try {
       const payment = await this.prisma.$transaction(async (tx) => {
@@ -186,6 +199,7 @@ export class PaymentsService {
             signature,
             phoneNumber: dto.phoneNumber,
             amount: dto.amount,
+            requestType,
             paidAt,
             validUntil,
             status: bookingStatus,
@@ -217,6 +231,7 @@ export class PaymentsService {
         status: dto.status,
         bookingStatus: payment.status,
         serviceCategory: category,
+        requestType: payment.requestType,
         phoneNumber: payment.phoneNumber,
         amount: payment.amount,
         currency: 'RWF',
@@ -274,7 +289,9 @@ export class PaymentsService {
                 dropReason: true,
                 offeredAt: true,
                 respondedAt: true,
-                technician: { select: { user: { select: { fullName: true } } } },
+                technician: {
+                  select: { user: { select: { fullName: true } } },
+                },
               },
               orderBy: [{ round: 'asc' }, { createdAt: 'asc' }],
             },
@@ -283,39 +300,41 @@ export class PaymentsService {
       },
       orderBy: [{ paidAt: 'desc' }, { id: 'asc' }],
     });
-    return payments.map(({ signature: _signature, paymentKeyId: _key, ...payment }) => ({
-      ...payment,
-      currency: 'RWF',
-      service: payment.serviceCategory.name,
-      job: payment.job
-        ? {
-            id: payment.job.id,
-            status: payment.job.status,
-            description: payment.job.description,
-            createdAt: payment.job.createdAt,
-            completedAt: payment.job.completedAt,
-            technicians: this.uniqueTechnicians(
-              payment.job.assignmentHistory.map((entry) => ({
-                technicianId: entry.technicianId,
-                fullName: entry.technicianName,
-                acceptedAt: entry.acceptedAt,
-                endedAt: entry.endedAt,
-                endReason: entry.endReason,
-                reason: entry.reason,
-              })),
-              payment.job.offers.map((offer) => ({
-                technicianId: offer.technicianId,
-                fullName: offer.technician.user.fullName,
-                offerStatus: offer.status,
-                offeredAt: offer.offeredAt,
-                respondedAt: offer.respondedAt,
-                rejectionReason: offer.rejectionReason,
-                cancellationReason: offer.dropReason,
-              })),
-            ),
-          }
-        : null,
-    }));
+    return payments.map(
+      ({ signature: _signature, paymentKeyId: _key, ...payment }) => ({
+        ...payment,
+        currency: 'RWF',
+        service: payment.serviceCategory.name,
+        job: payment.job
+          ? {
+              id: payment.job.id,
+              status: payment.job.status,
+              description: payment.job.description,
+              createdAt: payment.job.createdAt,
+              completedAt: payment.job.completedAt,
+              technicians: this.uniqueTechnicians(
+                payment.job.assignmentHistory.map((entry) => ({
+                  technicianId: entry.technicianId,
+                  fullName: entry.technicianName,
+                  acceptedAt: entry.acceptedAt,
+                  endedAt: entry.endedAt,
+                  endReason: entry.endReason,
+                  reason: entry.reason,
+                })),
+                payment.job.offers.map((offer) => ({
+                  technicianId: offer.technicianId,
+                  fullName: offer.technician.user.fullName,
+                  offerStatus: offer.status,
+                  offeredAt: offer.offeredAt,
+                  respondedAt: offer.respondedAt,
+                  rejectionReason: offer.rejectionReason,
+                  cancellationReason: offer.dropReason,
+                })),
+              ),
+            }
+          : null,
+      }),
+    );
   }
 
   async listAll() {
@@ -341,7 +360,14 @@ export class PaymentsService {
             createdAt: true,
             completedAt: true,
             assignmentHistory: {
-              select: { technicianId: true, technicianName: true, acceptedAt: true, endedAt: true, endReason: true, reason: true },
+              select: {
+                technicianId: true,
+                technicianName: true,
+                acceptedAt: true,
+                endedAt: true,
+                endReason: true,
+                reason: true,
+              },
               orderBy: { acceptedAt: 'asc' },
             },
           },
@@ -349,10 +375,12 @@ export class PaymentsService {
       },
       orderBy: [{ paidAt: 'desc' }, { id: 'asc' }],
     });
-    return rows.map(({ signature: _signature, paymentKeyId: _key, ...payment }) => ({
-      ...payment,
-      currency: 'RWF',
-    }));
+    return rows.map(
+      ({ signature: _signature, paymentKeyId: _key, ...payment }) => ({
+        ...payment,
+        currency: 'RWF',
+      }),
+    );
   }
 
   async listCompletedPayments() {
@@ -409,7 +437,9 @@ export class PaymentsService {
     const job = await this.prisma.job.findUnique({
       where: { id: dto.jobId },
       include: {
-        serviceCategory: { select: { id: true, visitFee: true } },
+        serviceCategory: {
+          select: { id: true, visitFee: true, sosBookingFee: true },
+        },
         bookingPayment: { select: { id: true } },
       },
     });
@@ -418,12 +448,13 @@ export class PaymentsService {
         'Payments can only be recorded for completed jobs.',
       );
     }
-    if (!job.serviceCategory?.visitFee || job.serviceCategory.visitFee <= 0) {
+    if (!job.serviceCategory) {
       throw new BadRequestException(
-        'The completed job category has no valid booking fee.',
+        'The completed job has no service category with a valid booking fee.',
       );
     }
     const category = job.serviceCategory;
+    const amount = this.bookingFeeFor(category, job.requestType);
     if (job.bookingPayment) {
       throw new ConflictException(
         'This completed job already has a booking payment.',
@@ -437,7 +468,6 @@ export class PaymentsService {
       );
     }
     const id = randomUUID();
-    const amount = job.serviceCategory.visitFee;
     const signature = this.signPayment(
       secret,
       id,
@@ -447,6 +477,7 @@ export class PaymentsService {
       amount,
       dto.phoneNumber,
       paidAt,
+      job.requestType,
     );
     try {
       const payment = await this.prisma.$transaction(async (tx) => {
@@ -461,6 +492,7 @@ export class PaymentsService {
             signature,
             phoneNumber: dto.phoneNumber,
             amount,
+            requestType: job.requestType,
             paidAt,
             validUntil: new Date(
               paidAt.getTime() + BOOKING_VALIDITY_SECONDS * 1000,
@@ -533,6 +565,7 @@ export class PaymentsService {
       payment.amount,
       phoneNumber,
       paidAt,
+      payment.requestType,
     );
     try {
       const updated = await this.prisma.$transaction(async (tx) => {
@@ -632,6 +665,22 @@ export class PaymentsService {
     return date;
   }
 
+  private bookingFeeFor(
+    category: { visitFee: number; sosBookingFee: number | null },
+    requestType: JobRequestType,
+  ) {
+    const amount =
+      requestType === JobRequestType.SOS
+        ? category.sosBookingFee
+        : category.visitFee;
+    if (amount === null || amount <= 0) {
+      throw new BadRequestException(
+        `This service category does not have a valid ${requestType} booking fee configured.`,
+      );
+    }
+    return amount;
+  }
+
   private signPayment(
     secret: string,
     id: string,
@@ -641,6 +690,7 @@ export class PaymentsService {
     amount: number,
     phoneNumber: string,
     paidAt: Date,
+    requestType: JobRequestType,
   ) {
     return createHmac('sha256', secret)
       .update(
@@ -649,6 +699,7 @@ export class PaymentsService {
           externalPaymentId,
           customerId,
           serviceCategoryId,
+          requestType,
           amount,
           phoneNumber,
           paidAt.toISOString(),
@@ -687,9 +738,7 @@ export class PaymentsService {
       if (!payment) {
         throw new NotFoundException('Booking payment not found.');
       }
-      if (
-        payment.job?.cooperationStatus === JobCooperationStatus.CONFIRMED
-      ) {
+      if (payment.job?.cooperationStatus === JobCooperationStatus.CONFIRMED) {
         throw new ConflictException(
           'A payment expires when both job participants confirm cooperation and can no longer be extended.',
         );
@@ -748,10 +797,7 @@ export class PaymentsService {
   private uniqueTechnicians<
     T extends { technicianId: string | null },
     U extends { technicianId: string | null },
-  >(
-    assignments: T[],
-    offers: U[],
-  ): Array<T | U> {
+  >(assignments: T[], offers: U[]): Array<T | U> {
     const seen = new Set<string>();
     return [...assignments, ...offers].filter((entry) => {
       if (!entry.technicianId || seen.has(entry.technicianId)) return false;

@@ -12,8 +12,8 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
-import { ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
+import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { JobRequestType, UserRole } from '@prisma/client';
 import {
   Auth,
   AuthUser,
@@ -112,6 +112,11 @@ export class JobsController {
         paymentId: { type: 'string', format: 'uuid' },
         phoneVerificationId: { type: 'string', format: 'uuid' },
         serviceCategoryId: { type: 'string', format: 'uuid' },
+        requestType: {
+          type: 'string',
+          enum: Object.values(JobRequestType),
+          default: JobRequestType.NORMAL,
+        },
         otherServiceName: { type: 'string', maxLength: 80 },
         description: { type: 'string', minLength: 10, maxLength: 5000 },
         locationAddress: { type: 'string', maxLength: 255 },
@@ -138,6 +143,54 @@ export class JobsController {
     @UploadedFiles() files: JobUploadFields,
   ) {
     return this.jobs.create(user.id, dto, files.photos ?? [], files.video?.[0]);
+  }
+
+  @Post('sos')
+  @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Create an SOS job and automatically dispatch it',
+    description:
+      'Requires an SOS booking payment and verified phone number. Offers go one at a time to matching approved, online technicians, with a five-minute response window.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: [
+        'paymentId',
+        'phoneVerificationId',
+        'serviceCategoryId',
+        'description',
+        'locationAddress',
+        'latitude',
+        'longitude',
+        'offeredAmount',
+      ],
+      properties: {
+        paymentId: { type: 'string', format: 'uuid' },
+        phoneVerificationId: { type: 'string', format: 'uuid' },
+        serviceCategoryId: { type: 'string', format: 'uuid' },
+        description: { type: 'string', minLength: 10, maxLength: 5000 },
+        locationAddress: { type: 'string', maxLength: 255 },
+        latitude: { type: 'number', minimum: -90, maximum: 90 },
+        longitude: { type: 'number', minimum: -180, maximum: 180 },
+        offeredAmount: { type: 'integer', minimum: 1 },
+        priority: { type: 'string', enum: ['LOW', 'NORMAL', 'HIGH', 'URGENT'] },
+        photos: {
+          type: 'array',
+          maxItems: 5,
+          items: { type: 'string', format: 'binary' },
+        },
+        video: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  createSos(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateJobDto,
+    @UploadedFiles() files: JobUploadFields,
+  ) {
+    return this.jobs.createSos(user.id, dto, files.photos ?? [], files.video?.[0]);
   }
 
   @Get('mine')

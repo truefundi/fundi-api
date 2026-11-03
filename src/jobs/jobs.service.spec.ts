@@ -1,6 +1,8 @@
 import {
   BookingPaymentStatus,
+  JobDispatchStatus,
   JobCooperationStatus,
+  JobRequestType,
   JobStatus,
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
@@ -46,9 +48,11 @@ describe('JobsService location matching', () => {
         findFirst: jest.fn().mockResolvedValue({ id: categoryId }),
       },
       technicianProfile: {
-        findMany: jest.fn().mockImplementation((args: { select?: unknown }) =>
-          args.select ? Promise.resolve(textRows) : Promise.resolve(profiles),
-        ),
+        findMany: jest
+          .fn()
+          .mockImplementation((args: { select?: unknown }) =>
+            args.select ? Promise.resolve(textRows) : Promise.resolve(profiles),
+          ),
       },
       $queryRaw: jest.fn().mockResolvedValue(geographicMatches),
     };
@@ -146,14 +150,17 @@ describe('JobsService location matching', () => {
   });
 
   it('supports coordinate-only matching through the location endpoint', async () => {
-    const { service, prisma } = createService([], [
-      {
-        technicianId: 'geo-only-technician',
-        distanceMeters: 500,
-        rejectionCount: 0,
-        cancellationCount: 0,
-      },
-    ]);
+    const { service, prisma } = createService(
+      [],
+      [
+        {
+          technicianId: 'geo-only-technician',
+          distanceMeters: 500,
+          rejectionCount: 0,
+          cancellationCount: 0,
+        },
+      ],
+    );
 
     await expect(
       service.previewMatchingTechniciansByLocationName({
@@ -284,6 +291,133 @@ describe('JobsService cooperation confirmation', () => {
     await service.confirmCooperation(customerId, jobId, 'customer');
 
     expect(paymentUpdateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsService SOS technician dispatch', () => {
+  it('offers the next best match and does not rotate to a technician already offered automatically', async () => {
+    const job = {
+      id: 'sos-job-1',
+      customerId: 'customer-1',
+      serviceCategoryId: 'category-1',
+      otherServiceName: null,
+      requestType: JobRequestType.SOS,
+      status: JobStatus.OPEN,
+      technicianId: null,
+      dispatchStatus: JobDispatchStatus.EXHAUSTED,
+      dispatchRound: 2,
+      latitude: -1.95,
+      longitude: 30.06,
+      customerHiddenAt: null,
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      job: {
+        findUnique: jest.fn().mockResolvedValue(job),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        update: jest.fn().mockResolvedValue(job),
+      },
+      bookingPayment: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'payment-1',
+          status: BookingPaymentStatus.RESUMED,
+          validUntil: new Date(Date.now() + 60_000),
+        }),
+        update: jest.fn(),
+      },
+      jobOffer: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ technicianId: 'previous-technician' }]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue({
+          id: 'offer-3',
+          jobId: job.id,
+          round: 3,
+          matchScore: 90,
+          distanceMeters: 500,
+          expiresAt: new Date(Date.now() + 5 * 60_000),
+          technician: { userId: 'technician-user-2' },
+          job: {
+            priority: 'NORMAL',
+            description: 'Urgent plumbing repair needed.',
+            locationAddress: 'Kigali',
+            offeredAmount: 20_000,
+            currency: 'RWF',
+            otherServiceName: null,
+            serviceCategory: { name: 'Plumbing' },
+          },
+        }),
+      },
+      technicianProfile: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'next-technician',
+          userId: 'technician-user-2',
+        }),
+      },
+    };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue(job) },
+      jobOffer: {},
+      $queryRaw: jest.fn().mockResolvedValue([
+        {
+          technicianId: 'previous-technician',
+          matchScore: 99,
+          distanceMeters: 200,
+          rejectionCount: 0,
+          cancellationCount: 0,
+        },
+        {
+          technicianId: 'next-technician',
+          matchScore: 90,
+          distanceMeters: 500,
+          rejectionCount: 0,
+          cancellationCount: 0,
+        },
+      ]),
+      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+        work(tx),
+      ),
+    };
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const events = { notifyTechnician: jest.fn() };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      { log: jest.fn().mockResolvedValue(undefined) } as never,
+      events as never,
+      undefined as never,
+      queue as never,
+      undefined as never,
+    );
+    jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as never);
+
+    await service.retryDispatch('customer-1', job.id);
+
+    expect(tx.technicianProfile.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'next-technician' }),
+      }),
+    );
+    expect(tx.jobOffer.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          technicianId: 'next-technician',
+          round: 3,
+          status: 'OFFERED',
+        }),
+      }),
+    );
+    expect(queue.add).toHaveBeenCalledWith(
+      'expire-offer',
+      { offerId: 'offer-3' },
+      expect.objectContaining({ delay: expect.any(Number) }),
+    );
+    expect(events.notifyTechnician).toHaveBeenCalledWith(
+      'technician-user-2',
+      'job:offer',
+      expect.objectContaining({ requestType: JobRequestType.SOS }),
+    );
   });
 });
 

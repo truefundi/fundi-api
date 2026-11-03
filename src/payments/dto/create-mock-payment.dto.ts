@@ -1,12 +1,14 @@
 import { Transform } from 'class-transformer';
 import {
   IsOptional,
+  IsEnum,
   IsString,
   IsUUID,
   Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { JobRequestType } from '@prisma/client';
 import {
   normalizeRwandaPhoneNumber,
   RWANDA_PHONE_NUMBER_PATTERN,
@@ -15,6 +17,10 @@ import {
 export class CreateMockPaymentDto {
   @IsUUID('4')
   serviceCategoryId!: string;
+
+  @IsOptional()
+  @IsEnum(JobRequestType)
+  requestType?: JobRequestType;
 
   @IsOptional()
   @Transform(({ value }) => normalizeRwandaPhoneNumber(value))

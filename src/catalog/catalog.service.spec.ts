@@ -10,6 +10,11 @@ describe('CatalogService', () => {
     name: 'Plumbing',
     slug: 'plumbing',
     isActive: true,
+    description: '',
+    category: 'Home Services',
+    visitFee: 1000,
+    emergencyVisitFee: 0,
+    sosBookingFee: 2500,
     createdAt: new Date('2026-10-01T10:00:00.000Z'),
   };
 
@@ -19,6 +24,7 @@ describe('CatalogService', () => {
       serviceCategory: {
         create: jest.fn().mockResolvedValue(category),
         update: jest.fn().mockResolvedValue(category),
+        findUnique: jest.fn().mockResolvedValue(category),
       },
     };
     const prisma = {
@@ -91,6 +97,7 @@ describe('CatalogService', () => {
         visitFee: 0,
         emergencyVisitFee: 0,
         isActive: true,
+        sosBookingFee: null,
       },
     });
     expect(audit.log).toHaveBeenCalledWith(
@@ -113,6 +120,7 @@ describe('CatalogService', () => {
         category: 'Home Services',
         visitFee: 75,
         emergencyVisitFee: 110,
+        sosBookingFee: 2500,
       },
       'admin-1',
     );
@@ -126,6 +134,7 @@ describe('CatalogService', () => {
         visitFee: 75,
         emergencyVisitFee: 110,
         isActive: undefined,
+        sosBookingFee: 2500,
       },
     });
     expect(audit.log).toHaveBeenCalledWith(
@@ -136,6 +145,7 @@ describe('CatalogService', () => {
           category: 'Home Services',
           visitFee: 75,
           emergencyVisitFee: 110,
+          sosBookingFee: 2500,
         },
       }),
       transaction,
@@ -148,6 +158,27 @@ describe('CatalogService', () => {
     await expect(
       service.update(category.id, {}, 'admin-1'),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('requires an SOS booking fee higher than the normal fee', async () => {
+    const { service, transaction } = createService();
+
+    await expect(
+      service.create(
+        { name: 'Emergency Plumbing', visitFee: 1000, sosBookingFee: 1000 },
+        'admin-1',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.serviceCategory.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an update that makes the SOS fee no longer higher than normal', async () => {
+    const { service, transaction } = createService();
+
+    await expect(
+      service.update(category.id, { visitFee: 3000 }, 'admin-1'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.serviceCategory.update).not.toHaveBeenCalled();
   });
 
   // Soft-deactivates categories to preserve existing profile/job references.

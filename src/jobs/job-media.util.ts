@@ -114,7 +114,7 @@ function validateVideo(file: JobUpload): ValidatedJobUpload {
   };
 }
 
-function mp4DurationSeconds(bytes: Buffer): number | null {
+export function mp4DurationSeconds(bytes: Buffer): number | null {
   if (bytes.length < 12) return null;
   if (!findBox(bytes, 0, bytes.length, 'ftyp')) return null;
   const topLevel = findBox(bytes, 0, bytes.length, 'moov');

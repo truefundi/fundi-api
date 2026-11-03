@@ -3,6 +3,7 @@ import {
   ConflictException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { JobRequestType } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -20,6 +21,7 @@ describe('PaymentsService mock booking payments', () => {
       id: 'category-1',
       name: 'Plumbing',
       visitFee,
+      sosBookingFee: visitFee === null ? null : visitFee * 2,
     };
     const paymentCreate = jest.fn(
       ({ data }: { data: Record<string, unknown> }) => Promise.resolve(data),
@@ -58,6 +60,28 @@ describe('PaymentsService mock booking payments', () => {
 
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(fixedNow);
+  });
+
+  it('charges the service category SOS fee and records the request type', async () => {
+    const { service, paymentCreate } = createService();
+
+    const payment = await service.createMockPayment('customer-1', {
+      serviceCategoryId: 'category-1',
+      requestType: JobRequestType.SOS,
+    });
+
+    expect(paymentCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          amount: 2000,
+          requestType: JobRequestType.SOS,
+        }),
+      }),
+    );
+    expect(payment).toMatchObject({
+      amount: 2000,
+      requestType: JobRequestType.SOS,
+    });
   });
 
   it('does not allow extending a payment after cooperation confirmation', async () => {
@@ -106,7 +130,11 @@ describe('PaymentsService mock booking payments', () => {
         id: 'job-1',
         customerId: 'customer-1',
         status: 'COMPLETED',
-        serviceCategory: { id: 'category-1', visitFee: 1000 },
+        serviceCategory: {
+          id: 'category-1',
+          visitFee: 1000,
+          sosBookingFee: 2000,
+        },
         bookingPayment: null,
       };
       const existingPayment = overrides.payment ?? {

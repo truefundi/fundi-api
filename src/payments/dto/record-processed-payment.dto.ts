@@ -1,8 +1,10 @@
 import { Transform, Type } from 'class-transformer';
 import {
   IsDateString,
+  IsEnum,
   IsIn,
   IsInt,
+  IsOptional,
   IsString,
   IsUUID,
   Matches,
@@ -11,6 +13,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+import { JobRequestType } from '@prisma/client';
 import {
   normalizeRwandaPhoneNumber,
   RWANDA_PHONE_NUMBER_PATTERN,
@@ -19,6 +22,10 @@ import {
 export class RecordProcessedPaymentDto {
   @IsUUID('4')
   serviceCategoryId!: string;
+
+  @IsOptional()
+  @IsEnum(JobRequestType)
+  requestType?: JobRequestType;
 
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()

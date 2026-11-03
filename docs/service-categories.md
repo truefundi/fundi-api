@@ -1,6 +1,6 @@
 # Service Categories API
 
-The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Administrators set each category's description, dashboard grouping, and positive `visitFee`/`emergencyVisitFee` in RWF. A category without a configured fee cannot be used to create a paid job request. Send `Content-Type: application/json` for requests with a body.
+The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Administrators set each category's description, dashboard grouping, normal `visitFee`, emergency `emergencyVisitFee`, and optional SOS `sosBookingFee` in RWF. Normal and SOS requests require their corresponding fee to be configured; the SOS fee must be higher than the normal fee. Send `Content-Type: application/json` for requests with a body.
 
 For local development, seed the initial sample catalog with `npm run prisma:seed`. The seed operation is safe to rerun because it upserts categories by slug.
 
@@ -21,7 +21,8 @@ Success response (`200`):
     "description": "Leak repairs, pipe fitting, and drain unblocking.",
     "category": "Home Services",
     "visitFee": 1000,
-    "emergencyVisitFee": 1500
+    "emergencyVisitFee": 1500,
+    "sosBookingFee": 2500
   }
 ]
 ```
@@ -40,7 +41,8 @@ Success response (`200`):
   "description": "Leak repairs, pipe fitting, and drain unblocking.",
   "category": "Home Services",
   "visitFee": 1000,
-  "emergencyVisitFee": 1500
+  "emergencyVisitFee": 1500,
+  "sosBookingFee": 2500
 }
 ```
 
@@ -54,7 +56,7 @@ All administrator endpoints require `Authorization: Bearer <admin-access-token>`
 
 ### `POST /api/v1/catalog/categories`
 
-Creates a category. The name is trimmed; a URL-friendly slug is generated automatically. `category` groups the service in the dashboard, and both fees are non-negative integers in RWF.
+Creates a category. The name is trimmed; a URL-friendly slug is generated automatically. `category` groups the service in the dashboard. `visitFee` and `emergencyVisitFee` are non-negative integers; when set, `sosBookingFee` must be a positive integer greater than `visitFee`.
 
 Request:
 
@@ -64,7 +66,8 @@ Request:
   "category": "Home Services",
   "description": "General household repairs.",
   "visitFee": 1000,
-  "emergencyVisitFee": 1500
+  "emergencyVisitFee": 1500,
+  "sosBookingFee": 2500
 }
 ```
 
@@ -75,10 +78,11 @@ Success response (`201`):
   "id": "generated-category-id",
   "name": "Home Repair",
   "slug": "home-repair",
-  "description": "General household repairs.",
   "category": "Home Services",
+  "description": "General household repairs.",
   "visitFee": 1000,
   "emergencyVisitFee": 1500,
+  "sosBookingFee": 2500,
   "isActive": true,
   "createdAt": "2026-10-01T10:00:00.000Z"
 }
@@ -104,7 +108,7 @@ Success response (`200`): one full category record.
 
 ### `PATCH /api/v1/catalog/categories/:id`
 
-Update a category name, description, dashboard grouping, availability, or fees. At least one field is required. `visitFee` and `emergencyVisitFee` must be non-negative integers in RWF. Changing the name also regenerates its slug.
+Update a category name, description, dashboard grouping, availability, or fees. At least one field is required. `visitFee` and `emergencyVisitFee` must be non-negative integers; when set, `sosBookingFee` must be greater than `visitFee`. Changing the name also regenerates its slug.
 
 Request:
 
@@ -113,7 +117,8 @@ Request:
   "name": "Home Maintenance",
   "isActive": true,
   "visitFee": 1500,
-  "emergencyVisitFee": 2000
+  "emergencyVisitFee": 2000,
+  "sosBookingFee": 3500
 }
 ```
 
@@ -133,6 +138,7 @@ Success response (`200`):
     "name": "Plumbing",
     "slug": "plumbing",
     "visitFee": 1000,
+    "sosBookingFee": 2500,
     "isActive": false,
     "createdAt": "2026-10-01T10:00:00.000Z"
   }

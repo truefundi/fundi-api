@@ -336,7 +336,7 @@ describe('JobsService SOS technician dispatch', () => {
           round: 3,
           matchScore: 90,
           distanceMeters: 500,
-          expiresAt: new Date(Date.now() + 5 * 60_000),
+          expiresAt: new Date(Date.now() + 30_000),
           technician: { userId: 'technician-user-2' },
           job: {
             priority: 'NORMAL',
@@ -405,14 +405,26 @@ describe('JobsService SOS technician dispatch', () => {
           technicianId: 'next-technician',
           round: 3,
           status: 'OFFERED',
+          expiresAt: expect.any(Date),
         }),
       }),
     );
+    const offerData = tx.jobOffer.create.mock.calls[0][0].data as {
+      expiresAt: Date;
+    };
+    const remainingOfferMs = offerData.expiresAt.getTime() - Date.now();
+    expect(remainingOfferMs).toBeGreaterThan(0);
+    expect(remainingOfferMs).toBeLessThanOrEqual(30_000);
     expect(queue.add).toHaveBeenCalledWith(
       'expire-offer',
       { offerId: 'offer-3' },
-      expect.objectContaining({ delay: expect.any(Number) }),
+      expect.objectContaining({
+        delay: expect.any(Number),
+      }),
     );
+    const expiryDelay = queue.add.mock.calls[0][2].delay as number;
+    expect(expiryDelay).toBeGreaterThan(0);
+    expect(expiryDelay).toBeLessThanOrEqual(30_000);
     expect(events.notifyTechnician).toHaveBeenCalledWith(
       'technician-user-2',
       'job:offer',

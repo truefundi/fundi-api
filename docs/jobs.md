@@ -11,7 +11,7 @@ technicians, pays the normal category booking fee, verifies their phone for
 this request, creates the job, then proposes one matching technician. For an
 SOS request, the owner pays the higher SOS fee and creates the request through
 the SOS endpoint; the system automatically offers it to eligible technicians
-in match order, one at a time, with five minutes to respond to each offer.
+in match order, one at a time, with 30 seconds to respond to each offer.
 
 ## Booking flow
 
@@ -211,7 +211,7 @@ verify the job owner's phone number. Submit the same fields as job creation:
 to `SOS` and automatically sends an offer to the highest-ranked matching
 approved, online technician.
 
-Each offer remains open for five minutes. Rejection or timeout sends the SOS
+Each offer remains open for 30 seconds. Rejection or timeout sends the SOS
 request to the next matching technician who has not already received an offer.
 If the queue is exhausted, the job is left open and can be retried or manually
 proposed to any eligible match using `POST /api/v1/jobs/mine/{{jobId}}/requests`.

@@ -48,6 +48,7 @@ import {
   JOB_MATCH_RADIUS_METERS,
   JOB_MINIMUM_MATCH_SCORE,
   JOB_OFFER_RESPONSE_SECONDS,
+  SOS_JOB_OFFER_RESPONSE_SECONDS,
 } from './job.constants';
 import { AdminCreateJobDto } from './dto/admin-create-job.dto';
 import { AdminRateJobDto } from './dto/admin-rate-job.dto';
@@ -890,9 +891,11 @@ export class JobsService {
 
     const now = new Date();
     const round = job.dispatchRound + 1;
-    const expiresAt = new Date(
-      now.getTime() + JOB_OFFER_RESPONSE_SECONDS * 1000,
-    );
+    const responseSeconds =
+      job.requestType === JobRequestType.SOS
+        ? SOS_JOB_OFFER_RESPONSE_SECONDS
+        : JOB_OFFER_RESPONSE_SECONDS;
+    const expiresAt = new Date(now.getTime() + responseSeconds * 1000);
     const offer = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "jobs" WHERE "id" = ${jobId} FOR UPDATE`;
       const payment = await tx.bookingPayment.findFirst({
@@ -1015,7 +1018,7 @@ export class JobsService {
         { offerId: offer.id },
         {
           jobId: `job-offer-expiry-${offer.id}`,
-          delay: JOB_OFFER_RESPONSE_SECONDS * 1000,
+          delay: responseSeconds * 1000,
           attempts: 3,
           removeOnComplete: true,
         },
@@ -3291,7 +3294,7 @@ export class JobsService {
 
       const round = current.dispatchRound + 1;
       const expiresAt = new Date(
-        now.getTime() + JOB_OFFER_RESPONSE_SECONDS * 1000,
+        now.getTime() + SOS_JOB_OFFER_RESPONSE_SECONDS * 1000,
       );
       const claimed = await tx.job.updateMany({
         where: {

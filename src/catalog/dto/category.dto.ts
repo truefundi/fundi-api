@@ -1,8 +1,10 @@
+import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -27,6 +29,13 @@ export class CreateCategoryDto {
   @MinLength(2)
   @MaxLength(60)
   category?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MaxLength(80)
+  @Matches(/^[a-z0-9][a-z0-9-]*$/i)
+  icon?: string | null;
 
   // Booking (visit) fee in RWF.
   @IsOptional()
@@ -56,6 +65,7 @@ export class CreateCategoryDto {
 // Validates editable category fields; an empty update is rejected by the service.
 export class UpdateCategoryDto {
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MinLength(2)
   @MaxLength(60)
@@ -71,6 +81,12 @@ export class UpdateCategoryDto {
   @MinLength(2)
   @MaxLength(60)
   category?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  @Matches(/^[a-z0-9][a-z0-9-]*$/i)
+  icon?: string | null;
 
   @IsOptional()
   @IsInt()

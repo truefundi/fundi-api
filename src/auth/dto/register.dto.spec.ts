@@ -23,9 +23,9 @@ describe('Rwandan phone and registration validation', () => {
     (phoneNumber) => {
       const dto = plainToInstance(PhoneDto, { phoneNumber });
 
-      expect(validateSync(dto).some((error) => error.property === 'phoneNumber')).toBe(
-        true,
-      );
+      expect(
+        validateSync(dto).some((error) => error.property === 'phoneNumber'),
+      ).toBe(true);
     },
   );
 
@@ -47,6 +47,20 @@ describe('Rwandan phone and registration validation', () => {
       email: 'amina.example@',
     });
 
-    expect(validateSync(dto).some((error) => error.property === 'email')).toBe(true);
+    expect(validateSync(dto).some((error) => error.property === 'email')).toBe(
+      true,
+    );
+  });
+
+  it('rejects null instead of treating it as an omitted password', () => {
+    const dto = plainToInstance(RegisterDto, {
+      fullName: 'Amina Example',
+      phoneNumber: '0788123456',
+      password: null,
+    });
+
+    expect(
+      validateSync(dto).some((error) => error.property === 'password'),
+    ).toBe(true);
   });
 });

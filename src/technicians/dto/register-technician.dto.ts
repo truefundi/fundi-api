@@ -14,12 +14,16 @@ import {
   normalizeRwandaPhoneNumber,
   RWANDA_PHONE_NUMBER_PATTERN,
 } from '../../common/validation/rwanda-phone-number';
+import { FULL_NAME_PATTERN } from '../../common/validation/full-name';
 
 class RegisterTechnicianUserDto {
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().replace(/\s+/gu, ' ') : value,
+  )
   @IsString()
   @MinLength(2)
   @MaxLength(120)
+  @Matches(FULL_NAME_PATTERN)
   fullName!: string;
 
   @Transform(({ value }) => normalizeRwandaPhoneNumber(value))

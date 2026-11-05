@@ -98,6 +98,7 @@ describe('CatalogService', () => {
         emergencyVisitFee: 0,
         isActive: true,
         sosBookingFee: null,
+        icon: null,
       },
     });
     expect(audit.log).toHaveBeenCalledWith(
@@ -135,6 +136,7 @@ describe('CatalogService', () => {
         emergencyVisitFee: 110,
         isActive: undefined,
         sosBookingFee: 2500,
+        icon: undefined,
       },
     });
     expect(audit.log).toHaveBeenCalledWith(
@@ -149,6 +151,17 @@ describe('CatalogService', () => {
         },
       }),
       transaction,
+    );
+  });
+
+  it('clears a nullable category icon when explicitly set to null', async () => {
+    const { service, transaction } = createService();
+    await service.update(category.id, { icon: null }, 'admin-1');
+
+    expect(transaction.serviceCategory.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ icon: null }),
+      }),
     );
   });
 

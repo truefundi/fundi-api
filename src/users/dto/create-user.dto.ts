@@ -1,7 +1,16 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsEnum, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsEnum,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 import { UserRole, UserStatus } from '@prisma/client';
 import { ApiProperty } from '@nestjs/swagger';
+import { FULL_NAME_PATTERN } from '../../common/validation/full-name';
 import {
   normalizeRwandaPhoneNumber,
   RWANDA_PHONE_NUMBER_PATTERN,
@@ -16,8 +25,12 @@ export class CreateUserDto {
     maxLength: 120,
   })
   @IsString()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().replace(/\s+/gu, ' ') : value,
+  )
   @MinLength(2)
   @MaxLength(120)
+  @Matches(FULL_NAME_PATTERN)
   fullName!: string;
 
   @ApiProperty({

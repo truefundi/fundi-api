@@ -1,6 +1,6 @@
 # Service Categories API
 
-The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Administrators set each category's description, dashboard grouping, normal `visitFee`, emergency `emergencyVisitFee`, and optional SOS `sosBookingFee` in RWF. Normal and SOS requests require their corresponding fee to be configured; the SOS fee must be higher than the normal fee. Send `Content-Type: application/json` for requests with a body.
+The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Administrators set each category's description, dashboard grouping, optional icon identifier, normal `visitFee`, emergency `emergencyVisitFee`, and optional SOS `sosBookingFee` in RWF. The icon is a nullable identifier such as `wrench`, not an uploaded image or URL. Normal and SOS requests require their corresponding fee to be configured; the SOS fee must be higher than the normal fee. Send `Content-Type: application/json` for requests with a body.
 
 For local development, seed the initial sample catalog with `npm run prisma:seed`. The seed operation is safe to rerun because it upserts categories by slug.
 
@@ -22,7 +22,8 @@ Success response (`200`):
     "category": "Home Services",
     "visitFee": 1000,
     "emergencyVisitFee": 1500,
-    "sosBookingFee": 2500
+    "sosBookingFee": 2500,
+    "icon": "wrench"
   }
 ]
 ```
@@ -42,7 +43,8 @@ Success response (`200`):
   "category": "Home Services",
   "visitFee": 1000,
   "emergencyVisitFee": 1500,
-  "sosBookingFee": 2500
+  "sosBookingFee": 2500,
+  "icon": "wrench"
 }
 ```
 
@@ -65,6 +67,7 @@ Request:
   "name": "Home Repair",
   "category": "Home Services",
   "description": "General household repairs.",
+  "icon": "wrench",
   "visitFee": 1000,
   "emergencyVisitFee": 1500,
   "sosBookingFee": 2500
@@ -83,6 +86,7 @@ Success response (`201`):
   "visitFee": 1000,
   "emergencyVisitFee": 1500,
   "sosBookingFee": 2500,
+  "icon": "wrench",
   "isActive": true,
   "createdAt": "2026-10-01T10:00:00.000Z"
 }
@@ -115,6 +119,7 @@ Request:
 ```json
 {
   "name": "Home Maintenance",
+  "icon": null,
   "isActive": true,
   "visitFee": 1500,
   "emergencyVisitFee": 2000,
@@ -139,6 +144,7 @@ Success response (`200`):
     "slug": "plumbing",
     "visitFee": 1000,
     "sosBookingFee": 2500,
+    "icon": "wrench",
     "isActive": false,
     "createdAt": "2026-10-01T10:00:00.000Z"
   }

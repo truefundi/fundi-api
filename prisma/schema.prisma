@@ -33,6 +33,7 @@ model User {
   notifications      Notification[]
   createdAds         Ad[]                        @relation("AdCreatedBy")
   createdBroadcasts  Broadcast[]                 @relation("BroadcastCreatedBy")
+  passkeyCredentials PasskeyCredential[]
 
   @@map("users")
 }
@@ -49,6 +50,20 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+model PasskeyCredential {
+  id           String   @id @default(uuid())
+  credentialId String   @unique
+  publicKey    String
+  counter      BigInt   @default(0)
+  transports   String[] @default([])
+  userId       String
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("passkey_credentials")
+}
+
 model ServiceCategory {
   id                String               @id @default(uuid())
   name              String               @unique
@@ -62,6 +77,7 @@ model ServiceCategory {
   emergencyVisitFee Int                  @default(0)
   /// Booking fee charged for an SOS request, in RWF.
   sosBookingFee     Int?
+  icon              String?
   isActive          Boolean              @default(true)
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt

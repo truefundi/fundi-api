@@ -15,6 +15,7 @@ describe('NotificationsService', () => {
       notification: {
         findFirst: jest.fn(),
         create: jest.fn(),
+        createMany: jest.fn(),
         findMany: jest.fn(),
         count: jest.fn(),
         update: jest.fn(),
@@ -111,6 +112,51 @@ describe('NotificationsService', () => {
 
       expect(prisma.notification.create).not.toHaveBeenCalled();
       expect(result.id).toBe('n2');
+    });
+  });
+
+  describe('createManyForUsers', () => {
+    it('writes one notification per user and emits to each socket', async () => {
+      (prisma.notification.createMany as jest.Mock).mockResolvedValue({ count: 2 });
+
+      await expect(
+        service.createManyForUsers({
+          userIds: ['u1', 'u2'],
+          type: NotificationType.BROADCAST,
+          title: 'Service update',
+          body: 'Fundi will be unavailable tonight.',
+          data: { broadcastId: 'b1' },
+        }),
+      ).resolves.toBe(2);
+
+      const rows = (prisma.notification.createMany as jest.Mock).mock.calls[0][0].data;
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        userId: 'u1',
+        type: NotificationType.BROADCAST,
+        title: 'Service update',
+        body: 'Fundi will be unavailable tonight.',
+        data: { broadcastId: 'b1' },
+      });
+      expect(events.notifyUser).toHaveBeenCalledTimes(2);
+      expect(events.notifyUser).toHaveBeenCalledWith(
+        'u2',
+        'notification:new',
+        expect.objectContaining({ userId: 'u2', type: NotificationType.BROADCAST }),
+      );
+    });
+
+    it('does nothing for an empty audience', async () => {
+      await expect(
+        service.createManyForUsers({
+          userIds: [],
+          type: NotificationType.BROADCAST,
+          title: 't',
+          body: 'b',
+        }),
+      ).resolves.toBe(0);
+      expect(prisma.notification.createMany).not.toHaveBeenCalled();
+      expect(events.notifyUser).not.toHaveBeenCalled();
     });
   });
 

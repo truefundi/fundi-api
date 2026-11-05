@@ -31,6 +31,8 @@ model User {
   chatMessageReads   ChatMessageRead[]
   resolvedDisputes   Dispute[]                   @relation("DisputeResolver")
   notifications      Notification[]
+  createdAds         Ad[]                        @relation("AdCreatedBy")
+  createdBroadcasts  Broadcast[]                 @relation("BroadcastCreatedBy")
 
   @@map("users")
 }
@@ -264,6 +266,68 @@ model BookingPayment {
   @@index([customerId, paidAt])
   @@index([status, validUntil])
   @@map("booking_payments")
+}
+
+/// A promotion card managed by administrators. Landing-page ads are public and
+/// anonymous; `placement` decides which surface renders them and `audience` narrows
+/// them to a role. `startsAt`/`endsAt` schedule visibility without an admin having to
+/// flip `isActive` by hand, and the impression/click counters feed the dashboard.
+model Ad {
+  id               String      @id @default(uuid())
+  productId        Int?
+  title            String
+  description      String
+  imageUrl         String?
+  imageKey         String?
+  imageContentType String?
+  imageAlt         String?
+  callToAction     String?
+  badge            AdBadge     @default(LIVE)
+  placement        AdPlacement @default(LANDING_PRODUCT)
+  audience         AdAudience  @default(ALL)
+  isActive         Boolean     @default(true)
+  startsAt         DateTime?
+  endsAt           DateTime?
+  priority         Int         @default(0)
+  impressions      Int         @default(0)
+  clicks           Int         @default(0)
+  createdById      String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  createdBy        User?       @relation("AdCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([placement, isActive, priority])
+  @@index([startsAt, endsAt])
+  @@map("ads")
+}
+
+/// One administrator-composed message sent to a group of active users. `roles` and
+/// `channels` are the audience and delivery decisions made in the dashboard; the
+/// counts are frozen when the broadcast is created so the history stays meaningful
+/// even after users join or leave.
+model Broadcast {
+  id                  String             @id @default(uuid())
+  title               String
+  message             String
+  roles               BroadcastRole[]    @default([])
+  channels            BroadcastChannel[] @default([])
+  status              BroadcastStatus    @default(SENDING)
+  mode                String             @default("queued")
+  userCount           Int                @default(0)
+  smsRecipientCount   Int                @default(0)
+  inAppRecipientCount Int                @default(0)
+  smsSentCount        Int                @default(0)
+  smsFailedCount      Int                @default(0)
+  inAppSentCount      Int                @default(0)
+  error               String?
+  sentAt              DateTime?
+  createdById         String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  createdBy           User?              @relation("BroadcastCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@map("broadcasts")
 }
 
 model CustomerPhoneVerification {
@@ -753,5 +817,41 @@ enum NotificationType {
   DISPUTE_RESOLVED
   DOCUMENT_APPROVED
   DOCUMENT_REJECTED
+  BROADCAST
   SYSTEM
+}
+
+enum AdBadge {
+  LIVE
+  COMING_SOON
+}
+
+enum AdPlacement {
+  LANDING_PRODUCT
+  LANDING_HERO
+  MOBILE_HOME
+  MOBILE_JOB_FEED
+}
+
+enum AdAudience {
+  ALL
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum BroadcastRole {
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum BroadcastChannel {
+  SMS
+  IN_APP
+}
+
+enum BroadcastStatus {
+  SENDING
+  SENT
+  PARTIAL
+  FAILED
 }

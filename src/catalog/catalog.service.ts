@@ -36,6 +36,7 @@ export class CatalogService {
         visitFee: true,
         emergencyVisitFee: true,
         sosBookingFee: true,
+        icon: true,
       },
     });
   }
@@ -57,6 +58,7 @@ export class CatalogService {
         visitFee: true,
         emergencyVisitFee: true,
         sosBookingFee: true,
+        icon: true,
       },
     });
   }
@@ -79,6 +81,7 @@ export class CatalogService {
         visitFee: true,
         emergencyVisitFee: true,
         sosBookingFee: true,
+        icon: true,
       },
     });
     if (!category) throw new NotFoundException('Service category not found.');
@@ -124,6 +127,7 @@ export class CatalogService {
             emergencyVisitFee: dto.emergencyVisitFee ?? 0,
             isActive: dto.isActive ?? true,
             sosBookingFee: dto.sosBookingFee ?? null,
+            icon: dto.icon?.trim() || null,
           },
         });
         await this.audit.log(
@@ -138,6 +142,7 @@ export class CatalogService {
               visitFee: category.visitFee,
               emergencyVisitFee: category.emergencyVisitFee,
               sosBookingFee: category.sosBookingFee,
+              icon: category.icon,
             },
           },
           tx,
@@ -158,7 +163,8 @@ export class CatalogService {
       dto.visitFee === undefined &&
       dto.emergencyVisitFee === undefined &&
       dto.isActive === undefined &&
-      dto.sosBookingFee === undefined
+      dto.sosBookingFee === undefined &&
+      dto.icon === undefined
     ) {
       throw new BadRequestException(
         'Provide a category name, description, category, fee, or isActive value to update.',
@@ -198,6 +204,7 @@ export class CatalogService {
             emergencyVisitFee: dto.emergencyVisitFee,
             isActive: dto.isActive,
             sosBookingFee: dto.sosBookingFee,
+            icon: dto.icon === undefined ? undefined : dto.icon?.trim() || null,
           },
         });
         await this.audit.log(
@@ -217,6 +224,9 @@ export class CatalogService {
               ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
               ...(dto.sosBookingFee !== undefined
                 ? { sosBookingFee: dto.sosBookingFee }
+                : {}),
+              ...(dto.icon !== undefined
+                ? { icon: dto.icon?.trim() || null }
                 : {}),
             },
           },

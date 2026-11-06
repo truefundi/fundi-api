@@ -19,4 +19,17 @@ export class SmsService {
       `Development OTP for ${phoneNumber}: ${otp} (expires in ${Math.round(ttlSeconds / 60)} minutes)`,
     );
   }
+
+  // Delivers an administrator broadcast. Kept separate from OTP delivery so the two
+  // messages cannot be confused, and so a future provider can give them different
+  // sender IDs. The console driver is the only configured transport today.
+  async sendMessage(phoneNumber: string, message: string): Promise<void> {
+    const mode = this.configService.get<string>('sms.mode', 'console');
+    if (mode !== 'console') {
+      throw new ServiceUnavailableException(
+        'SMS provider is not configured for this environment.',
+      );
+    }
+    this.logger.log(`Development SMS to ${phoneNumber}: ${message}`);
+  }
 }

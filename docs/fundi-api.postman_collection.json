@@ -97,6 +97,21 @@
       "key": "requestId",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "adId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "broadcastId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "adminNewPassword",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -568,6 +583,34 @@
             "description": "",
             "auth": {
               "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Change admin password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/admin/change-password",
+            "description": "Requires the current password. Every stored refresh session is revoked, so other devices are signed out and the current access cookie stops working on its next request. Sign in again with the new password.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"{{adminPassword}}\",\n  \"newPassword\": \"{{adminNewPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             }
           },
           "response": []
@@ -2913,6 +2956,286 @@
             "header": [],
             "url": "{{baseUrl}}/api/v1/admin/jobs/{{jobId}}",
             "description": "Only completed or cancelled jobs can be permanently deleted. Payment and audit history are retained.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Ads (public)",
+      "item": [
+        {
+          "name": "List visible ads",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/ads?placement=LANDING_PRODUCT&role=CUSTOMER",
+            "description": "Public. Returns active ads whose scheduling window contains the current time, highest priority first. Pass role to include role-targeted ads alongside ALL-audience ads.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Record ad impression",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/ads/{{adId}}/impression",
+            "description": "Public. Increments the impression counter by one.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Record ad click",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/ads/{{adId}}/click",
+            "description": "Public. Increments the click counter by one.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Download ad image",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/ads/{{adId}}/image",
+            "description": "Public. Streams the uploaded creative; 404 when the ad has no uploaded image.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Ads",
+      "item": [
+        {
+          "name": "List ads (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads?placement=LANDING_PRODUCT&isActive=true&limit=100&offset=0",
+            "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization. Includes hidden and out-of-window ads.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create ad (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/ads",
+            "description": "Only title and description are required. endsAt must be after startsAt.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": 3,\n  \"title\": \"Fundi Home Repair\",\n  \"description\": \"Book a trusted technician for plumbing and electrical work.\",\n  \"imageUrl\": \"https://cdn.fundi.rw/ads/home-repair.png\",\n  \"imageAlt\": \"A technician repairing a kitchen sink\",\n  \"callToAction\": \"Explore product\",\n  \"badge\": \"LIVE\",\n  \"placement\": \"LANDING_PRODUCT\",\n  \"audience\": \"ALL\",\n  \"isActive\": true,\n  \"startsAt\": \"2026-11-01T00:00:00.000Z\",\n  \"endsAt\": \"2026-12-01T00:00:00.000Z\",\n  \"priority\": 10\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get ad by ID (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}",
+            "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update ad (admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}",
+            "description": "Every field is optional, so one switch can be changed without resending the card.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isActive\": false,\n  \"priority\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Upload or replace ad image (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}/image",
+            "description": "Send multipart/form-data with a single `file` field. JPEG, PNG, or WebP up to 5 MiB; the bytes are sniffed.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": ""
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Remove ad image (admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}/image",
+            "description": "Deletes the stored creative and clears the image fields.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete ad (admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}",
+            "description": "Removes the ad and any uploaded creative.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Broadcasts",
+      "item": [
+        {
+          "name": "Preview broadcast audience",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/broadcasts/preview",
+            "description": "Counts active accounts in the selected roles before sending. Requires an admin session cookie or an admin bearer token.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"roles\": [\n    \"CUSTOMER\",\n    \"TECHNICIAN\"\n  ],\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List broadcasts (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/broadcasts?limit=20&offset=0",
+            "description": "Newest first. Requires an admin session cookie or an admin bearer token.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send broadcast (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/broadcasts",
+            "description": "Sends immediately. Select at least one role and at least one channel: IN_APP only, or IN_APP plus SMS. The response reports per-channel delivery counts and SENT, PARTIAL, or FAILED.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Important service update\",\n  \"message\": \"Fundi will be unavailable for maintenance tonight between 22:00 and 23:00.\",\n  \"audience\": {\n    \"roles\": [\n      \"CUSTOMER\"\n    ],\n    \"status\": \"active\"\n  },\n  \"channels\": [\n    \"IN_APP\",\n    \"SMS\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get broadcast by ID (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/broadcasts/{{broadcastId}}",
+            "description": "Returns one broadcast with its frozen audience counts and delivery results.",
             "auth": {
               "type": "noauth"
             }

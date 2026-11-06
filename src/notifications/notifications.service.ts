@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { NotificationType, Prisma } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { EventsGateway } from '../websockets/events.gateway';
@@ -73,6 +74,51 @@ export class NotificationsService {
     const payload = this.toResponse(notification);
     this.events.notifyUser(input.userId, 'notification:new', payload);
     return payload;
+  }
+
+  /**
+   * Creates the same notification for many users in one round trip per chunk and
+   * emits `notification:new` to each connected socket. Broadcasts use this instead
+   * of calling `create` once per recipient, which would issue a query per user.
+   */
+  async createManyForUsers(input: {
+    userIds: string[];
+    type: NotificationType;
+    title: string;
+    body: string;
+    data?: Prisma.InputJsonValue;
+  }): Promise<number> {
+    if (input.userIds.length === 0) return 0;
+
+    const now = new Date();
+    let created = 0;
+    // Keeps each INSERT inside Postgres' bind-parameter limit for large audiences.
+    for (let index = 0; index < input.userIds.length; index += 500) {
+      const rows = input.userIds.slice(index, index + 500).map((userId) => ({
+        id: randomUUID(),
+        userId,
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        data: input.data,
+        createdAt: now,
+      }));
+      const result = await this.prisma.notification.createMany({ data: rows });
+      created += result.count;
+      for (const row of rows) {
+        this.events.notifyUser(row.userId, 'notification:new', {
+          id: row.id,
+          userId: row.userId,
+          type: row.type,
+          title: row.title,
+          body: row.body,
+          data: row.data ?? null,
+          readAt: null,
+          createdAt: row.createdAt,
+        });
+      }
+    }
+    return created;
   }
 
   async list(userId: string, query: { limit: number; offset: number; unreadOnly?: boolean }) {

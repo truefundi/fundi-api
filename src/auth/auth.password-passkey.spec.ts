@@ -65,6 +65,7 @@ describe('AuthService password and passkey flows', () => {
     status: 'ACTIVE',
     phoneVerifiedAt: null,
     passwordHash: 'stored-hash',
+    pinHash: 'stored-pin-hash',
   };
   const credential = {
     id: 'passkey-row-1',
@@ -199,6 +200,38 @@ describe('AuthService password and passkey flows', () => {
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
+  it('hashes a registration PIN separately from the account password', async () => {
+    const { service, prisma } = createService();
+    const result = await service.registerWithPin({
+      fullName: activeUser.fullName,
+      phoneNumber: activeUser.phoneNumber,
+      pin: '1234',
+    });
+
+    expect(bcryptMock.hash).toHaveBeenCalledWith('1234', 12);
+    expect(prisma.user.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          pinHash: 'bcrypt-hash',
+          role: 'CUSTOMER',
+        }),
+      }),
+    );
+    expect(result.user).not.toHaveProperty('pinHash');
+  });
+
+  it('rejects a malformed registration PIN before creating an account', async () => {
+    const { service, prisma } = createService();
+    await expect(
+      service.registerWithPin({
+        fullName: activeUser.fullName,
+        phoneNumber: activeUser.phoneNumber,
+        pin: '12ab',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
   it('signs in with a valid password and clears failed attempts', async () => {
     const { service, prisma, redisClient } = createService();
     const result = await service.loginWithPassword(
@@ -209,6 +242,25 @@ describe('AuthService password and passkey flows', () => {
     expect(bcryptMock.compare).toHaveBeenCalledWith(
       'secure-password',
       activeUser.passwordHash,
+    );
+    expect(redisClient.del).toHaveBeenCalledWith(
+      `auth:password:attempts:${activeUser.id}`,
+    );
+    expect(prisma.refreshToken.create).toHaveBeenCalled();
+    expect(result).toMatchObject({
+      user: { id: activeUser.id },
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+    });
+  });
+
+  it('signs in with a valid phone PIN and returns a token session', async () => {
+    const { service, prisma, redisClient } = createService();
+    const result = await service.loginWithPin(activeUser.phoneNumber, '123456');
+
+    expect(bcryptMock.compare).toHaveBeenCalledWith(
+      '123456',
+      activeUser.pinHash,
     );
     expect(redisClient.del).toHaveBeenCalledWith(
       `auth:password:attempts:${activeUser.id}`,

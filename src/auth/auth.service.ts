@@ -27,6 +27,7 @@ import { PrismaService } from '../database/prisma.service';
 import { SmsService } from '../sms/sms.service';
 import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
+import { PinRegisterDto } from './dto/pin-register.dto';
 import { UserRole, type User } from '@prisma/client';
 
 const PASSWORD_ATTEMPT_SCRIPT = `
@@ -174,6 +175,31 @@ export class AuthService {
     }
   }
 
+  // Creates a customer account with an independently stored PIN credential.
+  async registerWithPin(input: PinRegisterDto) {
+    this.assertPin(input.pin);
+    const pinHash = await bcrypt.hash(input.pin, this.passwordBcryptRounds);
+    try {
+      const user = await this.prisma.user.create({
+        data: {
+          fullName: input.fullName.trim(),
+          phoneNumber: input.phoneNumber,
+          pinHash,
+          role: UserRole.CUSTOMER,
+        },
+        select: { id: true, fullName: true, phoneNumber: true, role: true },
+      });
+      return { message: 'Customer account registered successfully.', user };
+    } catch (error) {
+      if (this.isPrismaError(error, 'P2002')) {
+        throw new ConflictException(
+          'An account with this phone number already exists.',
+        );
+      }
+      throw error;
+    }
+  }
+
   // Checks account existence and active status before creating a login OTP.
   async requestLoginOtp(phoneNumber: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
@@ -273,6 +299,37 @@ export class AuthService {
       throw new UnauthorizedException(
         'The phone number or password is incorrect.',
       );
+    }
+    await this.clearPasswordAttempts(user.id);
+    return this.createUserSession(user);
+  }
+
+  // Authenticates a customer or verified technician using a phone number and PIN.
+  async loginWithPin(phoneNumber: string, pin: string) {
+    this.assertPin(pin);
+    const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
+    if (!user) {
+      throw new UnauthorizedException('The phone number or PIN is incorrect.');
+    }
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    this.ensureTechnicianPhoneVerified(user);
+
+    const attempts = await this.consumePasswordAttempt(user.id);
+    if (attempts === -1) {
+      throw new ForbiddenException(
+        'Too many incorrect PIN attempts. Wait before trying again.',
+      );
+    }
+    const pinMatches =
+      user.pinHash !== null && (await bcrypt.compare(pin, user.pinHash));
+    if (!pinMatches) {
+      if (attempts >= this.passwordMaxAttempts) {
+        throw new ForbiddenException(
+          'Too many incorrect PIN attempts. Wait before trying again.',
+        );
+      }
+      throw new UnauthorizedException('The phone number or PIN is incorrect.');
     }
     await this.clearPasswordAttempts(user.id);
     return this.createUserSession(user);
@@ -924,10 +981,10 @@ export class AuthService {
       return Number(result);
     } catch (error) {
       this.logger.error(
-        `Password login throttling failed: ${this.errorMessage(error)}`,
+        `Credential login throttling failed: ${this.errorMessage(error)}`,
       );
       throw new ServiceUnavailableException(
-        'Password sign-in is unavailable. Please try again later.',
+        'Credential sign-in is unavailable. Please try again later.',
       );
     }
   }
@@ -937,10 +994,10 @@ export class AuthService {
       await this.redisService.getClient().del(this.passwordAttemptsKey(userId));
     } catch (error) {
       this.logger.error(
-        `Could not clear password attempts for user ${userId}: ${this.errorMessage(error)}`,
+        `Could not clear credential attempts for user ${userId}: ${this.errorMessage(error)}`,
       );
       throw new ServiceUnavailableException(
-        'Password sign-in is unavailable. Please try again later.',
+        'Credential sign-in is unavailable. Please try again later.',
       );
     }
   }
@@ -1014,6 +1071,12 @@ export class AuthService {
       throw new BadRequestException(
         'Passwords must be between 8 and 72 bytes when encoded as UTF-8.',
       );
+    }
+  }
+
+  private assertPin(pin: string) {
+    if (!/^\d{4,6}$/.test(pin)) {
+      throw new BadRequestException('PINs must contain 4 to 6 digits.');
     }
   }
 

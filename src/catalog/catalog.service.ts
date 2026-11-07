@@ -16,6 +16,11 @@ const slugify = (s: string) =>
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 
+const toCategoryResponse = <T extends { visitFee: number }>(category: T) => {
+  const { visitFee, ...rest } = category;
+  return { ...rest, bookingFee: visitFee };
+};
+
 @Injectable()
 export class CatalogService {
   constructor(
@@ -23,8 +28,8 @@ export class CatalogService {
     private readonly audit: AuditService,
   ) {}
 
-  listActive() {
-    return this.prisma.serviceCategory.findMany({
+  async listActive() {
+    const categories = await this.prisma.serviceCategory.findMany({
       where: { isActive: true },
       orderBy: { name: 'asc' },
       select: {
@@ -33,20 +38,26 @@ export class CatalogService {
         slug: true,
         description: true,
         category: true,
+        keywords: true,
         visitFee: true,
         emergencyVisitFee: true,
         sosBookingFee: true,
         icon: true,
       },
     });
+    return categories.map(toCategoryResponse);
   }
 
   // Returns categories available for new jobs and technician selections.
-  searchActive(name: string) {
-    return this.prisma.serviceCategory.findMany({
+  async searchActive(name: string) {
+    const query = name.trim();
+    const categories = await this.prisma.serviceCategory.findMany({
       where: {
         isActive: true,
-        name: { contains: name.trim(), mode: 'insensitive' },
+        OR: [
+          { name: { contains: query, mode: 'insensitive' } },
+          { keywords: { contains: query, mode: 'insensitive' } },
+        ],
       },
       orderBy: { name: 'asc' },
       select: {
@@ -55,17 +66,22 @@ export class CatalogService {
         slug: true,
         description: true,
         category: true,
+        keywords: true,
         visitFee: true,
         emergencyVisitFee: true,
         sosBookingFee: true,
         icon: true,
       },
     });
+    return categories.map(toCategoryResponse);
   }
 
   // Returns all categories, including inactive ones, to an administrator.
-  listAll() {
-    return this.prisma.serviceCategory.findMany({ orderBy: { name: 'asc' } });
+  async listAll() {
+    const categories = await this.prisma.serviceCategory.findMany({
+      orderBy: { name: 'asc' },
+    });
+    return categories.map(toCategoryResponse);
   }
 
   // Finds an active category by ID for public clients.
@@ -78,6 +94,7 @@ export class CatalogService {
         slug: true,
         description: true,
         category: true,
+        keywords: true,
         visitFee: true,
         emergencyVisitFee: true,
         sosBookingFee: true,
@@ -85,7 +102,7 @@ export class CatalogService {
       },
     });
     if (!category) throw new NotFoundException('Service category not found.');
-    return category;
+    return toCategoryResponse(category);
   }
 
   // Finds any category by ID for administrator management.
@@ -94,7 +111,7 @@ export class CatalogService {
       where: { id },
     });
     if (!category) throw new NotFoundException('Service category not found.');
-    return category;
+    return toCategoryResponse(category);
   }
 
   // Finds one category by exact name without case sensitivity.
@@ -103,7 +120,7 @@ export class CatalogService {
       where: { name: { equals: name.trim(), mode: 'insensitive' } },
     });
     if (!category) throw new NotFoundException('Service category not found.');
-    return category;
+    return toCategoryResponse(category);
   }
 
   // Creates a category and its audit row in a single database transaction.
@@ -114,7 +131,7 @@ export class CatalogService {
       throw new BadRequestException(
         'Category name must contain letters or numbers.',
       );
-    this.assertBookingFees(dto.visitFee, dto.sosBookingFee);
+    this.assertBookingFees(dto.bookingFee, dto.sosBookingFee);
     try {
       return await this.prisma.$transaction(async (tx) => {
         const category = await tx.serviceCategory.create({
@@ -123,7 +140,8 @@ export class CatalogService {
             slug,
             description: dto.description?.trim() ?? '',
             category: dto.category?.trim() || 'Home Services',
-            visitFee: dto.visitFee ?? 0,
+            keywords: dto.keywords?.trim() ?? '',
+            visitFee: dto.bookingFee ?? 0,
             emergencyVisitFee: dto.emergencyVisitFee ?? 0,
             isActive: dto.isActive ?? true,
             sosBookingFee: dto.sosBookingFee ?? null,
@@ -139,15 +157,16 @@ export class CatalogService {
             metadata: {
               name,
               category: category.category,
-              visitFee: category.visitFee,
+              bookingFee: category.visitFee,
               emergencyVisitFee: category.emergencyVisitFee,
               sosBookingFee: category.sosBookingFee,
               icon: category.icon,
+              keywords: category.keywords,
             },
           },
           tx,
         );
-        return category;
+        return toCategoryResponse(category);
       });
     } catch (e) {
       this.rethrow(e);
@@ -159,8 +178,9 @@ export class CatalogService {
     if (
       dto.name === undefined &&
       dto.description === undefined &&
+      dto.keywords === undefined &&
       dto.category === undefined &&
-      dto.visitFee === undefined &&
+      dto.bookingFee === undefined &&
       dto.emergencyVisitFee === undefined &&
       dto.isActive === undefined &&
       dto.sosBookingFee === undefined &&
@@ -190,7 +210,7 @@ export class CatalogService {
         if (!current)
           throw new NotFoundException('Service category not found.');
         this.assertBookingFees(
-          dto.visitFee ?? current.visitFee,
+          dto.bookingFee ?? current.visitFee,
           dto.sosBookingFee ?? current.sosBookingFee,
         );
         const updated = await tx.serviceCategory.update({
@@ -200,7 +220,9 @@ export class CatalogService {
             slug,
             description,
             category,
-            visitFee: dto.visitFee,
+            keywords:
+              dto.keywords === undefined ? undefined : dto.keywords.trim(),
+            visitFee: dto.bookingFee,
             emergencyVisitFee: dto.emergencyVisitFee,
             isActive: dto.isActive,
             sosBookingFee: dto.sosBookingFee,
@@ -216,8 +238,13 @@ export class CatalogService {
             metadata: {
               ...(name !== undefined ? { name } : {}),
               ...(description !== undefined ? { description } : {}),
+              ...(dto.keywords !== undefined
+                ? { keywords: dto.keywords.trim() }
+                : {}),
               ...(category !== undefined ? { category } : {}),
-              ...(dto.visitFee !== undefined ? { visitFee: dto.visitFee } : {}),
+              ...(dto.bookingFee !== undefined
+                ? { bookingFee: dto.bookingFee }
+                : {}),
               ...(dto.emergencyVisitFee !== undefined
                 ? { emergencyVisitFee: dto.emergencyVisitFee }
                 : {}),
@@ -232,7 +259,7 @@ export class CatalogService {
           },
           tx,
         );
-        return updated;
+        return toCategoryResponse(updated);
       });
     } catch (e) {
       this.rethrow(e);
@@ -274,7 +301,10 @@ export class CatalogService {
           },
           tx,
         );
-        return { message: 'Service category deactivated.', category };
+        return {
+          message: 'Service category deactivated.',
+          category: toCategoryResponse(category),
+        };
       });
     } catch (e) {
       this.rethrow(e);

@@ -53,14 +53,24 @@ export class TechniciansController {
     return this.technicians.registerMyProfile(user.id, dto);
   }
 
+  // Alias for /apply requested by mobile client
+  @Post('apply')
+  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  applyProfile(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: UpdateTechnicianProfileDto,
+  ) {
+    return this.technicians.registerMyProfile(user.id, dto);
+  }
+
   @Get('profile')
-  @Auth(UserRole.TECHNICIAN)
+  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
   getMyProfile(@CurrentUser() user: AuthUser) {
     return this.technicians.getMyProfile(user.id);
   }
 
   @Put('profile')
-  @Auth(UserRole.TECHNICIAN)
+  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
   updateMyProfile(
     @CurrentUser() user: AuthUser,
     @Body() dto: UpdateTechnicianProfileDto,

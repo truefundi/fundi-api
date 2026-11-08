@@ -451,6 +451,15 @@ describe('AdminAuthService', () => {
       expect(claimScript).toContain("redis.call('INCR', KEYS[2])");
     });
 
+    it('uses the configured wrong-code lockout window', async () => {
+      const { service, redisClient } = createService({
+        'adminAuth.twoFactorAttemptWindowSeconds': 60,
+      });
+      await captureError(service.verifyTwoFactor('challenge-1', rejectedCode()));
+
+      expect(redisClient.eval.mock.calls[0]).toContain('60');
+    });
+
     // The account is re-checked at this point because a challenge outlives a demotion.
     it('refuses to issue a session when the account is no longer an administrator', async () => {
       const { service, prisma } = createService();

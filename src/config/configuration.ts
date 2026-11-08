@@ -61,6 +61,8 @@ export default () => {
     // Wrong codes allowed per account. More important than the SMS version: a TOTP
     // space is six digits and each code is live for 30s, so guessing is cheaper.
     twoFactorMaxTries: Number(process.env.ADMIN_2FA_MAX_TRIES) || 5,
+    twoFactorAttemptWindowSeconds:
+      Number(process.env.ADMIN_2FA_ATTEMPT_WINDOW_SECONDS) || 900,
     // Label the authenticator app shows, and the issuer in the otpauth:// URI. It has
     // to match in both the label and the query parameter or the scan is rejected.
     totpIssuer: process.env.ADMIN_TOTP_ISSUER || 'Fundi',

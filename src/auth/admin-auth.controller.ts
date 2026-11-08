@@ -124,7 +124,7 @@ export class AdminAuthController {
   @ApiBadRequest('There is no pending verification, or the challenge was already used.')
   @ApiUnauthorized('The code is incorrect, or the sign-in window has closed.')
   @ApiTooManyRequests(
-    'Too many incorrect codes were submitted for this account. Wait a few minutes.',
+    'Too many incorrect codes were submitted for this account. Wait for the lockout window to expire.',
   )
   @ApiServiceUnavailable()
   @ApiForbidden('The account is no longer an active administrator.')

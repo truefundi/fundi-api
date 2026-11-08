@@ -8,10 +8,14 @@ describe('configuration production secrets', () => {
     'JWT_REFRESH_SECRET',
     'TOKEN_HASH_SECRET',
     'ADMIN_TOTP_ENCRYPTION_KEY',
+    'WEBAUTHN_RP_ID',
+    'WEBAUTHN_ORIGIN',
   ] as const;
   const original: Partial<Record<(typeof managedKeys)[number], string>> = {};
 
-  const setEnvironment = (values: Partial<Record<(typeof managedKeys)[number], string | undefined>>) => {
+  const setEnvironment = (
+    values: Partial<Record<(typeof managedKeys)[number], string | undefined>>,
+  ) => {
     for (const key of managedKeys) {
       const value = values[key];
       if (value === undefined) delete process.env[key];
@@ -47,9 +51,13 @@ describe('configuration production secrets', () => {
       JWT_REFRESH_SECRET: 'b'.repeat(32),
       TOKEN_HASH_SECRET: 'c'.repeat(32),
       ADMIN_TOTP_ENCRYPTION_KEY: 'd'.repeat(64),
+      WEBAUTHN_RP_ID: 'api.example.com',
+      WEBAUTHN_ORIGIN: 'https://app.example.com',
     });
     delete process.env.TOKEN_HASH_SECRET;
-    expect(() => load()()).toThrow('Missing required production secrets: TOKEN_HASH_SECRET');
+    expect(() => load()()).toThrow(
+      'Missing required production secrets: TOKEN_HASH_SECRET',
+    );
   });
 
   it('refuses production when the access and refresh secrets match', () => {
@@ -59,6 +67,8 @@ describe('configuration production secrets', () => {
       JWT_REFRESH_SECRET: 'a'.repeat(32),
       TOKEN_HASH_SECRET: 'c'.repeat(32),
       ADMIN_TOTP_ENCRYPTION_KEY: 'd'.repeat(64),
+      WEBAUTHN_RP_ID: 'api.example.com',
+      WEBAUTHN_ORIGIN: 'https://app.example.com',
     });
     expect(() => load()()).toThrow('must be different in production');
   });

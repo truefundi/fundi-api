@@ -1,12 +1,15 @@
+import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 
 // Validates the category name accepted when an administrator creates a category.
@@ -21,6 +24,12 @@ export class CreateCategoryDto {
   @MaxLength(2000)
   description?: string;
 
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MaxLength(500)
+  keywords?: string;
+
   // Dashboard grouping, e.g. "Home Services" or "Car Services".
   @IsOptional()
   @IsString()
@@ -28,15 +37,22 @@ export class CreateCategoryDto {
   @MaxLength(60)
   category?: string;
 
-  // Booking (visit) fee in RWF.
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MaxLength(80)
+  @Matches(/^[a-z0-9][a-z0-9-]*$/i)
+  icon?: string | null;
+
+  // Booking (visit) fee in RWF.
+  @ValidateIf((_object, value) => value !== undefined)
   @IsInt()
   @Min(0)
   @Max(2_000_000_000)
-  visitFee?: number;
+  bookingFee?: number;
 
   // Booking fee applied to emergency requests.
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsInt()
   @Min(0)
   @Max(2_000_000_000)
@@ -56,6 +72,7 @@ export class CreateCategoryDto {
 // Validates editable category fields; an empty update is rejected by the service.
 export class UpdateCategoryDto {
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MinLength(2)
   @MaxLength(60)
@@ -66,6 +83,12 @@ export class UpdateCategoryDto {
   @MaxLength(2000)
   description?: string;
 
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MaxLength(500)
+  keywords?: string;
+
   @IsOptional()
   @IsString()
   @MinLength(2)
@@ -73,12 +96,18 @@ export class UpdateCategoryDto {
   category?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  @Matches(/^[a-z0-9][a-z0-9-]*$/i)
+  icon?: string | null;
+
+  @ValidateIf((_object, value) => value !== undefined)
   @IsInt()
   @Min(0)
   @Max(2_000_000_000)
-  visitFee?: number;
+  bookingFee?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsInt()
   @Min(0)
   @Max(2_000_000_000)

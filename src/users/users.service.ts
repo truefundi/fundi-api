@@ -11,12 +11,10 @@ import {
   MAX_PAGE_LIMIT,
 } from './dto/list-users-query.dto';
 
-// The only user fields any API response may carry. passwordHash, totpSecret, and
-// totpEnabledAt are deliberately absent: every route here returns the service
-// result directly, so a query without this select would hand the password hash
-// and the second-factor secret to whoever called the endpoint. Listed one field
-// at a time so a new column on the user table is excluded by default rather
-// than leaked until someone remembers to strip it.
+// The only user fields any API response may carry. Credential hashes and TOTP
+// secrets are deliberately absent: every route here returns the service result
+// directly. Listed one field at a time so new user columns are excluded by
+// default rather than leaked until someone remembers to strip them.
 const USER_RESPONSE_SELECT = {
   id: true,
   email: true,

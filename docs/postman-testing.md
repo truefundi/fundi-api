@@ -29,6 +29,9 @@ Create a Postman environment with:
 | `documentId`      | A technician document UUID returned by the API                                        |
 | `chatRoomId`      | A chat room UUID returned for an accepted job assignment                              |
 | `chatMessageId`   | A chat message UUID returned by a send/list request                                   |
+| `adId`            | An ad UUID returned by the admin ad endpoints                                         |
+| `broadcastId`     | A broadcast UUID returned by the admin broadcast endpoints                            |
+| `adminNewPassword` | The new administrator password used by the change-password request                   |
 
 Use `{{baseUrl}}` at the start of every URL below. For JSON requests, choose
 **Body → raw → JSON** and send `Content-Type: application/json`.
@@ -258,6 +261,22 @@ body.
 
 **POST** `{{baseUrl}}/api/v1/auth/admin/logout` — no body. This clears the
 admin cookies.
+
+### Change the admin password
+
+**POST** `{{baseUrl}}/api/v1/auth/admin/change-password` — admin access cookie.
+
+```json
+{
+  "currentPassword": "{{adminPassword}}",
+  "newPassword": "{{adminNewPassword}}"
+}
+```
+
+The new password follows the sign-in rules: at least 8 characters, one uppercase
+letter, one number, and one non-alphanumeric character. Every stored refresh
+session is revoked, so the dashboard must sign in again. Update `adminPassword`
+in the Postman environment afterwards if you want the next sign-in to succeed.
 
 ### Development-only admin OTP endpoints
 
@@ -1186,6 +1205,122 @@ technician and resumes remaining payment validity.
 Admins can permanently delete a job only when it is completed or cancelled.
 User `DELETE` endpoints only hide the job from that user's history.
 
+## Ads
+
+Public ad routes need no authentication. Admin ad routes accept an administrator
+session cookie or an administrator bearer token. Full field and scheduling rules
+are in the [Ads API guide](./ads.md).
+
+### List visible ads (public)
+
+**GET** `{{baseUrl}}/api/v1/ads?placement=LANDING_PRODUCT&role=CUSTOMER` — no
+body. Returns only active ads whose scheduling window contains the current time.
+Both query parameters are optional.
+
+### Record an impression or click (public)
+
+**POST** `{{baseUrl}}/api/v1/ads/{{adId}}/impression` or
+`{{baseUrl}}/api/v1/ads/{{adId}}/click` — no body.
+
+### Download an ad creative (public)
+
+**GET** `{{baseUrl}}/api/v1/ads/{{adId}}/image` — no body. Returns image bytes;
+`404` when the ad has no uploaded image.
+
+### Create an ad (admin)
+
+**POST** `{{baseUrl}}/api/v1/admin/ads`
+
+```json
+{
+  "productId": 3,
+  "title": "Fundi Home Repair",
+  "description": "Book a trusted technician for plumbing and electrical work.",
+  "imageUrl": "https://cdn.fundi.rw/ads/home-repair.png",
+  "imageAlt": "A technician repairing a kitchen sink",
+  "callToAction": "Explore product",
+  "badge": "LIVE",
+  "placement": "LANDING_PRODUCT",
+  "audience": "ALL",
+  "isActive": true,
+  "startsAt": "2026-11-01T00:00:00.000Z",
+  "endsAt": "2026-12-01T00:00:00.000Z",
+  "priority": 10
+}
+```
+
+Only `title` and `description` are required. `endsAt` must be after `startsAt`.
+Save the returned `id` as `adId`.
+
+### List, read, update, or delete ads (admin)
+
+- **GET** `{{baseUrl}}/api/v1/admin/ads?placement=LANDING_PRODUCT&isActive=true&limit=100&offset=0`
+- **GET** `{{baseUrl}}/api/v1/admin/ads/{{adId}}`
+- **PATCH** `{{baseUrl}}/api/v1/admin/ads/{{adId}}` — any subset of the create fields:
+
+```json
+{
+  "isActive": false,
+  "priority": 5
+}
+```
+
+- **DELETE** `{{baseUrl}}/api/v1/admin/ads/{{adId}}`
+
+### Upload or remove an ad creative (admin)
+
+**PUT** `{{baseUrl}}/api/v1/admin/ads/{{adId}}/image` — **Body → form-data**
+with `file` as type **File**. JPEG, PNG, or WebP up to 5 MiB; the bytes are
+sniffed. Uploading replaces any previous creative.
+
+**DELETE** `{{baseUrl}}/api/v1/admin/ads/{{adId}}/image` — no body.
+
+## Broadcasts
+
+Admin broadcast routes accept an administrator session cookie or an
+administrator bearer token. Every broadcast selects at least one role and at
+least one channel. See the [Broadcasts API guide](./broadcasts.md).
+
+### Preview the audience
+
+**POST** `{{baseUrl}}/api/v1/admin/broadcasts/preview`
+
+```json
+{
+  "roles": ["CUSTOMER", "TECHNICIAN"],
+  "status": "active"
+}
+```
+
+Returns `userCount`, `smsRecipientCount`, and `inAppRecipientCount`. No message
+is delivered.
+
+### Send a broadcast
+
+**POST** `{{baseUrl}}/api/v1/admin/broadcasts`
+
+```json
+{
+  "title": "Important service update",
+  "message": "Fundi will be unavailable for maintenance tonight between 22:00 and 23:00.",
+  "audience": {
+    "roles": ["CUSTOMER"],
+    "status": "active"
+  },
+  "channels": ["IN_APP", "SMS"]
+}
+```
+
+Use `["IN_APP"]` for an in-app-only broadcast or both values to text recipients
+as well. In development the console SMS driver logs the message instead of
+sending it. The response reports `SENT`, `PARTIAL`, or `FAILED` plus per-channel
+counts.
+
+### List or read broadcasts
+
+- **GET** `{{baseUrl}}/api/v1/admin/broadcasts?limit=20&offset=0`
+- **GET** `{{baseUrl}}/api/v1/admin/broadcasts/{{broadcastId}}`
+
 ## Booking payment history
 
 ### List my payments
@@ -1259,5 +1394,6 @@ audit snapshot of the payment data.
   authentication](./admin-authentication.md), [user management](./users.md),
   [technician onboarding](./technician-onboarding.md), [technician
   documents](./technician-documents.md), [service categories](./service-categories.md),
-  [jobs](./jobs.md), [booking payments](./booking-payments.md), and
-  [job chat](./chat.md) guides.
+  [jobs](./jobs.md), [booking payments](./booking-payments.md),
+  [job chat](./chat.md), [ads](./ads.md), and [broadcasts](./broadcasts.md)
+  guides.

@@ -1,6 +1,6 @@
 # Service Categories API
 
-The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Administrators set each category's description, dashboard grouping, normal `visitFee`, emergency `emergencyVisitFee`, and optional SOS `sosBookingFee` in RWF. Normal and SOS requests require their corresponding fee to be configured; the SOS fee must be higher than the normal fee. Send `Content-Type: application/json` for requests with a body.
+The service catalog powers customer service discovery and technician category selection. Public clients can read active categories; only administrators can create, edit, deactivate, or inspect inactive categories. Administrators set each category's description, dashboard grouping, optional search `keywords`, optional icon identifier, normal `bookingFee`, emergency `emergencyVisitFee`, and optional SOS `sosBookingFee` in RWF. Keywords are a free-form string of extra search terms and may be omitted. The icon is a nullable identifier such as `wrench`, not an uploaded image or URL. Normal and SOS requests require their corresponding fee to be configured; the SOS fee must be higher than the normal fee. Send `Content-Type: application/json` for requests with a body.
 
 For local development, seed the initial sample catalog with `npm run prisma:seed`. The seed operation is safe to rerun because it upserts categories by slug.
 
@@ -20,9 +20,11 @@ Success response (`200`):
     "slug": "plumbing",
     "description": "Leak repairs, pipe fitting, and drain unblocking.",
     "category": "Home Services",
-    "visitFee": 1000,
+    "keywords": "leak repair, pipes, blocked drain",
+    "bookingFee": 1000,
     "emergencyVisitFee": 1500,
-    "sosBookingFee": 2500
+    "sosBookingFee": 2500,
+    "icon": "wrench"
   }
 ]
 ```
@@ -40,15 +42,17 @@ Success response (`200`):
   "slug": "plumbing",
   "description": "Leak repairs, pipe fitting, and drain unblocking.",
   "category": "Home Services",
-  "visitFee": 1000,
+  "keywords": "leak repair, pipes, blocked drain",
+  "bookingFee": 1000,
   "emergencyVisitFee": 1500,
-  "sosBookingFee": 2500
+  "sosBookingFee": 2500,
+  "icon": "wrench"
 }
 ```
 
 ### `GET /api/v1/catalog/categories/search?name=plumb`
 
-The `name` query parameter is required. Returns active categories whose names contain the query, case-insensitively. No request body or authentication required. The response is an array in the same format as the list endpoint.
+The `name` query parameter is required. Returns active categories whose names or keywords contain the query, case-insensitively. No request body or authentication required. The response is an array in the same format as the list endpoint.
 
 ## Administrator endpoints
 
@@ -56,7 +60,7 @@ All administrator endpoints require `Authorization: Bearer <admin-access-token>`
 
 ### `POST /api/v1/catalog/categories`
 
-Creates a category. The name is trimmed; a URL-friendly slug is generated automatically. `category` groups the service in the dashboard. `visitFee` and `emergencyVisitFee` are non-negative integers; when set, `sosBookingFee` must be a positive integer greater than `visitFee`.
+Creates a category. The name is trimmed; a URL-friendly slug is generated automatically. `category` groups the service in the dashboard. `keywords` is optional. `bookingFee` and `emergencyVisitFee` are non-negative integers; when set, `sosBookingFee` must be a positive integer greater than `bookingFee`.
 
 Request:
 
@@ -65,7 +69,9 @@ Request:
   "name": "Home Repair",
   "category": "Home Services",
   "description": "General household repairs.",
-  "visitFee": 1000,
+  "keywords": "handyman, home maintenance",
+  "icon": "wrench",
+  "bookingFee": 1000,
   "emergencyVisitFee": 1500,
   "sosBookingFee": 2500
 }
@@ -80,9 +86,11 @@ Success response (`201`):
   "slug": "home-repair",
   "category": "Home Services",
   "description": "General household repairs.",
-  "visitFee": 1000,
+  "keywords": "handyman, home maintenance",
+  "bookingFee": 1000,
   "emergencyVisitFee": 1500,
   "sosBookingFee": 2500,
+  "icon": "wrench",
   "isActive": true,
   "createdAt": "2026-10-01T10:00:00.000Z"
 }
@@ -108,15 +116,17 @@ Success response (`200`): one full category record.
 
 ### `PATCH /api/v1/catalog/categories/:id`
 
-Update a category name, description, dashboard grouping, availability, or fees. At least one field is required. `visitFee` and `emergencyVisitFee` must be non-negative integers; when set, `sosBookingFee` must be greater than `visitFee`. Changing the name also regenerates its slug.
+Update a category name, description, keywords, dashboard grouping, availability, or fees. At least one field is required. `bookingFee` and `emergencyVisitFee` must be non-negative integers; when set, `sosBookingFee` must be greater than `bookingFee`. Changing the name also regenerates its slug.
 
 Request:
 
 ```json
 {
   "name": "Home Maintenance",
+  "keywords": "handyman, repair",
+  "icon": null,
   "isActive": true,
-  "visitFee": 1500,
+  "bookingFee": 1500,
   "emergencyVisitFee": 2000,
   "sosBookingFee": 3500
 }
@@ -137,8 +147,9 @@ Success response (`200`):
     "id": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
     "name": "Plumbing",
     "slug": "plumbing",
-    "visitFee": 1000,
+    "bookingFee": 1000,
     "sosBookingFee": 2500,
+    "icon": "wrench",
     "isActive": false,
     "createdAt": "2026-10-01T10:00:00.000Z"
   }

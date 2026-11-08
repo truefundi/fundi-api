@@ -13,13 +13,15 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UserRole } from '@prisma/client';
 import { authenticator } from 'otplib';
-import { compare } from 'bcrypt';
+import { compare, hash } from 'bcrypt';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { TotpCryptoService } from './totp-crypto.service';
 import { AuthService } from './auth.service';
 import { AdminLoginDto } from './dto/admin-login.dto';
+import { ChangeAdminPasswordDto } from './dto/change-admin-password.dto';
 
 // One message for every credential failure, so the endpoint cannot be used to
 // discover which addresses belong to an administrator.
@@ -108,6 +110,7 @@ export class AdminAuthService {
   private readonly twoFactorAttemptWindowSeconds: number;
   private readonly totpIssuer: string;
   private readonly totpWindow: number;
+  private readonly bcryptRounds: number;
   // Seconds in one TOTP step. Fixed by the standard, not configurable.
   private readonly totpStepSeconds = 30;
 
@@ -118,6 +121,7 @@ export class AdminAuthService {
     private redisService: RedisService,
     private totpCrypto: TotpCryptoService,
     private authService: AuthService,
+    private audit: AuditService,
   ) {
     this.maxLoginAttempts = this.configService.get<number>('adminAuth.maxLoginAttempts', 5);
     this.loginLockoutSeconds = this.configService.get<number>('adminAuth.loginLockoutSeconds', 900);
@@ -132,6 +136,7 @@ export class AdminAuthService {
     );
     this.totpIssuer = this.configService.get<string>('adminAuth.totpIssuer', 'Fundi');
     this.totpWindow = this.configService.get<number>('adminAuth.totpWindow', 1);
+    this.bcryptRounds = this.configService.get<number>('adminAuth.bcryptRounds', 12);
   }
 
   // Step one: verifies the password, then either asks for a code or starts a first
@@ -352,6 +357,57 @@ export class AdminAuthService {
       });
     }
     return { message: 'Signed out successfully.' };
+  }
+
+  // Changes the password behind the current session. Every refresh token is revoked,
+  // so a password change ends sessions on other devices; the access cookie stops
+  // working on the next request because JwtStrategy validates its session row.
+  async changePassword(userId: string, input: ChangeAdminPasswordDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true, status: true, passwordHash: true },
+    });
+    if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
+      throw new ForbiddenException('Only an active administrator can change this password.');
+    }
+    if (!user.passwordHash) {
+      throw new BadRequestException(
+        'This administrator account does not have a password yet. Provision one with the seed script.',
+      );
+    }
+
+    const matches = await compare(input.currentPassword, user.passwordHash);
+    if (!matches) {
+      throw new UnauthorizedException('The current password is incorrect.');
+    }
+    if (input.currentPassword === input.newPassword) {
+      throw new BadRequestException(
+        'The new password must be different from the current password.',
+      );
+    }
+
+    const passwordHash = await hash(input.newPassword, this.bcryptRounds);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { passwordHash } });
+      // No session survives a credential change: a stolen refresh token stops working
+      // at the same moment the old password does.
+      await tx.refreshToken.deleteMany({ where: { userId } });
+      await this.audit.log(
+        {
+          entityType: 'User',
+          entityId: userId,
+          action: 'ADMIN_PASSWORD_CHANGED',
+          actorId: userId,
+          metadata: { sessionsRevoked: true },
+        },
+        tx,
+      );
+    });
+
+    return {
+      message: 'Password updated. Sign in again with the new password.',
+      sessionsRevoked: true,
+    };
   }
 
   // Returns the identity behind an authenticated admin session.

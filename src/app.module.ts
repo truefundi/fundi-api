@@ -18,6 +18,8 @@ import { PaymentsModule } from './payments/payments.module';
 import { DisputesModule } from './disputes/disputes.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ChatModule } from './chat/chat.module';
+import { AdsModule } from './ads/ads.module';
+import { BroadcastsModule } from './broadcasts/broadcasts.module';
 
 @Module({
   imports: [
@@ -40,6 +42,8 @@ import { ChatModule } from './chat/chat.module';
     DisputesModule,
     NotificationsModule,
     ChatModule,
+    AdsModule,
+    BroadcastsModule,
     HealthModule,
   ],
   controllers: [AppController],

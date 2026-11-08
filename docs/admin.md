@@ -45,6 +45,26 @@ booking payments and extend their validity. See [Jobs API](jobs.md#administrator
 and [Booking Payments API](booking-payments.md#administrator-endpoints) for
 request bodies and lifecycle rules.
 
+## Ads
+
+Landing-page promotion cards are managed under `/api/v1/admin/ads`, with a
+public read-only surface under `/api/v1/ads`. See [Ads API](ads.md) for the
+fields, scheduling rules, placement values, impression and click counters, and
+the image upload route.
+
+## Broadcasts
+
+Administrator messages are sent from `/api/v1/admin/broadcasts`. Each broadcast
+chooses its audience roles and its delivery channel, either in-app only or
+in-app plus SMS. See [Broadcasts API](broadcasts.md) for the audience preview,
+the send request, and the delivery counters.
+
+## Changing the administrator password
+
+`POST /api/v1/auth/admin/change-password` requires the signed-in administrator's
+current password and revokes every stored session. See
+[Admin authentication](admin-authentication.md#post-apiv1authadminchange-password).
+
 ## Common errors
 
 Errors have `statusCode`, `timestamp`, `path`, and `message` fields. `401` means the token is missing, invalid, or revoked; `403` means the caller is not an administrator.

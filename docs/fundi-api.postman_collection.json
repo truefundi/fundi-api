@@ -97,6 +97,31 @@
       "key": "requestId",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "adId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "broadcastId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "adminNewPassword",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "chatRoomId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "chatMessageId",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -571,6 +596,34 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "Change admin password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/auth/admin/change-password",
+            "description": "Requires the current password. Every stored refresh session is revoked, so other devices are signed out and the current access cookie stops working on its next request. Sign in again with the new password.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"{{adminPassword}}\",\n  \"newPassword\": \"{{adminNewPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
         }
       ]
     },
@@ -843,7 +896,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Home Repair\",\n  \"visitFee\": 1000\n}",
+              "raw": "{\n  \"name\": \"Home Repair\",\n  \"category\": \"Home Services\",\n  \"description\": \"General household repairs.\",\n  \"visitFee\": 1000,\n  \"emergencyVisitFee\": 1500,\n  \"sosBookingFee\": 2500\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -910,7 +963,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Home Maintenance\",\n  \"isActive\": true,\n  \"visitFee\": 1500\n}",
+              "raw": "{\n  \"name\": \"Home Maintenance\",\n  \"description\": \"General maintenance and repairs.\",\n  \"isActive\": true,\n  \"visitFee\": 1500,\n  \"emergencyVisitFee\": 2000,\n  \"sosBookingFee\": 3500\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1801,7 +1854,7 @@
               }
             ],
             "url": "{{baseUrl}}/api/v1/payments/mock",
-            "description": "Save response.id as paymentId. The amount is loaded from the category visitFee and is valid for seven days.",
+            "description": "Save response.id as paymentId. requestType defaults to NORMAL and charges visitFee; use SOS to charge sosBookingFee. Payments are valid for seven days.",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -1814,7 +1867,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"serviceCategoryId\": \"{{categoryId}}\",\n  \"phoneNumber\": \"+250788123456\"\n}",
+              "raw": "{\n  \"serviceCategoryId\": \"{{categoryId}}\",\n  \"requestType\": \"NORMAL\",\n  \"phoneNumber\": \"+250788123456\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1849,7 +1902,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"serviceCategoryId\": \"{{categoryId}}\",\n  \"externalPaymentId\": \"frontend-payment-20261028-001\",\n  \"status\": \"SUCCESS\",\n  \"phoneNumber\": \"+250788123456\",\n  \"amount\": 1000,\n  \"paidAt\": \"2026-10-28T12:00:00.000Z\"\n}",
+              "raw": "{\n  \"serviceCategoryId\": \"{{categoryId}}\",\n  \"requestType\": \"NORMAL\",\n  \"externalPaymentId\": \"frontend-payment-20261028-001\",\n  \"status\": \"SUCCESS\",\n  \"phoneNumber\": \"+250788123456\",\n  \"amount\": 1000,\n  \"paidAt\": \"2026-10-28T12:00:00.000Z\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1950,6 +2003,11 @@
                   "type": "text"
                 },
                 {
+                  "key": "requestType",
+                  "value": "NORMAL",
+                  "type": "text"
+                },
+                {
                   "key": "description",
                   "value": "Repair a leaking kitchen tap and check the connection.",
                   "type": "text"
@@ -1988,6 +2046,76 @@
                   "key": "video",
                   "type": "file",
                   "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create SOS job with automatic matching",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/jobs/sos",
+            "description": "Use Body > form-data after creating an SOS payment and verifying a fresh phone OTP. The system offers to one approved, online matching technician at a time; each has five minutes to accept.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "phoneVerificationId",
+                  "value": "{{verificationId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "paymentId",
+                  "value": "{{paymentId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "serviceCategoryId",
+                  "value": "{{categoryId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "description",
+                  "value": "Urgent water leak is flooding the kitchen.",
+                  "type": "text"
+                },
+                {
+                  "key": "locationAddress",
+                  "value": "Kimihurura, Kigali",
+                  "type": "text"
+                },
+                {
+                  "key": "latitude",
+                  "value": "-1.9536",
+                  "type": "text"
+                },
+                {
+                  "key": "longitude",
+                  "value": "30.0606",
+                  "type": "text"
+                },
+                {
+                  "key": "offeredAmount",
+                  "value": "25000",
+                  "type": "text"
+                },
+                {
+                  "key": "priority",
+                  "value": "URGENT",
+                  "type": "text"
                 }
               ]
             }
@@ -2916,6 +3044,727 @@
             "auth": {
               "type": "noauth"
             }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Ads (public)",
+      "item": [
+        {
+          "name": "List visible ads",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/ads?placement=LANDING_PRODUCT&role=CUSTOMER",
+            "description": "Public. Returns active ads whose scheduling window contains the current time, highest priority first. Pass role to include role-targeted ads alongside ALL-audience ads.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Record ad impression",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/ads/{{adId}}/impression",
+            "description": "Public. Increments the impression counter by one.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Record ad click",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/ads/{{adId}}/click",
+            "description": "Public. Increments the click counter by one.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Download ad image",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/ads/{{adId}}/image",
+            "description": "Public. Streams the uploaded creative; 404 when the ad has no uploaded image.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Ads",
+      "item": [
+        {
+          "name": "List ads (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads?placement=LANDING_PRODUCT&isActive=true&limit=100&offset=0",
+            "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization. Includes hidden and out-of-window ads.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create ad (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/ads",
+            "description": "Only title and description are required. endsAt must be after startsAt.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": 3,\n  \"title\": \"Fundi Home Repair\",\n  \"description\": \"Book a trusted technician for plumbing and electrical work.\",\n  \"imageUrl\": \"https://cdn.fundi.rw/ads/home-repair.png\",\n  \"imageAlt\": \"A technician repairing a kitchen sink\",\n  \"callToAction\": \"Explore product\",\n  \"badge\": \"LIVE\",\n  \"placement\": \"LANDING_PRODUCT\",\n  \"audience\": \"ALL\",\n  \"isActive\": true,\n  \"startsAt\": \"2026-11-01T00:00:00.000Z\",\n  \"endsAt\": \"2026-12-01T00:00:00.000Z\",\n  \"priority\": 10\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get ad by ID (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}",
+            "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update ad (admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}",
+            "description": "Every field is optional, so one switch can be changed without resending the card.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isActive\": false,\n  \"priority\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Upload or replace ad image (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}/image",
+            "description": "Send multipart/form-data with a single `file` field. JPEG, PNG, or WebP up to 5 MiB; the bytes are sniffed.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": ""
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Remove ad image (admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}/image",
+            "description": "Deletes the stored creative and clears the image fields.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete ad (admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/ads/{{adId}}",
+            "description": "Removes the ad and any uploaded creative.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Broadcasts",
+      "item": [
+        {
+          "name": "Preview broadcast audience",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/broadcasts/preview",
+            "description": "Counts active accounts in the selected roles before sending. Requires an admin session cookie or an admin bearer token.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"roles\": [\n    \"CUSTOMER\",\n    \"TECHNICIAN\"\n  ],\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List broadcasts (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/broadcasts?limit=20&offset=0",
+            "description": "Newest first. Requires an admin session cookie or an admin bearer token.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send broadcast (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/broadcasts",
+            "description": "Sends immediately. Select at least one role and at least one channel: IN_APP only, or IN_APP plus SMS. The response reports per-channel delivery counts and SENT, PARTIAL, or FAILED.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Important service update\",\n  \"message\": \"Fundi will be unavailable for maintenance tonight between 22:00 and 23:00.\",\n  \"audience\": {\n    \"roles\": [\n      \"CUSTOMER\"\n    ],\n    \"status\": \"active\"\n  },\n  \"channels\": [\n    \"IN_APP\",\n    \"SMS\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get broadcast by ID (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/broadcasts/{{broadcastId}}",
+            "description": "Returns one broadcast with its frozen audience counts and delivery results.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Job Chat - Member",
+      "description": "Use a customer or technician bearer token that participates in the room. A room is created when a technician accepts a job assignment.",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{customerToken}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "List my chat rooms",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms"
+          },
+          "response": []
+        },
+        {
+          "name": "Get room details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "List room messages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages?limit=50"
+          },
+          "response": []
+        },
+        {
+          "name": "Send text message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"I can come by at 10:00 tomorrow.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send image, file, voice note, or video",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages/media",
+            "description": "Use Body > form-data: type=IMAGE (or FILE, VOICE_NOTE, VIDEO) as Text, file as File, and optional durationSeconds for a voice note. Limits: image 10 MiB, document 20 MiB, voice 20 MiB/5 min, video 50 MiB/60 seconds.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "type",
+                  "value": "IMAGE",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Download message attachment",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}/media"
+          },
+          "response": []
+        },
+        {
+          "name": "Mark messages read",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/read",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messageId\": \"{{chatMessageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Edit unread text message",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Updated: I can come by at 11:00 tomorrow.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete unread message",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Confirm cooperation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/cooperation/confirm"
+          },
+          "response": []
+        },
+        {
+          "name": "Deny partnership before confirmation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/cooperation/deny",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"We could not agree on the terms.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/cancel",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"The customer no longer needs the repair.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update job progress",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/progress",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"COMPLETED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Request job pause",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/pause"
+          },
+          "response": []
+        },
+        {
+          "name": "Request job resume",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/resume"
+          },
+          "response": []
+        },
+        {
+          "name": "Archive room after job is terminal",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Job Chat - Admin",
+      "description": "Requires an administrator session cookie retained by Postman or an administrator bearer token. Admin inspection does not create member read receipts.",
+      "auth": {
+        "type": "noauth"
+      },
+      "item": [
+        {
+          "name": "List chat rooms (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms"
+          },
+          "response": []
+        },
+        {
+          "name": "Get room details (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Inspect room messages (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages?limit=50"
+          },
+          "response": []
+        },
+        {
+          "name": "Send administrative text message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"An administrator is reviewing this conversation.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send administrative attachment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/media",
+            "description": "Use Body > form-data with type (Text) and file (File).",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "type",
+                  "value": "IMAGE",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Download attachment (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}/media"
+          },
+          "response": []
+        },
+        {
+          "name": "Disable room",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"disabled\": true,\n  \"reason\": \"Under review\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Block room member",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/members/{{userId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"blocked\": true,\n  \"reason\": \"Policy review\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Block message",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}/block",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"blocked\": true,\n  \"reason\": \"Violates messaging policy\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Permanently delete message",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}"
           },
           "response": []
         }

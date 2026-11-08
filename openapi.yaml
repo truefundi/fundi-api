@@ -901,6 +901,54 @@ paths:
       tags:
         - Auth
       x-fundi-status: implemented
+  /auth/register/pin:
+    post:
+      operationId: AuthController_registerWithPin
+      summary: Register a customer account with a phone number and PIN
+      description: Creates a customer account using a required full name and a 4–6 digit PIN, stored as a bcrypt hash.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PinRegisterDto'
+      responses:
+        '200':
+          description: Customer account registered successfully.
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      tags:
+        - Auth
+      x-fundi-status: implemented
+  /auth/login/pin:
+    post:
+      operationId: AuthController_loginWithPin
+      summary: Sign in with a phone number and PIN
+      description: Signs in a customer or verified technician who has a PIN configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PinLoginDto'
+      responses:
+        '200':
+          description: A user session and bearer token pair.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokensDto'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: The phone number or PIN is incorrect.
+        '403':
+          description: The account is inactive, unverified, or temporarily locked.
+      tags:
+        - Auth
+      x-fundi-status: implemented
   /auth/login:
     post:
       description: Only starts a login for an account that already exists and is active. The code expires in five minutes.
@@ -1959,7 +2007,7 @@ paths:
                   $ref: '#/components/schemas/ServiceCategory'
       tags:
         - Catalog
-      summary: Search active categories by name (public)
+      summary: Search active categories by name or keywords (public)
       x-fundi-status: implemented
   /catalog/categories/{id}:
     parameters:
@@ -4286,8 +4334,9 @@ components:
         - slug
         - description
         - category
-        - visitFee
+        - bookingFee
         - emergencyVisitFee
+        - keywords
       properties:
         id:
           type: string
@@ -4309,11 +4358,15 @@ components:
             - Home Services
             - Car Services
           example: Home Services
-        visitFee:
+        keywords:
+          type: string
+          description: Optional extra words customers can use to find this service.
+          example: leak repair, pipes, blocked drain
+        bookingFee:
           type: number
           format: double
           minimum: 0
-          description: Booking (visit/diagnostic) fee in the job currency.
+          description: Booking (visit/diagnostic) fee in RWF.
           example: 75
         emergencyVisitFee:
           type: number
@@ -4321,6 +4374,19 @@ components:
           minimum: 0
           description: Booking fee when the customer marks the request as an emergency.
           example: 110
+        sosBookingFee:
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+          description: Optional SOS booking fee in RWF.
+          example: 250
+        icon:
+          type:
+            - string
+            - 'null'
+          description: Optional icon identifier.
+          example: wrench
     ServiceCategoryFull:
       allOf:
         - $ref: '#/components/schemas/ServiceCategory'
@@ -4357,7 +4423,12 @@ components:
             - Home Services
             - Car Services
           example: Home Services
-        visitFee:
+        keywords:
+          type: string
+          maxLength: 500
+          description: Optional extra words customers can use to find this service.
+          example: leak repair, pipes, blocked drain
+        bookingFee:
           type: number
           format: double
           minimum: 0
@@ -4371,6 +4442,18 @@ components:
           maximum: 2000000000
           description: Emergency booking fee in the job currency.
           example: 110
+        sosBookingFee:
+          type: integer
+          minimum: 1
+          maximum: 2000000000
+          description: Optional SOS booking fee, greater than bookingFee.
+          example: 250
+        icon:
+          type:
+            - string
+            - 'null'
+          description: Optional icon identifier.
+          example: wrench
         isActive:
           type: boolean
     ServiceExperience:
@@ -5654,6 +5737,52 @@ components:
       required:
         - phoneNumber
         - fullName
+    PinRegisterDto:
+      type: object
+      properties:
+        phoneNumber:
+          type: string
+          example: '+250788123456'
+          description: Rwandan mobile number in local or international format.
+          minLength: 13
+          maxLength: 13
+          pattern: ^\+250(78|79|72|73)[0-9]{7}$
+        fullName:
+          type: string
+          example: Prince Example
+          minLength: 2
+          maxLength: 120
+        pin:
+          type: string
+          format: password
+          minLength: 4
+          maxLength: 6
+          pattern: ^[0-9]{4,6}$
+          example: '123456'
+      required:
+        - phoneNumber
+        - fullName
+        - pin
+    PinLoginDto:
+      type: object
+      properties:
+        phoneNumber:
+          type: string
+          example: '+250788123456'
+          description: Rwandan mobile number in local or international format.
+          minLength: 13
+          maxLength: 13
+          pattern: ^\+250(78|79|72|73)[0-9]{7}$
+        pin:
+          type: string
+          format: password
+          minLength: 4
+          maxLength: 6
+          pattern: ^[0-9]{4,6}$
+          example: '123456'
+      required:
+        - phoneNumber
+        - pin
     ErrorResponseDto:
       type: object
       properties:

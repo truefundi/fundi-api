@@ -6,6 +6,7 @@ import {
   JobStatus,
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { JOB_PIPELINE_STAGE_MAP, JobPipelineStage } from './job-pipeline';
 import { JobsService } from './jobs.service';
 
 describe('JobsService location matching', () => {
@@ -489,6 +490,115 @@ describe('JobsService.summaryForAdmin', () => {
     expect(disputeCount).toHaveBeenCalledWith({
       where: { resolvedAt: null },
     });
+  });
+});
+
+describe('JobsService admin pipeline', () => {
+  const createService = () => {
+    const jobCount = jest.fn().mockResolvedValue(0);
+    const jobFindMany = jest.fn().mockResolvedValue([]);
+    const prisma = { job: { count: jobCount, findMany: jobFindMany } };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+    );
+    return { service, jobCount, jobFindMany };
+  };
+
+  it('counts tracked stages and leaves untracked stages null', async () => {
+    const { service, jobCount } = createService();
+    jobCount.mockResolvedValue(7);
+
+    const result = await service.pipelineForAdmin();
+
+    expect(jobCount).toHaveBeenCalledTimes(7);
+    const counts = Object.fromEntries(
+      result.stages.map((stage) => [stage.key, stage.count]),
+    );
+    expect(counts).toEqual({
+      request: 7,
+      match: 7,
+      accept: 7,
+      visit: 7,
+      diagnose: null,
+      quote: null,
+      approve: null,
+      repair: 7,
+      settle: 7,
+      rate: 7,
+    });
+    expect(result.stages.filter((stage) => !stage.tracked)).toHaveLength(3);
+    expect(new Date(result.generatedAt).toString()).not.toBe('Invalid Date');
+  });
+
+  it('pages the jobs at a tracked stage using the admin include', async () => {
+    const { service, jobCount, jobFindMany } = createService();
+    jobCount.mockResolvedValue(21);
+
+    const result = await service.pipelineStageForAdmin(
+      JobPipelineStage.VISIT,
+      { page: 2, limit: 10 },
+    );
+
+    expect(result.stage).toMatchObject({
+      key: JobPipelineStage.VISIT,
+      tracked: true,
+      count: 21,
+    });
+    expect(result.data).toEqual([]);
+    expect(result.pagination).toEqual({
+      page: 2,
+      limit: 10,
+      total: 21,
+      totalPages: 3,
+    });
+    expect(jobCount).toHaveBeenCalledWith({
+      where: JOB_PIPELINE_STAGE_MAP[JobPipelineStage.VISIT].where,
+    });
+    expect(jobFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: JOB_PIPELINE_STAGE_MAP[JobPipelineStage.VISIT].where,
+        skip: 10,
+        take: 10,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      }),
+    );
+  });
+
+  it('returns an empty page for an untracked stage without querying jobs', async () => {
+    const { service, jobCount, jobFindMany } = createService();
+
+    const result = await service.pipelineStageForAdmin(
+      JobPipelineStage.DIAGNOSE,
+    );
+
+    expect(result.stage).toMatchObject({
+      key: JobPipelineStage.DIAGNOSE,
+      tracked: false,
+      count: null,
+    });
+    expect(result.data).toEqual([]);
+    expect(result.pagination).toEqual({
+      page: 1,
+      limit: 20,
+      total: 0,
+      totalPages: 0,
+    });
+    expect(jobCount).not.toHaveBeenCalled();
+    expect(jobFindMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown stage', async () => {
+    const { service } = createService();
+
+    await expect(
+      service.pipelineStageForAdmin('unknown' as JobPipelineStage),
+    ).rejects.toThrow('Unknown job pipeline stage.');
   });
 });
 

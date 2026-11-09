@@ -1169,6 +1169,20 @@ These routes require administrator authentication.
 
 **GET** `{{baseUrl}}/api/v1/admin/jobs/summary` — no body.
 
+### Get job pipeline counts
+
+**GET** `{{baseUrl}}/api/v1/admin/jobs/pipeline` — no body. Returns the ten
+dashboard stages in lifecycle order. Diagnose, Quote, and Approve return
+`count: null` with `tracked: false` because the backend does not record those
+steps.
+
+### List jobs at a pipeline stage
+
+**GET** `{{baseUrl}}/api/v1/admin/jobs/pipeline/visit?page=1&limit=20` — no
+body. The stage is one of `request`, `match`, `accept`, `visit`, `diagnose`,
+`quote`, `approve`, `repair`, `settle`, or `rate`. Untracked stages return an
+empty page rather than an error.
+
 ### Get a job by ID
 
 **GET** `{{baseUrl}}/api/v1/admin/jobs/{{jobId}}` — no body.

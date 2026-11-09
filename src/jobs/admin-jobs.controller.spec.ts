@@ -4,6 +4,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { AdminJobsController } from './admin-jobs.controller';
+import { JobPipelineStage } from './job-pipeline';
 import { JobsService } from './jobs.service';
 
 // Keeps the admin jobs controller behind the Request -> JWT guard ->
@@ -13,6 +14,8 @@ describe('AdminJobsController', () => {
     listForAdmin: jest.fn(),
     getForAdmin: jest.fn(),
     summaryForAdmin: jest.fn(),
+    pipelineForAdmin: jest.fn(),
+    pipelineStageForAdmin: jest.fn(),
     createForAdmin: jest.fn(),
     adminUpdate: jest.fn(),
     adminCancel: jest.fn(),
@@ -39,6 +42,34 @@ describe('AdminJobsController', () => {
 
     await expect(controller.summary()).resolves.toEqual(expected);
     expect(jobs.summaryForAdmin).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards the pipeline request to the jobs service', async () => {
+    const expected = {
+      stages: [],
+      generatedAt: '2026-11-09T09:00:00.000Z',
+    };
+    jobs.pipelineForAdmin.mockResolvedValue(expected);
+
+    await expect(controller.pipeline()).resolves.toEqual(expected);
+    expect(jobs.pipelineForAdmin).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards a pipeline stage page request with its paging parameters', async () => {
+    const expected = {
+      stage: { key: JobPipelineStage.VISIT },
+      data: [],
+      pagination: { page: 2, limit: 10, total: 0, totalPages: 0 },
+    };
+    jobs.pipelineStageForAdmin.mockResolvedValue(expected);
+
+    await expect(
+      controller.pipelineStage(JobPipelineStage.VISIT, { page: 2, limit: 10 }),
+    ).resolves.toEqual(expected);
+    expect(jobs.pipelineStageForAdmin).toHaveBeenCalledWith(
+      JobPipelineStage.VISIT,
+      { page: 2, limit: 10 },
+    );
   });
 
   it('creates a job for the admin user', async () => {

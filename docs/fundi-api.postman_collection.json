@@ -112,6 +112,16 @@
       "key": "adminNewPassword",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "chatRoomId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "chatMessageId",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -886,7 +896,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Home Repair\",\n  \"visitFee\": 1000\n}",
+              "raw": "{\n  \"name\": \"Home Repair\",\n  \"category\": \"Home Services\",\n  \"description\": \"General household repairs.\",\n  \"visitFee\": 1000,\n  \"emergencyVisitFee\": 1500,\n  \"sosBookingFee\": 2500\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -953,7 +963,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Home Maintenance\",\n  \"isActive\": true,\n  \"visitFee\": 1500\n}",
+              "raw": "{\n  \"name\": \"Home Maintenance\",\n  \"description\": \"General maintenance and repairs.\",\n  \"isActive\": true,\n  \"visitFee\": 1500,\n  \"emergencyVisitFee\": 2000,\n  \"sosBookingFee\": 3500\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1844,7 +1854,7 @@
               }
             ],
             "url": "{{baseUrl}}/api/v1/payments/mock",
-            "description": "Save response.id as paymentId. The amount is loaded from the category visitFee and is valid for seven days.",
+            "description": "Save response.id as paymentId. requestType defaults to NORMAL and charges visitFee; use SOS to charge sosBookingFee. Payments are valid for seven days.",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -1857,7 +1867,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"serviceCategoryId\": \"{{categoryId}}\",\n  \"phoneNumber\": \"+250788123456\"\n}",
+              "raw": "{\n  \"serviceCategoryId\": \"{{categoryId}}\",\n  \"requestType\": \"NORMAL\",\n  \"phoneNumber\": \"+250788123456\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1892,7 +1902,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"serviceCategoryId\": \"{{categoryId}}\",\n  \"externalPaymentId\": \"frontend-payment-20261028-001\",\n  \"status\": \"SUCCESS\",\n  \"phoneNumber\": \"+250788123456\",\n  \"amount\": 1000,\n  \"paidAt\": \"2026-10-28T12:00:00.000Z\"\n}",
+              "raw": "{\n  \"serviceCategoryId\": \"{{categoryId}}\",\n  \"requestType\": \"NORMAL\",\n  \"externalPaymentId\": \"frontend-payment-20261028-001\",\n  \"status\": \"SUCCESS\",\n  \"phoneNumber\": \"+250788123456\",\n  \"amount\": 1000,\n  \"paidAt\": \"2026-10-28T12:00:00.000Z\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1993,6 +2003,11 @@
                   "type": "text"
                 },
                 {
+                  "key": "requestType",
+                  "value": "NORMAL",
+                  "type": "text"
+                },
+                {
                   "key": "description",
                   "value": "Repair a leaking kitchen tap and check the connection.",
                   "type": "text"
@@ -2031,6 +2046,76 @@
                   "key": "video",
                   "type": "file",
                   "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create SOS job with automatic matching",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/jobs/sos",
+            "description": "Use Body > form-data after creating an SOS payment and verifying a fresh phone OTP. The system offers to one approved, online matching technician at a time; each has five minutes to accept.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "phoneVerificationId",
+                  "value": "{{verificationId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "paymentId",
+                  "value": "{{paymentId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "serviceCategoryId",
+                  "value": "{{categoryId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "description",
+                  "value": "Urgent water leak is flooding the kitchen.",
+                  "type": "text"
+                },
+                {
+                  "key": "locationAddress",
+                  "value": "Kimihurura, Kigali",
+                  "type": "text"
+                },
+                {
+                  "key": "latitude",
+                  "value": "-1.9536",
+                  "type": "text"
+                },
+                {
+                  "key": "longitude",
+                  "value": "30.0606",
+                  "type": "text"
+                },
+                {
+                  "key": "offeredAmount",
+                  "value": "25000",
+                  "type": "text"
+                },
+                {
+                  "key": "priority",
+                  "value": "URGENT",
+                  "type": "text"
                 }
               ]
             }
@@ -3265,6 +3350,447 @@
             "auth": {
               "type": "noauth"
             }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Job Chat - Member",
+      "description": "Use a customer or technician bearer token that participates in the room. A room is created when a technician accepts a job assignment.",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{customerToken}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "List my chat rooms",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms"
+          },
+          "response": []
+        },
+        {
+          "name": "Get room details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "List room messages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages?limit=50"
+          },
+          "response": []
+        },
+        {
+          "name": "Send text message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"I can come by at 10:00 tomorrow.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send image, file, voice note, or video",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages/media",
+            "description": "Use Body > form-data: type=IMAGE (or FILE, VOICE_NOTE, VIDEO) as Text, file as File, and optional durationSeconds for a voice note. Limits: image 10 MiB, document 20 MiB, voice 20 MiB/5 min, video 50 MiB/60 seconds.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "type",
+                  "value": "IMAGE",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Download message attachment",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}/media"
+          },
+          "response": []
+        },
+        {
+          "name": "Mark messages read",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/read",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messageId\": \"{{chatMessageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Edit unread text message",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Updated: I can come by at 11:00 tomorrow.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete unread message",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Confirm cooperation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/cooperation/confirm"
+          },
+          "response": []
+        },
+        {
+          "name": "Deny partnership before confirmation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/cooperation/deny",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"We could not agree on the terms.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/cancel",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"The customer no longer needs the repair.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update job progress",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/progress",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"COMPLETED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Request job pause",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/pause"
+          },
+          "response": []
+        },
+        {
+          "name": "Request job resume",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/resume"
+          },
+          "response": []
+        },
+        {
+          "name": "Archive room after job is terminal",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Job Chat - Admin",
+      "description": "Requires an administrator session cookie retained by Postman or an administrator bearer token. Admin inspection does not create member read receipts.",
+      "auth": {
+        "type": "noauth"
+      },
+      "item": [
+        {
+          "name": "List chat rooms (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms"
+          },
+          "response": []
+        },
+        {
+          "name": "Get room details (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Inspect room messages (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages?limit=50"
+          },
+          "response": []
+        },
+        {
+          "name": "Send administrative text message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"An administrator is reviewing this conversation.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send administrative attachment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/media",
+            "description": "Use Body > form-data with type (Text) and file (File).",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "type",
+                  "value": "IMAGE",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Download attachment (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}/media"
+          },
+          "response": []
+        },
+        {
+          "name": "Disable room",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"disabled\": true,\n  \"reason\": \"Under review\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Block room member",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/members/{{userId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"blocked\": true,\n  \"reason\": \"Policy review\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Block message",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}/block",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"blocked\": true,\n  \"reason\": \"Violates messaging policy\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Permanently delete message",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}"
           },
           "response": []
         }

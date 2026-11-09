@@ -1,6 +1,6 @@
 # Phone Authentication API
 
-This guide covers customers and technicians, who can sign in with an SMS code, an optional account password, or a registered passkey and receive bearer tokens they hold themselves. Administrators sign in separately with an email address, a password, and an authenticator-app code; their session lives in `httpOnly` cookies instead of tokens. That flow is documented in [admin-authentication.md](admin-authentication.md). The two flows share no endpoints, public registration cannot create an administrator, and the phone endpoints below answer `403` for an `ADMIN` account so a texted code can never mint a token that admin routes would accept.
+This guide covers customers and technicians, who can sign in with an SMS code, an optional account password or PIN, or a registered passkey and receive bearer tokens they hold themselves. Administrators sign in separately with an email address, a password, and an authenticator-app code; their session lives in `httpOnly` cookies instead of tokens. That flow is documented in [admin-authentication.md](admin-authentication.md). The two flows share no endpoints, public registration cannot create an administrator, and the phone endpoints below answer `403` for an `ADMIN` account so a texted code can never mint a token that admin routes would accept.
 
 Phone numbers are the login identifier. Public registration accepts `CUSTOMER` or `TECHNICIAN` (case-insensitive) and defaults to `CUSTOMER`; it cannot create an administrator. Names may contain Unicode letters, spaces, apostrophes, and hyphens, but not digits or other punctuation. New accounts default to `ACTIVE`. Customer registration is immediate and does not send an OTP. Technician registration sends an OTP, which must be verified before the technician can create or update a profile. Both roles use login OTPs after registration. Customers verify their phone separately for every job request; see [Jobs API](jobs.md#verify-a-phone-number-for-a-job).
 
@@ -8,7 +8,7 @@ Send `Content-Type: application/json` for requests with a body. OTP hashes and r
 
 Lifetimes are settings, not constants: `OTP_TTL_SECONDS` (default `300`, five minutes) controls how long a code stays usable, `JWT_ACCESS_EXPIRES_IN` (default `7d`) the access token, and `JWT_REFRESH_EXPIRES_IN` (default `30d`) the refresh token and the matching `refresh_tokens` row. Durations accept `s`, `m`, `h`, `d`, `w`, and `y`; there is no month unit, so a month is expressed as `30d`. Note that a one-week access token means a leaked token stays usable until it expires or the session is revoked, so keep `JWT_ACCESS_SECRET` private and prefer the shortest lifetime that still suits the client.
 
-Passwords are optional at registration. They are bcrypt-hashed, limited to 8–72 UTF-8 bytes, and subject to a per-account failed-login limit (`AUTH_PASSWORD_MAX_ATTEMPTS`, default `5`; `AUTH_PASSWORD_LOCKOUT_SECONDS`, default `900`). Existing accounts set or reset a password only by verifying an SMS OTP. Passkeys use WebAuthn: the device performs local PIN/biometric verification and signs a challenge; the API does not receive or store the device PIN, pattern, or biometric data. Configure `WEBAUTHN_RP_ID` to the relying-party domain and `WEBAUTHN_ORIGIN` to the exact allowed origin(s), comma-separated. Production requires both settings and HTTPS. Passkey registration and authentication options must be completed by a WebAuthn-capable web or mobile client; Postman can submit a credential response but cannot generate one.
+Passwords are optional at registration. They are bcrypt-hashed, limited to 8–72 UTF-8 bytes, and subject to a per-account failed-login limit (`AUTH_PASSWORD_MAX_ATTEMPTS`, default `5`; `AUTH_PASSWORD_LOCKOUT_SECONDS`, default `900`). PINs contain 4–6 digits, are also bcrypt-hashed, and share the same per-account failed-login limit as password sign-in. Existing accounts set or reset a password only by verifying an SMS OTP. Passkeys use WebAuthn: the device performs local PIN/biometric verification and signs a challenge; the API does not receive or store the device PIN, pattern, or biometric data. Configure `WEBAUTHN_RP_ID` to the relying-party domain and `WEBAUTHN_ORIGIN` to the exact allowed origin(s), comma-separated. Production requires both settings and HTTPS. Passkey registration and authentication options must be completed by a WebAuthn-capable web or mobile client; Postman can submit a credential response but cannot generate one.
 
 ## `POST /api/v1/auth/register`
 
@@ -58,6 +58,22 @@ For a technician, registration starts phone verification:
 
 Find the technician registration code in the API terminal during development and submit it to `POST /api/v1/auth/verify-otp`. That endpoint returns the user and bearer tokens. Successful verification sets a technician's `phoneVerifiedAt`. A customer can verify an OTP during login, but that does not replace the per-job verification.
 
+## `POST /api/v1/auth/register/pin`
+
+Creates a customer account using the existing phone-number format and a PIN instead of a password. `fullName`, `phoneNumber`, and `pin` are required. The PIN must contain 4–6 digits and is stored as a bcrypt hash.
+
+Request:
+
+```json
+{
+  "fullName": "Prince Example",
+  "phoneNumber": "+250788123456",
+  "pin": "123456"
+}
+```
+
+Success response (`200`): the same customer registration response as `/register`. A duplicate phone number returns `409`.
+
 ## `POST /api/v1/auth/login/password`
 
 Signs in a customer or verified technician who has configured an account password. OTP sign-in remains available as a fallback.
@@ -70,6 +86,17 @@ Signs in a customer or verified technician who has configured an account passwor
 ```
 
 Success response (`200`): the same user and bearer-token format returned by `verify-otp`. Five failed attempts within the configured lockout window temporarily block password sign-in for that account.
+
+## `POST /api/v1/auth/login/pin`
+
+Signs in a customer or verified technician who has a PIN configured. The endpoint returns the same user and bearer-token format as password sign-in. Five failed password or PIN attempts within the configured lockout window temporarily block credential sign-in for that account.
+
+```json
+{
+  "phoneNumber": "+250788123456",
+  "pin": "123456"
+}
+```
 
 ## `POST /api/v1/auth/password/reset`
 

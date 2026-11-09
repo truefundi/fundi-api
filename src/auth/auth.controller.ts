@@ -28,6 +28,8 @@ import { RefreshDto } from './dto/refresh.dto';
 import { AuthTokensDto } from './dto/auth-tokens.dto';
 import { UserResponseDto } from '../users/dto/user-response.dto';
 import { PasswordLoginDto } from './dto/password-login.dto';
+import { PinLoginDto } from './dto/pin-login.dto';
+import { PinRegisterDto } from './dto/pin-register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { PasskeyAuthenticationDto } from './dto/passkey-authentication.dto';
 import { PasskeyRegistrationDto } from './dto/passkey-registration.dto';
@@ -65,6 +67,19 @@ export class AuthController {
   )
   async register(@Body() body: RegisterDto) {
     return this.authService.register(body);
+  }
+
+  @Post('register/pin')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Register a customer account with a phone number and PIN',
+    description:
+      'Creates a customer account with a 4–6 digit PIN. A full name is required. The PIN is stored as a bcrypt hash, separately from any account password.',
+  })
+  @ApiValidationFailed()
+  @ApiConflict('An account with this phone number already exists.')
+  async registerWithPin(@Body() body: PinRegisterDto) {
+    return this.authService.registerWithPin(body);
   }
 
   // Starts login only for an existing active account.
@@ -140,6 +155,21 @@ export class AuthController {
   @ApiServiceUnavailable()
   async loginWithPassword(@Body() body: PasswordLoginDto) {
     return this.authService.loginWithPassword(body.phoneNumber, body.password);
+  }
+
+  @Post('login/pin')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Sign in with a phone number and PIN',
+    description:
+      'For customer and verified technician accounts with a PIN configured. OTP and password sign-in remain available.',
+  })
+  @ApiValidationFailed()
+  @ApiUnauthorized('The phone number or PIN is incorrect.')
+  @ApiForbidden('The account is inactive, unverified, or temporarily locked.')
+  @ApiServiceUnavailable()
+  async loginWithPin(@Body() body: PinLoginDto) {
+    return this.authService.loginWithPin(body.phoneNumber, body.pin);
   }
 
   @Post('password/reset')

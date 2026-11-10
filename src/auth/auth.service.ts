@@ -28,8 +28,11 @@ import { SmsService } from '../sms/sms.service';
 import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { PinRegisterDto } from './dto/pin-register.dto';
-import { UserRole, type User } from '@prisma/client';
-import { normalizeRwandaPhoneNumber } from '../common/validation/rwanda-phone-number';
+import { Prisma, UserRole, type User } from '@prisma/client';
+import {
+  normalizeRwandaPhoneNumber,
+  RWANDA_PHONE_NUMBER_PATTERN,
+} from '../common/validation/rwanda-phone-number';
 
 const PASSWORD_ATTEMPT_SCRIPT = `
 local attempts = tonumber(redis.call('GET', KEYS[1]) or '0')
@@ -767,19 +770,28 @@ export class AuthService {
       throw new NotFoundException('Account not found.');
     }
     this.ensureActive(user.status);
+    // A different number is only a candidate: the code goes to it, and the account
+    // is updated in verifyCustomerJobOtp once the customer proves they hold it.
     let targetPhone = user.phoneNumber;
     if (phoneNumberOverride) {
-      targetPhone = normalizeRwandaPhoneNumber(phoneNumberOverride) as string;
+      const normalized = normalizeRwandaPhoneNumber(phoneNumberOverride);
+      if (
+        typeof normalized !== 'string' ||
+        !RWANDA_PHONE_NUMBER_PATTERN.test(normalized)
+      ) {
+        throw new BadRequestException(
+          'Enter a valid Rwandan mobile number (078, 079, 072 or 073).',
+        );
+      }
+      targetPhone = normalized;
       if (targetPhone !== user.phoneNumber) {
-        await this.prisma.user.update({
-          where: { id: customerId },
-          data: { phoneNumber: targetPhone },
-        });
+        await this.assertPhoneAvailable(targetPhone, customerId);
       }
     }
     const verification = await this.prisma.customerPhoneVerification.create({
       data: {
         customerId,
+        phoneNumber: targetPhone,
         expiresAt: new Date(Date.now() + this.otpTtlSeconds * 1000),
       },
     });
@@ -856,11 +868,50 @@ export class AuthService {
         'Phone verification expired or was already used. Request a new OTP.',
       );
     }
-    await this.prisma.user.update({
-      where: { id: customerId },
-      data: { phoneVerifiedAt: verifiedAt },
+    // The customer has now proven they hold the number the code was sent to.
+    const verifiedPhone = verification.phoneNumber;
+    try {
+      await this.prisma.user.update({
+        where: { id: customerId },
+        data: {
+          phoneVerifiedAt: verifiedAt,
+          ...(verifiedPhone ? { phoneNumber: verifiedPhone } : {}),
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        // Another account claimed the number between request and verification.
+        await this.prisma.customerPhoneVerification.updateMany({
+          where: { id: verification.id },
+          data: { consumedAt: verifiedAt },
+        });
+        throw new ConflictException(
+          'This phone number is already linked to another account.',
+        );
+      }
+      throw error;
+    }
+    return {
+      verificationId: verification.id,
+      verifiedAt,
+      ...(verifiedPhone ? { phoneNumber: verifiedPhone } : {}),
+    };
+  }
+
+  /** Rejects a number that already belongs to a different account. */
+  private async assertPhoneAvailable(phoneNumber: string, userId: string) {
+    const owner = await this.prisma.user.findUnique({
+      where: { phoneNumber },
+      select: { id: true },
     });
-    return { verificationId: verification.id, verifiedAt };
+    if (owner && owner.id !== userId) {
+      throw new ConflictException(
+        'This phone number is already linked to another account.',
+      );
+    }
   }
 
   private async verifyCode(

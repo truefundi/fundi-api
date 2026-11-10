@@ -346,6 +346,7 @@ describe('JobsService SOS technician dispatch', () => {
             currency: 'RWF',
             otherServiceName: null,
             serviceCategory: { name: 'Plumbing' },
+            customer: { id: 'customer-1', fullName: 'Aline Uwase' },
           },
         }),
       },
@@ -428,7 +429,10 @@ describe('JobsService SOS technician dispatch', () => {
     expect(events.notifyTechnician).toHaveBeenCalledWith(
       'technician-user-2',
       'job:offer',
-      expect.objectContaining({ requestType: JobRequestType.SOS }),
+      expect.objectContaining({
+        requestType: JobRequestType.SOS,
+        customer: { id: 'customer-1', fullName: 'Aline Uwase' },
+      }),
     );
   });
 });
@@ -501,5 +505,148 @@ describe('JobsService match scoring penalties', () => {
     expect(JobsService.adjustMatchScore(90, 2, 1)).toBe(75);
     expect(JobsService.adjustMatchScore(90, 20, 20)).toBe(50);
     expect(JobsService.adjustMatchScore(20, 20, 20)).toBe(0);
+  });
+});
+
+// The technician inbox and the customer's chat both name the other party before
+// a job is assigned: offers carry the requesting customer, and an open job tells
+// its customer which technician the request is waiting on (or who last let it go).
+describe('JobsService request routing visibility', () => {
+  const createService = (prisma: Record<string, unknown>, storage?: unknown) =>
+    new JobsService(
+      prisma as unknown as PrismaService,
+      (storage ?? { getDownloadUrl: jest.fn() }) as never,
+      { log: jest.fn() } as never,
+      { notifyTechnician: jest.fn() } as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+
+  it('includes the requesting customer on technician offers', async () => {
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: 'offer-1',
+        status: 'OFFERED',
+        round: 1,
+        matchScore: 92,
+        distanceMeters: 1234.4,
+        offeredAt: new Date(),
+        expiresAt: new Date(Date.now() + 60_000),
+        respondedAt: null,
+        rejectionReason: null,
+        dropReason: null,
+        job: {
+          id: 'job-1',
+          serviceCategory: { id: 'cat', name: 'Plumbing', slug: 'plumbing' },
+          otherServiceName: null,
+          description: 'Leaking sink',
+          locationAddress: 'Kigali',
+          latitude: -1.9,
+          longitude: 30.1,
+          offeredAmount: 3000,
+          currency: 'RWF',
+          priority: 'NORMAL',
+          status: 'OPEN',
+          createdAt: new Date(),
+          media: [],
+          customer: { id: 'customer-1', fullName: 'Aline Uwase' },
+        },
+      },
+    ]);
+    const service = createService({
+      technicianProfile: { findUnique: jest.fn().mockResolvedValue({ id: 'tech-profile' }) },
+      jobOffer: { findMany },
+    });
+
+    const [offer] = await service.listTechnicianOffers('technician-user');
+
+    expect(offer.customer).toEqual({ id: 'customer-1', fullName: 'Aline Uwase' });
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          job: expect.objectContaining({
+            include: expect.objectContaining({
+              customer: { select: { id: true, fullName: true } },
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  const openJob = (requestType: JobRequestType) => ({
+    id: 'job-1',
+    requestType,
+    status: JobStatus.OPEN,
+    technician: null,
+    customer: { id: 'customer-1', fullName: 'Aline Uwase', phoneNumber: null, email: null },
+    assignmentHistory: [],
+    media: [],
+    dispute: null,
+    serviceCategory: null,
+    otherServiceName: 'Plumbing',
+  });
+  const offerRow = (status: string) => ({
+    id: 'offer-1',
+    status,
+    matchScore: 88,
+    distanceMeters: 900.6,
+    expiresAt: new Date(Date.now() + 60_000),
+    respondedAt: null,
+    technician: {
+      id: 'tech-profile',
+      profilePictureObjectKey: 'avatars/tech.jpg',
+      user: { fullName: 'Jean Bosco' },
+    },
+  });
+  const toResponse = (service: JobsService, job: unknown, viewer: string) =>
+    (service as unknown as {
+      toResponse: (job: unknown, viewer: string) => Promise<Record<string, unknown>>;
+    }).toResponse(job, viewer);
+
+  it('shows a customer which technician a normal request is waiting on', async () => {
+    const findFirst = jest.fn().mockResolvedValueOnce(offerRow('OFFERED'));
+    const storage = { getDownloadUrl: jest.fn().mockResolvedValue('https://cdn/tech.jpg') };
+    const service = createService({ jobOffer: { findFirst } }, storage);
+
+    const response = await toResponse(service, openJob(JobRequestType.NORMAL), 'customer');
+
+    expect(response.activeOffer).toEqual(
+      expect.objectContaining({
+        technicianId: 'tech-profile',
+        technicianName: 'Jean Bosco',
+        technicianProfilePictureUrl: 'https://cdn/tech.jpg',
+        distanceMeters: 901,
+      }),
+    );
+    expect(response.lastOffer).toBeNull();
+    expect(findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a customer who last declined when nothing is pending', async () => {
+    const findFirst = jest
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ ...offerRow('REJECTED'), technician: { ...offerRow('REJECTED').technician, profilePictureObjectKey: null } });
+    const service = createService({ jobOffer: { findFirst } });
+
+    const response = await toResponse(service, openJob(JobRequestType.NORMAL), 'customer');
+
+    expect(response.activeOffer).toBeNull();
+    expect(response.lastOffer).toEqual(
+      expect.objectContaining({ status: 'REJECTED', technicianName: 'Jean Bosco', technicianProfilePictureUrl: null }),
+    );
+  });
+
+  it('keeps activeOffer on SOS jobs for other viewers without querying offers', async () => {
+    const findFirst = jest.fn();
+    const service = createService({ jobOffer: { findFirst } });
+
+    const response = await toResponse(service, openJob(JobRequestType.SOS), 'technician');
+
+    expect(response.activeOffer).toBeNull();
+    expect(response).not.toHaveProperty('lastOffer');
+    expect(findFirst).not.toHaveBeenCalled();
   });
 });

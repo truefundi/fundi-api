@@ -990,6 +990,7 @@ export class JobsService {
               currency: true,
               otherServiceName: true,
               serviceCategory: { select: { name: true } },
+              customer: { select: { id: true, fullName: true } },
             },
           },
         },
@@ -1058,6 +1059,7 @@ export class JobsService {
       offeredAmount: offer.job.offeredAmount,
       currency: offer.job.currency,
       priority: offer.job.priority,
+      customer: offer.job.customer,
     });
     await this.notifications
       .create({
@@ -2264,6 +2266,7 @@ export class JobsService {
           include: {
             serviceCategory: { select: { id: true, name: true, slug: true } },
             media: { orderBy: { createdAt: 'asc' } },
+            customer: { select: { id: true, fullName: true } },
           },
         },
       },
@@ -2272,6 +2275,8 @@ export class JobsService {
     return Promise.all(
       offers.map(async (offer) => ({
         id: offer.id,
+        // Who is asking, so the technician's inbox can show the client by name.
+        customer: offer.job.customer,
         status: offer.status,
         round: offer.round,
         matchScore: offer.matchScore,
@@ -3335,6 +3340,7 @@ export class JobsService {
               currency: true,
               otherServiceName: true,
               serviceCategory: { select: { name: true } },
+              customer: { select: { id: true, fullName: true } },
             },
           },
         },
@@ -3406,6 +3412,7 @@ export class JobsService {
       offeredAmount: offer.job.offeredAmount,
       currency: offer.job.currency,
       priority: offer.job.priority,
+      customer: offer.job.customer,
       requestType: JobRequestType.SOS,
     });
   }
@@ -3589,30 +3596,60 @@ export class JobsService {
     job: JobWithDetails,
     viewer: 'customer' | 'technician' | 'admin',
   ) {
-    const activeSosOffer =
-      viewer === 'customer' &&
-      job.requestType === JobRequestType.SOS &&
-      job.status === JobStatus.OPEN
+    // While a job is still open, the customer sees which technician their request is
+    // waiting on (any request type), or who last declined or let it lapse.
+    const offerSelect = {
+      id: true,
+      status: true,
+      matchScore: true,
+      distanceMeters: true,
+      expiresAt: true,
+      respondedAt: true,
+      technician: {
+        select: {
+          id: true,
+          profilePictureObjectKey: true,
+          user: { select: { fullName: true } },
+        },
+      },
+    } satisfies Prisma.JobOfferSelect;
+    const openForCustomer = viewer === 'customer' && job.status === JobStatus.OPEN;
+    const activeOffer = openForCustomer
+      ? await this.prisma.jobOffer.findFirst({
+          where: {
+            jobId: job.id,
+            status: JobOfferStatus.OFFERED,
+            expiresAt: { gt: new Date() },
+          },
+          select: offerSelect,
+        })
+      : null;
+    const lastOffer =
+      openForCustomer && !activeOffer
         ? await this.prisma.jobOffer.findFirst({
             where: {
               jobId: job.id,
-              status: JobOfferStatus.OFFERED,
-              expiresAt: { gt: new Date() },
+              status: { in: [JobOfferStatus.REJECTED, JobOfferStatus.EXPIRED] },
             },
-            select: {
-              id: true,
-              matchScore: true,
-              distanceMeters: true,
-              expiresAt: true,
-              technician: {
-                select: {
-                  id: true,
-                  user: { select: { fullName: true } },
-                },
-              },
-            },
+            orderBy: [{ respondedAt: 'desc' }, { offeredAt: 'desc' }],
+            select: offerSelect,
           })
         : null;
+    const offerResponse = async (offer: NonNullable<typeof activeOffer>) => ({
+      id: offer.id,
+      status: offer.status,
+      technicianId: offer.technician.id,
+      technicianName: offer.technician.user.fullName,
+      technicianProfilePictureUrl: offer.technician.profilePictureObjectKey
+        ? await this.storage
+            .getDownloadUrl(offer.technician.profilePictureObjectKey)
+            .catch(() => null)
+        : null,
+      matchAccuracy: offer.matchScore,
+      distanceMeters: Math.round(offer.distanceMeters),
+      expiresAt: offer.expiresAt,
+      respondedAt: offer.respondedAt,
+    });
     const currentTechnician = job.technician
       ? {
           id: job.technician.id,
@@ -3663,17 +3700,12 @@ export class JobsService {
         technicianConfirmedAt: job.technicianConfirmedAt,
       },
       dispatchStatus: job.dispatchStatus,
-      ...(job.requestType === JobRequestType.SOS && {
-        activeOffer: activeSosOffer
-          ? {
-              id: activeSosOffer.id,
-              technicianId: activeSosOffer.technician.id,
-              technicianName: activeSosOffer.technician.user.fullName,
-              matchAccuracy: activeSosOffer.matchScore,
-              distanceMeters: Math.round(activeSosOffer.distanceMeters),
-              expiresAt: activeSosOffer.expiresAt,
-            }
-          : null,
+      // SOS jobs always carried activeOffer; customers now get it for every request type.
+      ...((viewer === 'customer' || job.requestType === JobRequestType.SOS) && {
+        activeOffer: activeOffer ? await offerResponse(activeOffer) : null,
+      }),
+      ...(viewer === 'customer' && {
+        lastOffer: lastOffer ? await offerResponse(lastOffer) : null,
       }),
       customerProgress: job.customerProgress,
       technicianProgress: job.technicianProgress,

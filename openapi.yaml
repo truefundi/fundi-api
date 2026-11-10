@@ -5017,6 +5017,15 @@ components:
           type:
             - string
             - 'null'
+        customer:
+          description: The customer who sent the request.
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            fullName:
+              type: string
         job:
           $ref: '#/components/schemas/Job'
     Job:
@@ -5065,6 +5074,20 @@ components:
           format: date-time
         dispatchStatus:
           $ref: '#/components/schemas/DispatchStatus'
+        activeOffer:
+          description: >-
+            Customer view of an open job (all request types; also present on SOS
+            jobs for other viewers): the technician the request is waiting on.
+          oneOf:
+            - $ref: '#/components/schemas/RequestRouting'
+            - type: 'null'
+        lastOffer:
+          description: >-
+            Customer view of an open job with nothing pending: the technician who
+            most recently declined the request or let it expire.
+          oneOf:
+            - $ref: '#/components/schemas/RequestRouting'
+            - type: 'null'
         customerProgress:
           $ref: '#/components/schemas/ProgressStatus'
         technicianProgress:
@@ -5275,6 +5298,41 @@ components:
           type:
             - string
             - 'null'
+    RequestRouting:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - OFFERED
+            - REJECTED
+            - EXPIRED
+        technicianId:
+          type: string
+          format: uuid
+        technicianName:
+          type: string
+        technicianProfilePictureUrl:
+          type:
+            - string
+            - 'null'
+        matchAccuracy:
+          type: number
+        distanceMeters:
+          type: integer
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        respondedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
     PageOfOffer:
       type: object
       properties:

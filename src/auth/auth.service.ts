@@ -29,6 +29,7 @@ import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { PinRegisterDto } from './dto/pin-register.dto';
 import { UserRole, type User } from '@prisma/client';
+import { normalizeRwandaPhoneNumber } from '../common/validation/rwanda-phone-number';
 
 const PASSWORD_ATTEMPT_SCRIPT = `
 local attempts = tonumber(redis.call('GET', KEYS[1]) or '0')
@@ -757,7 +758,7 @@ export class AuthService {
     return this.verifyCode(this.otpKey(userId), this.otpTriesKey(userId), otp);
   }
 
-  async requestCustomerJobOtp(customerId: string) {
+  async requestCustomerJobOtp(customerId: string, phoneNumberOverride?: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: customerId },
       select: { id: true, phoneNumber: true, role: true, status: true },
@@ -766,6 +767,16 @@ export class AuthService {
       throw new NotFoundException('Account not found.');
     }
     this.ensureActive(user.status);
+    let targetPhone = user.phoneNumber;
+    if (phoneNumberOverride) {
+      targetPhone = normalizeRwandaPhoneNumber(phoneNumberOverride) as string;
+      if (targetPhone !== user.phoneNumber) {
+        await this.prisma.user.update({
+          where: { id: customerId },
+          data: { phoneNumber: targetPhone },
+        });
+      }
+    }
     const verification = await this.prisma.customerPhoneVerification.create({
       data: {
         customerId,
@@ -775,7 +786,7 @@ export class AuthService {
     const key = this.jobVerificationOtpKey(verification.id);
     try {
       const code = await this.issueOtpForKeys(key);
-      await this.deliverOtp(user.id, user.phoneNumber, code, key);
+      await this.deliverOtp(user.id, targetPhone, code, key);
     } catch (error) {
       await this.prisma.customerPhoneVerification.delete({
         where: { id: verification.id },
@@ -785,6 +796,7 @@ export class AuthService {
     return {
       verificationId: verification.id,
       expiresAt: verification.expiresAt,
+      phoneNumber: targetPhone,
       message: `OTP sent. It expires in ${this.otpLifetimeMinutes()} minutes.`,
     };
   }

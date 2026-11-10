@@ -33,8 +33,19 @@ export class PaymentsService {
   ) {}
 
   async createMockPayment(customerId: string, dto: CreateMockPaymentDto) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(dto.serviceCategoryId);
     const category = await this.prisma.serviceCategory.findFirst({
-      where: { id: dto.serviceCategoryId, isActive: true },
+      where: {
+        isActive: true,
+        ...(isUuid
+          ? { id: dto.serviceCategoryId }
+          : {
+              OR: [
+                { slug: dto.serviceCategoryId.toLowerCase().trim() },
+                { name: { equals: dto.serviceCategoryId.trim(), mode: 'insensitive' } },
+              ],
+            }),
+      },
       select: {
         id: true,
         name: true,
@@ -143,8 +154,19 @@ export class PaymentsService {
         'Frontend-reported payments are disabled in production. Confirm payments through the payment provider on the server.',
       );
     }
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(dto.serviceCategoryId);
     const category = await this.prisma.serviceCategory.findFirst({
-      where: { id: dto.serviceCategoryId, isActive: true },
+      where: {
+        isActive: true,
+        ...(isUuid
+          ? { id: dto.serviceCategoryId }
+          : {
+              OR: [
+                { slug: dto.serviceCategoryId.toLowerCase().trim() },
+                { name: { equals: dto.serviceCategoryId.trim(), mode: 'insensitive' } },
+              ],
+            }),
+      },
       select: {
         id: true,
         name: true,

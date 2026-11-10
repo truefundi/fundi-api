@@ -179,14 +179,40 @@ const at = (anchor: Date, minutesBefore: number) =>
 
 // ─── Seeders ───────────────────────────────────────────────────────────────
 
+const CATEGORY_FEES: Record<string, { fee: number; sos: number }> = {
+  'plumbing': { fee: 3000, sos: 5000 },
+  'electrical': { fee: 3000, sos: 5000 },
+  'carpentry': { fee: 2500, sos: 4000 },
+  'painting': { fee: 2500, sos: 4000 },
+  'appliance-repair': { fee: 3500, sos: 6000 },
+  'hvac-refrigeration': { fee: 3500, sos: 6000 },
+  'masonry': { fee: 2500, sos: 4000 },
+  'welding-metalwork': { fee: 3000, sos: 5000 },
+  'roofing': { fee: 3000, sos: 5000 },
+  'locksmith': { fee: 2500, sos: 4000 },
+};
+
 async function seedCategories() {
   const categories = [];
   for (const name of CATEGORIES) {
     const slug = slugify(name);
+    const feeInfo = CATEGORY_FEES[slug] ?? { fee: 2500, sos: 5000 };
     const category = await prisma.serviceCategory.upsert({
       where: { slug },
-      update: { name, isActive: true },
-      create: { name, slug },
+      update: {
+        name,
+        isActive: true,
+        visitFee: feeInfo.fee,
+        emergencyVisitFee: Math.round(feeInfo.fee * 1.5),
+        sosBookingFee: feeInfo.sos,
+      },
+      create: {
+        name,
+        slug,
+        visitFee: feeInfo.fee,
+        emergencyVisitFee: Math.round(feeInfo.fee * 1.5),
+        sosBookingFee: feeInfo.sos,
+      },
     });
     categories.push(category);
   }

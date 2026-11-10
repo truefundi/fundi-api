@@ -27,7 +27,10 @@ import { JobUpload } from './job-media.util';
 import { JobsService } from './jobs.service';
 import { AuthService } from '../auth/auth.service';
 import { CreateJobMultipartDto } from './dto/create-job-multipart.dto';
-import { VerifyJobPhoneDto } from './dto/verify-job-phone.dto';
+import {
+  RequestJobPhoneVerificationDto,
+  VerifyJobPhoneDto,
+} from './dto/verify-job-phone.dto';
 import { CancelJobDto } from './dto/cancel-job.dto';
 import {
   MatchingTechniciansDto,
@@ -67,7 +70,7 @@ export class JobsController {
   @Post('phone-verification/request')
   requestPhoneVerification(
     @CurrentUser() user: AuthUser,
-    @Body() dto?: { phoneNumber?: string },
+    @Body() dto: RequestJobPhoneVerificationDto,
   ) {
     return this.auth.requestCustomerJobOtp(user.id, dto?.phoneNumber);
   }

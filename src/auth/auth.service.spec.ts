@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../database/prisma.service';
@@ -118,6 +118,66 @@ describe('AuthService phone OTP flow', () => {
         data: { phoneVerifiedAt: expect.any(Date) },
       }),
     );
+  });
+
+  // A different number must never be written to the account until its code is verified.
+  it('sends a job code to a new number without changing the account until verified', async () => {
+    const { service, prisma, sms, redisClient } = createService();
+    const newNumber = '+250722000111';
+    const verification = {
+      id: 'verification-3',
+      phoneNumber: newNumber,
+      expiresAt: new Date(Date.now() + 300_000),
+    };
+    prisma.user.findUnique
+      .mockResolvedValueOnce(activeUser) // the requesting account
+      .mockResolvedValueOnce(null); // nobody else owns the new number
+    prisma.customerPhoneVerification.create.mockResolvedValue(verification);
+
+    const issued = await service.requestCustomerJobOtp(activeUser.id, '0722 000 111');
+
+    expect(issued).toMatchObject({ verificationId: verification.id, phoneNumber: newNumber });
+    expect(prisma.customerPhoneVerification.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ customerId: activeUser.id, phoneNumber: newNumber }),
+    });
+    expect(sms.sendOtp).toHaveBeenCalledWith(newNumber, expect.any(String));
+    expect(prisma.user.update).not.toHaveBeenCalled();
+
+    prisma.customerPhoneVerification.findFirst.mockResolvedValue(verification);
+    prisma.customerPhoneVerification.updateMany.mockResolvedValue({ count: 1 });
+    redisClient.eval.mockResolvedValue(1);
+    const verified = await service.verifyCustomerJobOtp(activeUser.id, verification.id, '123456');
+
+    expect(verified).toMatchObject({ phoneNumber: newNumber });
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: activeUser.id },
+      data: { phoneVerifiedAt: expect.any(Date), phoneNumber: newNumber },
+    });
+  });
+
+  it('rejects an invalid replacement number for a job code', async () => {
+    const { service, prisma, sms } = createService();
+    prisma.user.findUnique.mockResolvedValue(activeUser);
+
+    await expect(service.requestCustomerJobOtp(activeUser.id, '12345')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.customerPhoneVerification.create).not.toHaveBeenCalled();
+    expect(sms.sendOtp).not.toHaveBeenCalled();
+  });
+
+  it('rejects a replacement number that belongs to another account', async () => {
+    const { service, prisma, sms } = createService();
+    prisma.user.findUnique
+      .mockResolvedValueOnce(activeUser)
+      .mockResolvedValueOnce({ id: 'someone-else' });
+
+    await expect(
+      service.requestCustomerJobOtp(activeUser.id, '+250722000111'),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.customerPhoneVerification.create).not.toHaveBeenCalled();
+    expect(sms.sendOtp).not.toHaveBeenCalled();
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
   it('also allows an active technician account to verify a job request phone', async () => {

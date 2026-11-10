@@ -352,6 +352,8 @@ model Broadcast {
 model CustomerPhoneVerification {
   id         String    @id @default(uuid())
   customerId String
+  /// Number the code was sent to; saved to the account only once verified.
+  phoneNumber String?
   expiresAt  DateTime
   verifiedAt DateTime?
   consumedAt DateTime?

@@ -826,6 +826,21 @@ export class JobsService {
       },
     });
     const byId = new Map(profiles.map((profile) => [profile.id, profile]));
+    const profilePictureUrls = new Map<string, string | null>();
+    await Promise.all(
+      profiles.map(async (profile) => {
+        if (profile.profilePictureObjectKey) {
+          try {
+            const url = await this.storage.getDownloadUrl(
+              profile.profilePictureObjectKey,
+            );
+            profilePictureUrls.set(profile.id, url);
+          } catch {
+            profilePictureUrls.set(profile.id, null);
+          }
+        }
+      }),
+    );
     return candidates.map((candidate) => {
       const profile = byId.get(candidate.technicianId);
       if (!profile) {
@@ -852,6 +867,7 @@ export class JobsService {
           yearsOfExperience: row.yearsOfExperience,
         })),
         publicLocationLabel: profile.publicLocationLabel,
+        profilePictureUrl: profilePictureUrls.get(profile.id) ?? null,
       };
     });
   }

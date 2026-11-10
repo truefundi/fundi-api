@@ -65,8 +65,11 @@ export class JobsController {
   ) {}
 
   @Post('phone-verification/request')
-  requestPhoneVerification(@CurrentUser() user: AuthUser) {
-    return this.auth.requestCustomerJobOtp(user.id);
+  requestPhoneVerification(
+    @CurrentUser() user: AuthUser,
+    @Body() dto?: { phoneNumber?: string },
+  ) {
+    return this.auth.requestCustomerJobOtp(user.id, dto?.phoneNumber);
   }
 
   @Post('phone-verification/verify')

@@ -20,7 +20,7 @@ import {
 } from '../../common/validation/rwanda-phone-number';
 
 export class RecordProcessedPaymentDto {
-  @IsUUID('4')
+  @IsString()
   serviceCategoryId!: string;
 
   @IsOptional()

@@ -761,6 +761,25 @@ export class AuthService {
     return this.verifyCode(this.otpKey(userId), this.otpTriesKey(userId), otp);
   }
 
+  /**
+   * Whether the customer's account phone is already verified. When it is, a
+   * job can be submitted without a fresh per-job code.
+   */
+  async customerJobPhoneStatus(customerId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: customerId },
+      select: { phoneNumber: true, phoneVerifiedAt: true, role: true },
+    });
+    if (!user || user.role === UserRole.ADMIN) {
+      throw new NotFoundException('Account not found.');
+    }
+    return {
+      phoneNumber: user.phoneNumber,
+      verified: Boolean(user.phoneVerifiedAt),
+      verifiedAt: user.phoneVerifiedAt,
+    };
+  }
+
   async requestCustomerJobOtp(customerId: string, phoneNumberOverride?: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: customerId },

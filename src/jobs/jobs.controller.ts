@@ -67,6 +67,16 @@ export class JobsController {
     private readonly auth: AuthService,
   ) {}
 
+  @ApiOperation({
+    summary: 'Whether my account phone is verified',
+    description:
+      'When verified, jobs can be created without a per-job phoneVerificationId.',
+  })
+  @Get('phone-verification/status')
+  phoneVerificationStatus(@CurrentUser() user: AuthUser) {
+    return this.auth.customerJobPhoneStatus(user.id);
+  }
+
   @Post('phone-verification/request')
   requestPhoneVerification(
     @CurrentUser() user: AuthUser,
@@ -107,16 +117,19 @@ export class JobsController {
       type: 'object',
       required: [
         'paymentId',
-        'phoneVerificationId',
         'description',
         'locationAddress',
         'latitude',
         'longitude',
-        'offeredAmount',
       ],
       properties: {
         paymentId: { type: 'string', format: 'uuid' },
-        phoneVerificationId: { type: 'string', format: 'uuid' },
+        phoneVerificationId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Optional when the account phone number is already verified.',
+        },
         serviceCategoryId: { type: 'string', format: 'uuid' },
         requestType: {
           type: 'string',
@@ -164,17 +177,20 @@ export class JobsController {
       type: 'object',
       required: [
         'paymentId',
-        'phoneVerificationId',
         'serviceCategoryId',
         'description',
         'locationAddress',
         'latitude',
         'longitude',
-        'offeredAmount',
       ],
       properties: {
         paymentId: { type: 'string', format: 'uuid' },
-        phoneVerificationId: { type: 'string', format: 'uuid' },
+        phoneVerificationId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Optional when the account phone number is already verified.',
+        },
         serviceCategoryId: { type: 'string', format: 'uuid' },
         description: { type: 'string', minLength: 10, maxLength: 5000 },
         locationAddress: { type: 'string', maxLength: 255 },
@@ -196,7 +212,12 @@ export class JobsController {
     @Body() dto: CreateJobDto,
     @UploadedFiles() files: JobUploadFields,
   ) {
-    return this.jobs.createSos(user.id, dto, files.photos ?? [], files.video?.[0]);
+    return this.jobs.createSos(
+      user.id,
+      dto,
+      files.photos ?? [],
+      files.video?.[0],
+    );
   }
 
   @Get('mine')
@@ -247,6 +268,11 @@ export class JobsController {
     return this.jobs.updateProgress(user.id, jobId, 'customer', dto);
   }
 
+  @ApiOperation({
+    summary: 'Route an unanswered request to the next technician',
+    description:
+      'For a normal request, sends it to the best eligible technician who has not been asked about this job yet. For SOS, moves to the next technician in the queue.',
+  })
   @Post('mine/:jobId/retry-dispatch')
   retryDispatch(
     @CurrentUser() user: AuthUser,

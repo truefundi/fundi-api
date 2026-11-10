@@ -292,6 +292,135 @@ describe('JobsService cooperation confirmation', () => {
 
     expect(paymentUpdateMany).not.toHaveBeenCalled();
   });
+  it('confirms both sides at once when a price is agreed', async () => {
+    const { service, tx, job, paymentUpdateMany, audit } =
+      createConfirmationService();
+    (tx.job as Record<string, jest.Mock>).findUnique = jest
+      .fn()
+      .mockImplementation(() => Promise.resolve(job));
+
+    await expect(
+      service.confirmCooperationForAgreement(tx as never, jobId, customerId),
+    ).resolves.toBe(true);
+
+    expect(job.cooperationStatus).toBe(JobCooperationStatus.CONFIRMED);
+    expect(job.customerConfirmedAt).toBeInstanceOf(Date);
+    expect(job.technicianConfirmedAt).toBeInstanceOf(Date);
+    expect(paymentUpdateMany).toHaveBeenCalledTimes(1);
+    expect(audit.log).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        action: 'JOB_COOPERATION_CONFIRMED',
+        metadata: expect.objectContaining({ confirmedBy: 'price-agreement' }),
+      }),
+      tx,
+    );
+
+    await expect(
+      service.confirmCooperationForAgreement(tx as never, jobId, customerId),
+    ).resolves.toBe(false);
+    expect(paymentUpdateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a price agreement once the technician is gone', async () => {
+    const { service, tx, job } = createConfirmationService();
+    job.technicianId = null as unknown as string;
+    (job as { status: JobStatus }).status = JobStatus.OPEN;
+    (tx.job as Record<string, jest.Mock>).findUnique = jest
+      .fn()
+      .mockResolvedValue(job);
+
+    await expect(
+      service.confirmCooperationForAgreement(tx as never, jobId, customerId),
+    ).rejects.toThrow(
+      'A price can only be agreed while a technician is assigned.',
+    );
+  });
+});
+
+describe('JobsService automatic re-routing', () => {
+  it('routes the request to the best technician not yet asked', async () => {
+    const prisma = {
+      jobOffer: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ technicianId: 'tech-declined' }]),
+      },
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+    jest.spyOn(service as any, 'findJob').mockResolvedValue({
+      id: 'job-1',
+      customerId: 'customer-1',
+      status: JobStatus.OPEN,
+      technicianId: null,
+      requestType: 'NORMAL',
+      dispatchStatus: 'PENDING',
+      serviceCategoryId: 'category-1',
+      otherServiceName: null,
+      latitude: -1.95,
+      longitude: 30.06,
+      customerHiddenAt: null,
+    });
+    jest.spyOn(service as any, 'findMatches').mockResolvedValue([
+      { technicianId: 'tech-declined', matchScore: 100, distanceMeters: 10 },
+      { technicianId: 'tech-next', matchScore: 90, distanceMeters: 20 },
+    ]);
+    const propose = jest
+      .spyOn(service, 'proposeTechnician')
+      .mockResolvedValue({ id: 'job-1' } as never);
+
+    await service.retryDispatch('customer-1', 'job-1');
+
+    expect(propose).toHaveBeenCalledWith('customer-1', 'job-1', {
+      technicianId: 'tech-next',
+    });
+  });
+
+  it('explains when every eligible technician has already been asked', async () => {
+    const prisma = {
+      jobOffer: {
+        findMany: jest.fn().mockResolvedValue([{ technicianId: 'tech-1' }]),
+      },
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+    jest.spyOn(service as any, 'findJob').mockResolvedValue({
+      id: 'job-1',
+      customerId: 'customer-1',
+      status: JobStatus.OPEN,
+      technicianId: null,
+      requestType: 'NORMAL',
+      dispatchStatus: 'PENDING',
+      serviceCategoryId: 'category-1',
+      otherServiceName: null,
+      latitude: -1.95,
+      longitude: 30.06,
+      customerHiddenAt: null,
+    });
+    jest
+      .spyOn(service as any, 'findMatches')
+      .mockResolvedValue([
+        { technicianId: 'tech-1', matchScore: 100, distanceMeters: 10 },
+      ]);
+
+    await expect(service.retryDispatch('customer-1', 'job-1')).rejects.toThrow(
+      'No other technician is available',
+    );
+  });
 });
 
 describe('JobsService SOS technician dispatch', () => {
@@ -555,13 +684,18 @@ describe('JobsService request routing visibility', () => {
       },
     ]);
     const service = createService({
-      technicianProfile: { findUnique: jest.fn().mockResolvedValue({ id: 'tech-profile' }) },
+      technicianProfile: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'tech-profile' }),
+      },
       jobOffer: { findMany },
     });
 
     const [offer] = await service.listTechnicianOffers('technician-user');
 
-    expect(offer.customer).toEqual({ id: 'customer-1', fullName: 'Aline Uwase' });
+    expect(offer.customer).toEqual({
+      id: 'customer-1',
+      fullName: 'Aline Uwase',
+    });
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         include: expect.objectContaining({
@@ -580,7 +714,12 @@ describe('JobsService request routing visibility', () => {
     requestType,
     status: JobStatus.OPEN,
     technician: null,
-    customer: { id: 'customer-1', fullName: 'Aline Uwase', phoneNumber: null, email: null },
+    customer: {
+      id: 'customer-1',
+      fullName: 'Aline Uwase',
+      phoneNumber: null,
+      email: null,
+    },
     assignmentHistory: [],
     media: [],
     dispute: null,
@@ -601,16 +740,27 @@ describe('JobsService request routing visibility', () => {
     },
   });
   const toResponse = (service: JobsService, job: unknown, viewer: string) =>
-    (service as unknown as {
-      toResponse: (job: unknown, viewer: string) => Promise<Record<string, unknown>>;
-    }).toResponse(job, viewer);
+    (
+      service as unknown as {
+        toResponse: (
+          job: unknown,
+          viewer: string,
+        ) => Promise<Record<string, unknown>>;
+      }
+    ).toResponse(job, viewer);
 
   it('shows a customer which technician a normal request is waiting on', async () => {
     const findFirst = jest.fn().mockResolvedValueOnce(offerRow('OFFERED'));
-    const storage = { getDownloadUrl: jest.fn().mockResolvedValue('https://cdn/tech.jpg') };
+    const storage = {
+      getDownloadUrl: jest.fn().mockResolvedValue('https://cdn/tech.jpg'),
+    };
     const service = createService({ jobOffer: { findFirst } }, storage);
 
-    const response = await toResponse(service, openJob(JobRequestType.NORMAL), 'customer');
+    const response = await toResponse(
+      service,
+      openJob(JobRequestType.NORMAL),
+      'customer',
+    );
 
     expect(response.activeOffer).toEqual(
       expect.objectContaining({
@@ -628,14 +778,28 @@ describe('JobsService request routing visibility', () => {
     const findFirst = jest
       .fn()
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ ...offerRow('REJECTED'), technician: { ...offerRow('REJECTED').technician, profilePictureObjectKey: null } });
+      .mockResolvedValueOnce({
+        ...offerRow('REJECTED'),
+        technician: {
+          ...offerRow('REJECTED').technician,
+          profilePictureObjectKey: null,
+        },
+      });
     const service = createService({ jobOffer: { findFirst } });
 
-    const response = await toResponse(service, openJob(JobRequestType.NORMAL), 'customer');
+    const response = await toResponse(
+      service,
+      openJob(JobRequestType.NORMAL),
+      'customer',
+    );
 
     expect(response.activeOffer).toBeNull();
     expect(response.lastOffer).toEqual(
-      expect.objectContaining({ status: 'REJECTED', technicianName: 'Jean Bosco', technicianProfilePictureUrl: null }),
+      expect.objectContaining({
+        status: 'REJECTED',
+        technicianName: 'Jean Bosco',
+        technicianProfilePictureUrl: null,
+      }),
     );
   });
 
@@ -643,7 +807,11 @@ describe('JobsService request routing visibility', () => {
     const findFirst = jest.fn();
     const service = createService({ jobOffer: { findFirst } });
 
-    const response = await toResponse(service, openJob(JobRequestType.SOS), 'technician');
+    const response = await toResponse(
+      service,
+      openJob(JobRequestType.SOS),
+      'technician',
+    );
 
     expect(response.activeOffer).toBeNull();
     expect(response).not.toHaveProperty('lastOffer');

@@ -123,4 +123,133 @@ describe('JobsService customer job creation', () => {
       expect.any(String),
     );
   });
+
+  it('accepts a job without a code when the account phone is verified', async () => {
+    const jobCreate = jest.fn().mockResolvedValue(undefined);
+    const verificationUpdateMany = jest.fn();
+    const userFindUnique = jest
+      .fn()
+      .mockResolvedValue({ phoneVerifiedAt: new Date('2026-11-01') });
+    const tx = {
+      job: { create: jobCreate },
+      user: { findUnique: userFindUnique },
+      bookingPayment: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'payment-1',
+          status: 'VALID',
+          validUntil: new Date(Date.now() + 60_000),
+          requestType: 'NORMAL',
+        }),
+        update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      customerPhoneVerification: {
+        findFirst: jest.fn(),
+        updateMany: verificationUpdateMany,
+      },
+      $executeRaw: jest.fn().mockResolvedValue(1),
+    };
+    const prisma = {
+      serviceCategory: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'category-1' }),
+      },
+      $transaction: jest
+        .fn()
+        .mockImplementation(async (operation: (client: typeof tx) => unknown) =>
+          operation(tx),
+        ),
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      { put: jest.fn(), delete: jest.fn() } as unknown as never,
+      { log: jest.fn().mockResolvedValue(undefined) } as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+    );
+    jest.spyOn(service as any, 'findMatches').mockResolvedValue([]);
+    jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as any);
+
+    await service.create(
+      'customer-1',
+      {
+        paymentId: 'payment-1',
+        serviceCategoryId: 'category-1',
+        description: 'The kitchen sink has been leaking since yesterday.',
+        locationAddress: 'Kimironko, Gasabo',
+        latitude: -1.9441,
+        longitude: 30.0619,
+      } as any,
+      [],
+    );
+
+    expect(jobCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        phoneVerificationId: null,
+        offeredAmount: 0,
+      }),
+    });
+    expect(verificationUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it('still requires a code when the account phone is not verified', async () => {
+    const tx = {
+      job: { create: jest.fn() },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ phoneVerifiedAt: null }),
+      },
+      bookingPayment: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'payment-1',
+          status: 'VALID',
+          validUntil: new Date(Date.now() + 60_000),
+          requestType: 'NORMAL',
+        }),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      customerPhoneVerification: {
+        findFirst: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      $executeRaw: jest.fn(),
+    };
+    const prisma = {
+      serviceCategory: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'category-1' }),
+      },
+      $transaction: jest
+        .fn()
+        .mockImplementation(async (operation: (client: typeof tx) => unknown) =>
+          operation(tx),
+        ),
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      { put: jest.fn(), delete: jest.fn() } as unknown as never,
+      { log: jest.fn() } as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+    );
+    jest.spyOn(service as any, 'findMatches').mockResolvedValue([]);
+
+    await expect(
+      service.create(
+        'customer-1',
+        {
+          paymentId: 'payment-1',
+          serviceCategoryId: 'category-1',
+          description: 'The kitchen sink has been leaking since yesterday.',
+          locationAddress: 'Kimironko, Gasabo',
+          latitude: -1.9441,
+          longitude: 30.0619,
+        } as any,
+        [],
+      ),
+    ).rejects.toThrow('Verify your phone number');
+    expect(tx.job.create).not.toHaveBeenCalled();
+  });
 });

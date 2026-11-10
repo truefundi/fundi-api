@@ -32,6 +32,7 @@ model User {
   chatMessageReads   ChatMessageRead[]
   resolvedDisputes   Dispute[]                   @relation("DisputeResolver")
   notifications      Notification[]
+  pushTokens         PushToken[]
   createdAds         Ad[]                        @relation("AdCreatedBy")
   createdBroadcasts  Broadcast[]                 @relation("BroadcastCreatedBy")
   passkeyCredentials PasskeyCredential[]
@@ -534,6 +535,21 @@ model Notification {
   @@index([userId, readAt, createdAt])
   @@index([userId, createdAt])
   @@map("notifications")
+}
+
+/// An Expo push token registered by one of the user's devices. Notifications
+/// are mirrored to every token so the user is alerted with the app closed.
+model PushToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_tokens")
 }
 
 model AuditLog {

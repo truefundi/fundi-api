@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { EventsGateway } from '../websockets/events.gateway';
+import { PushService } from './push.service';
 
 export interface CreateNotificationInput {
   userId: string;
@@ -20,6 +21,7 @@ export class NotificationsService {
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
     private readonly audit: AuditService,
+    private readonly push?: PushService,
   ) {}
 
   /**
@@ -73,6 +75,16 @@ export class NotificationsService {
 
     const payload = this.toResponse(notification);
     this.events.notifyUser(input.userId, 'notification:new', payload);
+    // Mirror to the user's devices without holding up the caller.
+    void this.push?.sendToUser(input.userId, {
+      title: notification.title,
+      body: notification.body,
+      data: {
+        ...((notification.data as Record<string, unknown> | null) ?? {}),
+        notificationId: notification.id,
+        type: notification.type,
+      },
+    });
     return payload;
   }
 
@@ -121,7 +133,10 @@ export class NotificationsService {
     return created;
   }
 
-  async list(userId: string, query: { limit: number; offset: number; unreadOnly?: boolean }) {
+  async list(
+    userId: string,
+    query: { limit: number; offset: number; unreadOnly?: boolean },
+  ) {
     const where: Prisma.NotificationWhereInput = { userId };
     if (query.unreadOnly) {
       where.readAt = null;
@@ -155,7 +170,9 @@ export class NotificationsService {
       where: { id: notificationId, userId },
     });
     if (!notification) {
-      throw new (await import('@nestjs/common')).NotFoundException('Notification not found.');
+      throw new (await import('@nestjs/common')).NotFoundException(
+        'Notification not found.',
+      );
     }
     if (notification.readAt) {
       return this.toResponse(notification);

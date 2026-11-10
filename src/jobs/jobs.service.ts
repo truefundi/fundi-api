@@ -206,78 +206,112 @@ export class JobsService {
         return;
       }
 
-      const payment = await tx.bookingPayment.findFirst({
-        where: { jobId, status: BookingPaymentStatus.PAUSED },
-        select: { id: true },
-      });
-      if (!payment) {
-        throw new ConflictException(
-          'The assigned job does not have a paused booking payment.',
-        );
-      }
-
-      const now = new Date();
-      const customerConfirmedAt =
-        side === 'customer'
-          ? (job.customerConfirmedAt ?? now)
-          : job.customerConfirmedAt;
-      const technicianConfirmedAt =
-        side === 'technician'
-          ? (job.technicianConfirmedAt ?? now)
-          : job.technicianConfirmedAt;
-      const bothConfirmed = Boolean(
-        customerConfirmedAt && technicianConfirmedAt,
-      );
-
-      if (bothConfirmed) {
-        const expiredPayment = await tx.bookingPayment.updateMany({
-          where: { id: payment.id, status: BookingPaymentStatus.PAUSED },
-          data: {
-            status: BookingPaymentStatus.EXPIRED,
-            validUntil: now,
-            remainingValiditySeconds: 0,
-          },
-        });
-        if (!expiredPayment.count) {
-          throw new ConflictException(
-            'The booking payment changed before cooperation was confirmed.',
-          );
-        }
-      }
-
-      await tx.job.update({
-        where: { id: jobId },
-        data: {
-          customerConfirmedAt,
-          technicianConfirmedAt,
-          ...(bothConfirmed && {
-            cooperationStatus: JobCooperationStatus.CONFIRMED,
-          }),
-        },
-      });
-      await this.audit.log(
-        {
-          entityType: 'Job',
-          entityId: jobId,
-          action: bothConfirmed
-            ? 'JOB_COOPERATION_CONFIRMED'
-            : 'JOB_COOPERATION_CONFIRMATION_RECORDED',
-          actorId: userId,
-          fromStatus: job.cooperationStatus,
-          toStatus: bothConfirmed
-            ? JobCooperationStatus.CONFIRMED
-            : JobCooperationStatus.PENDING,
-          metadata: {
-            confirmedBy: side,
-            bookingPaymentExpired: bothConfirmed,
-          },
-        },
-        tx,
-      );
+      await this.recordCooperation(tx, job, [side], userId);
     });
     return side === 'customer'
       ? this.getCustomerJob(userId, jobId)
       : this.getTechnicianJob(userId, jobId);
+  }
+
+  /**
+   * Confirms cooperation for both sides as part of a price agreement: one side
+   * offered the price and the other accepted it, so the agreement is the
+   * confirmation. Runs inside the caller's transaction so the agreed price and
+   * the confirmed job commit together. Returns false when the job is already
+   * confirmed.
+   */
+  async confirmCooperationForAgreement(
+    tx: Prisma.TransactionClient,
+    jobId: string,
+    actorId: string,
+  ): Promise<boolean> {
+    await tx.$queryRaw`SELECT "id" FROM "jobs" WHERE "id" = ${jobId} FOR UPDATE`;
+    const job = await tx.job.findUnique({ where: { id: jobId } });
+    if (!job) throw new NotFoundException('Job not found.');
+    if (job.cooperationStatus === JobCooperationStatus.CONFIRMED) return false;
+    if (
+      (job.status !== JobStatus.ASSIGNED && job.status !== JobStatus.PAUSED) ||
+      !job.technicianId
+    ) {
+      throw new ConflictException(
+        'A price can only be agreed while a technician is assigned.',
+      );
+    }
+    await this.recordCooperation(tx, job, ['customer', 'technician'], actorId);
+    return true;
+  }
+
+  private async recordCooperation(
+    tx: Prisma.TransactionClient,
+    job: Job,
+    sides: Array<'customer' | 'technician'>,
+    actorId: string,
+  ): Promise<void> {
+    const jobId = job.id;
+    const payment = await tx.bookingPayment.findFirst({
+      where: { jobId, status: BookingPaymentStatus.PAUSED },
+      select: { id: true },
+    });
+    if (!payment) {
+      throw new ConflictException(
+        'The assigned job does not have a paused booking payment.',
+      );
+    }
+
+    const now = new Date();
+    const customerConfirmedAt = sides.includes('customer')
+      ? (job.customerConfirmedAt ?? now)
+      : job.customerConfirmedAt;
+    const technicianConfirmedAt = sides.includes('technician')
+      ? (job.technicianConfirmedAt ?? now)
+      : job.technicianConfirmedAt;
+    const bothConfirmed = Boolean(customerConfirmedAt && technicianConfirmedAt);
+
+    if (bothConfirmed) {
+      const expiredPayment = await tx.bookingPayment.updateMany({
+        where: { id: payment.id, status: BookingPaymentStatus.PAUSED },
+        data: {
+          status: BookingPaymentStatus.EXPIRED,
+          validUntil: now,
+          remainingValiditySeconds: 0,
+        },
+      });
+      if (!expiredPayment.count) {
+        throw new ConflictException(
+          'The booking payment changed before cooperation was confirmed.',
+        );
+      }
+    }
+
+    await tx.job.update({
+      where: { id: jobId },
+      data: {
+        customerConfirmedAt,
+        technicianConfirmedAt,
+        ...(bothConfirmed && {
+          cooperationStatus: JobCooperationStatus.CONFIRMED,
+        }),
+      },
+    });
+    await this.audit.log(
+      {
+        entityType: 'Job',
+        entityId: jobId,
+        action: bothConfirmed
+          ? 'JOB_COOPERATION_CONFIRMED'
+          : 'JOB_COOPERATION_CONFIRMATION_RECORDED',
+        actorId,
+        fromStatus: job.cooperationStatus,
+        toStatus: bothConfirmed
+          ? JobCooperationStatus.CONFIRMED
+          : JobCooperationStatus.PENDING,
+        metadata: {
+          confirmedBy: sides.length > 1 ? 'price-agreement' : sides[0],
+          bookingPaymentExpired: bothConfirmed,
+        },
+      },
+      tx,
+    );
   }
 
   async denyPartnership(
@@ -425,32 +459,48 @@ export class JobsService {
             'A valid, unused booking payment for this service category is required.',
           );
         }
-        const phoneVerification = await tx.customerPhoneVerification.findFirst({
-          where: {
-            id: dto.phoneVerificationId,
-            customerId,
-            verifiedAt: { not: null },
-            consumedAt: null,
-            expiresAt: { gt: now },
-          },
-          select: { id: true },
-        });
-        if (!phoneVerification) {
-          throw new ConflictException(
-            'Verify your phone number for this job request before submitting it.',
-          );
+        // A per-job code is only needed when the account's phone number has
+        // not been verified yet (or the customer chose to verify a new one).
+        if (dto.phoneVerificationId) {
+          const phoneVerification =
+            await tx.customerPhoneVerification.findFirst({
+              where: {
+                id: dto.phoneVerificationId,
+                customerId,
+                verifiedAt: { not: null },
+                consumedAt: null,
+                expiresAt: { gt: now },
+              },
+              select: { id: true },
+            });
+          if (!phoneVerification) {
+            throw new ConflictException(
+              'Verify your phone number for this job request before submitting it.',
+            );
+          }
+        } else {
+          const customer = await tx.user.findUnique({
+            where: { id: customerId },
+            select: { phoneVerifiedAt: true },
+          });
+          if (!customer?.phoneVerifiedAt) {
+            throw new ConflictException(
+              'Verify your phone number for this job request before submitting it.',
+            );
+          }
         }
         await tx.job.create({
           data: {
             id: jobId,
             customerId,
             ...selection,
-            phoneVerificationId: dto.phoneVerificationId,
+            phoneVerificationId: dto.phoneVerificationId ?? null,
             description: dto.description.trim(),
             locationAddress: dto.locationAddress.trim(),
             latitude: dto.latitude,
             longitude: dto.longitude,
-            offeredAmount: dto.offeredAmount,
+            // The price is agreed later in the chat; 0 means "not set yet".
+            offeredAmount: dto.offeredAmount ?? 0,
             priority: dto.priority ?? JobPriority.NORMAL,
             requestType,
             dispatchStatus: JobDispatchStatus.PENDING,
@@ -481,20 +531,22 @@ export class JobsService {
             'The booking payment has already been used.',
           );
         }
-        const consumed = await tx.customerPhoneVerification.updateMany({
-          where: {
-            id: dto.phoneVerificationId,
-            customerId,
-            verifiedAt: { not: null },
-            consumedAt: null,
-            expiresAt: { gt: now },
-          },
-          data: { consumedAt: now },
-        });
-        if (!consumed.count) {
-          throw new ConflictException(
-            'Phone verification has already been used. Verify again.',
-          );
+        if (dto.phoneVerificationId) {
+          const consumed = await tx.customerPhoneVerification.updateMany({
+            where: {
+              id: dto.phoneVerificationId,
+              customerId,
+              verifiedAt: { not: null },
+              consumedAt: null,
+              expiresAt: { gt: now },
+            },
+            data: { consumedAt: now },
+          });
+          if (!consumed.count) {
+            throw new ConflictException(
+              'Phone verification has already been used. Verify again.',
+            );
+          }
         }
         await this.audit.log(
           {
@@ -508,7 +560,7 @@ export class JobsService {
               matchCount: candidates.length,
               paymentId: payment.id,
               requestType,
-              phoneVerificationId: dto.phoneVerificationId,
+              phoneVerificationId: dto.phoneVerificationId ?? null,
             },
           },
           tx,
@@ -1103,9 +1155,9 @@ export class JobsService {
 
   /**
    * Customer accepts the technician's outstanding price offer, which agrees the
-   * price and closes the negotiation. The dispatch-time technician acceptance (the
-   * job assignment itself) is a separate step; this closes the money conversation
-   * the technician opened with their offer.
+   * price, closes the negotiation and confirms cooperation for both sides (the
+   * booking fee is used up). The dispatch-time technician acceptance (the job
+   * assignment itself) is a separate step.
    */
   async acceptTechnicianOffer(customerId: string, jobId: string) {
     const job = await this.findJob(jobId);
@@ -1193,12 +1245,13 @@ export class JobsService {
           closedAt: now,
         },
       });
+      await this.confirmCooperationForAgreement(tx, jobId, customerId);
       await tx.conversationMessage.create({
         data: {
           conversationId: conversation.id,
           senderRole: ConversationSender.SYSTEM,
           type: ConversationMessageType.SYSTEM,
-          text: `Agreed at ${offer.amount} ${offer.currency}.`,
+          text: `Agreed at ${offer.amount} ${offer.currency}. The job is confirmed.`,
         },
       });
       await this.audit.log(
@@ -1474,18 +1527,36 @@ export class JobsService {
       await this.dispatchNextSosTechnician(jobId);
       return this.getCustomerJob(customerId, jobId);
     }
-    await this.prisma.job.updateMany({
-      where: {
-        id: jobId,
-        customerId,
-        serviceCategoryId: job.serviceCategoryId,
-        status: JobStatus.OPEN,
-        technicianId: null,
-        dispatchStatus: JobDispatchStatus.EXHAUSTED,
-      },
-      data: { dispatchStatus: JobDispatchStatus.PENDING },
+    if (job.technicianId || job.dispatchStatus === JobDispatchStatus.OFFERED) {
+      throw new ConflictException(
+        'This job already has an active technician request.',
+      );
+    }
+    // Route the request to the best eligible technician who has not already
+    // been asked about this job, so a decline or a missed request moves on
+    // without the customer having to pick again.
+    const candidates = await this.findMatches({
+      serviceCategoryId: job.serviceCategoryId,
+      otherServiceName: job.otherServiceName,
+      latitude: job.latitude,
+      longitude: job.longitude,
     });
-    return this.getCustomerJob(customerId, jobId);
+    const asked = await this.prisma.jobOffer.findMany({
+      where: { jobId },
+      select: { technicianId: true },
+    });
+    const askedIds = new Set(asked.map((offer) => offer.technicianId));
+    const next = candidates.find(
+      (candidate) => !askedIds.has(candidate.technicianId),
+    );
+    if (!next) {
+      throw new ConflictException(
+        'No other technician is available for this request right now. Try again shortly.',
+      );
+    }
+    return this.proposeTechnician(customerId, jobId, {
+      technicianId: next.technicianId,
+    });
   }
 
   async cancelJob(
@@ -2506,8 +2577,8 @@ export class JobsService {
         .create({
           userId: job.customerId,
           type: NotificationType.JOB_ASSIGNED,
-          title: 'Technician assigned',
-          body: 'A technician accepted your job and will contact you shortly.',
+          title: 'Technician accepted your request',
+          body: 'Your technician accepted. Agree on a price in the chat to confirm the job.',
           data: { jobId: job.id, dedupeKey: `job-assigned:${job.id}` },
         })
         .catch(() => undefined);
@@ -3629,7 +3700,8 @@ export class JobsService {
         },
       },
     } satisfies Prisma.JobOfferSelect;
-    const openForCustomer = viewer === 'customer' && job.status === JobStatus.OPEN;
+    const openForCustomer =
+      viewer === 'customer' && job.status === JobStatus.OPEN;
     const activeOffer = openForCustomer
       ? await this.prisma.jobOffer.findFirst({
           where: {
@@ -3990,6 +4062,112 @@ export class JobsService {
         },
       },
     });
+    await this.openNegotiationForAssignment(tx, jobId, technicianUserId);
+  }
+
+  /**
+   * Opens the job's price negotiation the moment a technician is assigned.
+   * Accepting the job offer is the technician's acceptance of the request, so
+   * the conversation starts in NEGOTIATING and either side can make the first
+   * offer straight away. A conversation left by a previous technician is
+   * reopened; its history stays and its offers are no longer outstanding.
+   */
+  async openNegotiationForAssignment(
+    tx: Prisma.TransactionClient,
+    jobId: string,
+    technicianUserId: string,
+  ): Promise<void> {
+    const now = new Date();
+    const job = await tx.job.findUniqueOrThrow({
+      where: { id: jobId },
+      select: {
+        description: true,
+        locationAddress: true,
+        latitude: true,
+        longitude: true,
+        otherServiceName: true,
+        serviceCategory: { select: { name: true } },
+      },
+    });
+    const existing = await tx.conversation.findUnique({
+      where: { jobId },
+      select: { id: true, status: true },
+    });
+    let conversationId: string;
+    if (!existing) {
+      const created = await tx.conversation.create({
+        data: {
+          jobId,
+          status: ConversationStatus.NEGOTIATING,
+          lastMessageAt: now,
+        },
+        select: { id: true },
+      });
+      conversationId = created.id;
+      await tx.conversationMessage.create({
+        data: {
+          conversationId,
+          senderRole: ConversationSender.SYSTEM,
+          type: ConversationMessageType.SERVICE_REQUEST,
+          metadata: {
+            service: job.serviceCategory?.name ?? job.otherServiceName,
+            description: job.description,
+            locationAddress: job.locationAddress,
+            latitude: job.latitude,
+            longitude: job.longitude,
+          },
+        },
+      });
+    } else {
+      conversationId = existing.id;
+      await tx.priceOffer.updateMany({
+        where: { conversationId, status: PriceOfferStatus.PENDING },
+        data: { status: PriceOfferStatus.SUPERSEDED, respondedAt: now },
+      });
+      await tx.conversation.update({
+        where: { id: conversationId },
+        data: {
+          status: ConversationStatus.NEGOTIATING,
+          agreedAmount: null,
+          offerCount: 0,
+          declinedById: null,
+          declineReason: null,
+          closedAt: null,
+          lastMessageAt: now,
+        },
+      });
+      if (existing.status !== ConversationStatus.PENDING) {
+        await tx.conversationMessage.create({
+          data: {
+            conversationId,
+            senderRole: ConversationSender.SYSTEM,
+            type: ConversationMessageType.SYSTEM,
+            text: 'A new technician took the request.',
+          },
+        });
+      }
+    }
+    await tx.conversationMessage.create({
+      data: {
+        conversationId,
+        senderId: technicianUserId,
+        senderRole: ConversationSender.TECHNICIAN,
+        type: ConversationMessageType.TECHNICIAN_RESPONSE,
+        metadata: { decision: 'ACCEPTED' },
+      },
+    });
+    await this.audit.log(
+      {
+        entityType: 'Conversation',
+        entityId: conversationId,
+        action: 'JOB_REQUEST_ACCEPTED',
+        actorId: technicianUserId,
+        fromStatus: existing?.status ?? null,
+        toStatus: ConversationStatus.NEGOTIATING,
+        metadata: { jobId, openedOnAssignment: true },
+      },
+      tx,
+    );
   }
 
   private async findJob(jobId: string): Promise<JobWithDetails> {

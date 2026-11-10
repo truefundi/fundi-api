@@ -78,12 +78,11 @@ export class ConversationsService {
   ) {}
 
   /**
-   * Opens the conversation for a job, or returns the existing one. Only the job's
-   * customer can open it, and only once the job has an assigned technician to
-   * negotiate with. A new conversation stays PENDING until that technician
-   * accepts or declines the request. If a different technician has since been
-   * assigned (the previous one declined the request), the closed conversation is
-   * reopened for them. Idempotent: a second call returns the same conversation.
+   * Returns the conversation for a job. Job-core opens it, already NEGOTIATING,
+   * when a technician accepts the job offer. This call covers jobs assigned
+   * before that: a missing or still-PENDING conversation is opened for the
+   * assigned technician, as is one a previous technician declined. Only the
+   * job's customer can call it. Idempotent.
    */
   async open(userId: string, jobId: string) {
     const job = await this.prisma.job.findUnique({
@@ -110,54 +109,30 @@ export class ConversationsService {
       );
     }
 
+    const technicianUserId = job.technician?.userId ?? null;
     const existing = await this.findByJobId(jobId);
     if (existing) {
       // A job-request decline returns the job to dispatch. When a different
       // technician has since been assigned, the closed conversation is
-      // reopened for them; an offer decline (same technician) is left closed.
-      if (existing.status === ConversationStatus.DECLINED) {
-        const decliner = this.jobRequestDecliner(existing);
-        const technicianUserId = job.technician?.userId ?? null;
-        if (decliner && technicianUserId && decliner !== technicianUserId) {
-          await this.reopenForTechnician(existing, userId);
-          return this.get(userId, existing.id);
-        }
-      }
-      return this.toResponse(existing);
+      // reopened for them.
+      const needsOpening =
+        existing.status === ConversationStatus.PENDING ||
+        (existing.status === ConversationStatus.DECLINED &&
+          technicianUserId !== null &&
+          this.jobRequestDecliner(existing) !== null &&
+          this.jobRequestDecliner(existing) !== technicianUserId);
+      if (!needsOpening || !technicianUserId) return this.toResponse(existing);
+    }
+    if (!technicianUserId) {
+      throw new ConflictException(
+        'This job has no assigned technician to negotiate with.',
+      );
     }
 
     try {
-      await this.prisma.$transaction(async (tx) => {
-        const conversation = await tx.conversation.create({
-          data: { jobId, status: ConversationStatus.PENDING },
-          select: { id: true },
-        });
-        await tx.conversationMessage.create({
-          data: {
-            conversationId: conversation.id,
-            senderRole: ConversationSender.SYSTEM,
-            type: ConversationMessageType.SERVICE_REQUEST,
-            metadata: {
-              service: job.serviceCategory?.name ?? job.otherServiceName,
-              description: job.description,
-              locationAddress: job.locationAddress,
-              latitude: job.latitude,
-              longitude: job.longitude,
-            },
-          },
-        });
-        await this.audit.log(
-          {
-            entityType: 'Conversation',
-            entityId: conversation.id,
-            action: 'CONVERSATION_OPENED',
-            actorId: userId,
-            toStatus: ConversationStatus.PENDING,
-            metadata: { jobId },
-          },
-          tx,
-        );
-      });
+      await this.prisma.$transaction((tx) =>
+        this.jobs.openNegotiationForAssignment(tx, jobId, technicianUserId),
+      );
     } catch (error) {
       // The unique jobId index makes concurrent opens safe; return the winner.
       if (
@@ -201,7 +176,9 @@ export class ConversationsService {
         data: { status: ConversationStatus.NEGOTIATING, lastMessageAt: now },
       });
       if (!accepted.count) {
-        throw new ConflictException('This job request has already been answered.');
+        throw new ConflictException(
+          'This job request has already been answered.',
+        );
       }
       await tx.conversationMessage.create({
         data: {
@@ -267,7 +244,9 @@ export class ConversationsService {
         },
       });
       if (!declined.count) {
-        throw new ConflictException('This job request has already been answered.');
+        throw new ConflictException(
+          'This job request has already been answered.',
+        );
       }
       await tx.conversationMessage.create({
         data: {
@@ -302,7 +281,11 @@ export class ConversationsService {
   }
 
   /** Posts a short text message inside the negotiation. */
-  async postMessage(userId: string, conversationId: string, dto: PostMessageDto) {
+  async postMessage(
+    userId: string,
+    conversationId: string,
+    dto: PostMessageDto,
+  ) {
     const conversation = await this.find(conversationId);
     const role = this.assertParticipant(conversation, userId);
     this.assertNegotiating(conversation.status);
@@ -435,12 +418,11 @@ export class ConversationsService {
     return this.get(userId, conversationId);
   }
 
-  /** Accepts the outstanding offer, agreeing the price and closing the chat. */
-  async acceptOffer(
-    userId: string,
-    conversationId: string,
-    offerId: string,
-  ) {
+  /**
+   * Accepts the outstanding offer: the price is agreed, the negotiation closes
+   * and cooperation is confirmed for both sides in the same transaction.
+   */
+  async acceptOffer(userId: string, conversationId: string, offerId: string) {
     const conversation = await this.find(conversationId);
     const role = this.assertParticipant(conversation, userId);
     await this.expireStaleOffers(conversationId);
@@ -449,7 +431,9 @@ export class ConversationsService {
 
     const offer = this.requireOffer(current, offerId);
     if (offer.status !== PriceOfferStatus.PENDING) {
-      throw new ConflictException('This offer is no longer awaiting a response.');
+      throw new ConflictException(
+        'This offer is no longer awaiting a response.',
+      );
     }
     // The responder check comes first: an invalid responder must be refused for the
     // reason that applies to them, not masked behind an expiry the offer may no
@@ -482,12 +466,18 @@ export class ConversationsService {
           closedAt: now,
         },
       });
+      // One side offered and the other accepted: that is both confirmations.
+      await this.jobs.confirmCooperationForAgreement(
+        tx,
+        conversation.jobId,
+        userId,
+      );
       await tx.conversationMessage.create({
         data: {
           conversationId,
           senderRole: ConversationSender.SYSTEM,
           type: ConversationMessageType.SYSTEM,
-          text: `Agreed at ${offer.amount} ${offer.currency}.`,
+          text: `Agreed at ${offer.amount} ${offer.currency}. The job is confirmed.`,
         },
       });
       await this.audit.log(
@@ -506,8 +496,8 @@ export class ConversationsService {
 
     await this.notifyOther(conversation, userId, {
       type: NotificationType.OFFER_ACCEPTED,
-      title: 'Price offer accepted',
-      body: `Your offer of ${offer.amount} ${offer.currency} was accepted.`,
+      title: 'Price agreed: job confirmed',
+      body: `Your offer of ${offer.amount} ${offer.currency} was accepted. The job is confirmed.`,
       data: {
         conversationId,
         jobId: conversation.jobId,
@@ -520,7 +510,11 @@ export class ConversationsService {
     return this.get(userId, conversationId);
   }
 
-  /** Declines the outstanding offer, ending the negotiation. */
+  /**
+   * Declines the outstanding offer. The negotiation stays open so either side
+   * can make another offer within their limit; ending the partnership is a
+   * separate action (pull out).
+   */
   async declineOffer(
     userId: string,
     conversationId: string,
@@ -535,7 +529,9 @@ export class ConversationsService {
 
     const offer = this.requireOffer(current, offerId);
     if (offer.status !== PriceOfferStatus.PENDING) {
-      throw new ConflictException('This offer is no longer awaiting a response.');
+      throw new ConflictException(
+        'This offer is no longer awaiting a response.',
+      );
     }
     // The responder check comes first: an invalid responder must be refused for the
     // reason that applies to them, not masked behind an expiry the offer may no
@@ -562,32 +558,24 @@ export class ConversationsService {
       }
       await tx.conversation.update({
         where: { id: conversationId },
-        data: {
-          status: ConversationStatus.DECLINED,
-          declinedById: userId,
-          declineReason: reason,
-          lastMessageAt: now,
-          closedAt: now,
-        },
+        data: { lastMessageAt: now },
       });
       await tx.conversationMessage.create({
         data: {
           conversationId,
           senderRole: ConversationSender.SYSTEM,
           type: ConversationMessageType.SYSTEM,
-          text: reason
-            ? `Offer declined: ${reason}`
-            : 'Offer declined.',
+          text: reason ? `Offer declined: ${reason}` : 'Offer declined.',
         },
       });
       await this.audit.log(
         {
           entityType: 'Conversation',
           entityId: conversationId,
-          action: 'CONVERSATION_DECLINED',
+          action: 'PRICE_OFFER_DECLINED',
           actorId: userId,
           fromStatus: ConversationStatus.NEGOTIATING,
-          toStatus: ConversationStatus.DECLINED,
+          toStatus: ConversationStatus.NEGOTIATING,
           metadata: { offerId: offer.id, reason },
         },
         tx,
@@ -597,7 +585,9 @@ export class ConversationsService {
     await this.notifyOther(conversation, userId, {
       type: NotificationType.OFFER_DECLINED,
       title: 'Price offer declined',
-      body: reason ? `Your offer was declined: ${reason}` : 'Your offer was declined.',
+      body: reason
+        ? `Your offer was declined: ${reason}. You can make another offer.`
+        : 'Your offer was declined. You can make another offer.',
       data: {
         conversationId,
         jobId: conversation.jobId,
@@ -863,7 +853,9 @@ export class ConversationsService {
 
   private assertPending(status: ConversationStatus): void {
     if (status !== ConversationStatus.PENDING) {
-      throw new ConflictException('This job request has already been answered.');
+      throw new ConflictException(
+        'This job request has already been answered.',
+      );
     }
   }
 
@@ -894,51 +886,6 @@ export class ConversationsService {
     return null;
   }
 
-  /**
-   * Reopens a conversation whose job request a previous technician declined,
-   * once job-core has assigned a new one. A system line records the restart;
-   * the closed history stays intact.
-   */
-  private async reopenForTechnician(
-    conversation: ConversationWithDetails,
-    actorId: string,
-  ): Promise<void> {
-    const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      const reopened = await tx.conversation.updateMany({
-        where: { id: conversation.id, status: ConversationStatus.DECLINED },
-        data: {
-          status: ConversationStatus.PENDING,
-          declinedById: null,
-          declineReason: null,
-          closedAt: null,
-          lastMessageAt: now,
-        },
-      });
-      if (!reopened.count) return; // Another caller reopened or answered first.
-      await tx.conversationMessage.create({
-        data: {
-          conversationId: conversation.id,
-          senderRole: ConversationSender.SYSTEM,
-          type: ConversationMessageType.SYSTEM,
-          text: 'The job request was reopened for a new technician.',
-        },
-      });
-      await this.audit.log(
-        {
-          entityType: 'Conversation',
-          entityId: conversation.id,
-          action: 'CONVERSATION_REOPENED',
-          actorId,
-          fromStatus: ConversationStatus.DECLINED,
-          toStatus: ConversationStatus.PENDING,
-          metadata: { jobId: conversation.jobId },
-        },
-        tx,
-      );
-    });
-  }
-
   private assertOfferLimit(
     conversation: ConversationWithDetails,
     role: ConversationSender,
@@ -948,7 +895,7 @@ export class ConversationsService {
         'This negotiation has reached its offer limit.',
       );
     }
-    const sideOffers = conversation.messages.filter(
+    const sideOffers = this.currentRoundMessages(conversation).filter(
       (message) => message.offer?.senderRole === role,
     ).length;
     if (sideOffers >= CONVERSATION_MAX_OFFERS_PER_SIDE) {
@@ -956,6 +903,27 @@ export class ConversationsService {
         'You have reached your offer limit for this negotiation.',
       );
     }
+  }
+
+  /**
+   * Messages since the current technician accepted the request. A reassigned
+   * job reopens the same conversation, and the new technician's negotiation
+   * starts with fresh offer limits.
+   */
+  private currentRoundMessages(
+    conversation: ConversationWithDetails,
+  ): MessageWithOffer[] {
+    for (let index = conversation.messages.length - 1; index >= 0; index -= 1) {
+      const message = conversation.messages[index];
+      const metadata = message.metadata as Record<string, unknown> | null;
+      if (
+        message.type === ConversationMessageType.TECHNICIAN_RESPONSE &&
+        metadata?.decision === 'ACCEPTED'
+      ) {
+        return conversation.messages.slice(index);
+      }
+    }
+    return conversation.messages;
   }
 
   private pendingOffer(

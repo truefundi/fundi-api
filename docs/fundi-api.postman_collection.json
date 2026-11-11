@@ -122,6 +122,11 @@
       "key": "chatMessageId",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "deviceId",
+      "value": "postman-client",
+      "type": "string"
     }
   ],
   "item": [
@@ -237,6 +242,11 @@
                 "key": "Content-Type",
                 "value": "application/json",
                 "type": "text"
+              },
+              {
+                "key": "X-Device-Id",
+                "value": "{{deviceId}}",
+                "type": "text"
               }
             ],
             "url": "{{baseUrl}}/api/v1/auth/verify-otp",
@@ -321,10 +331,15 @@
                 "key": "Content-Type",
                 "value": "application/json",
                 "type": "text"
+              },
+              {
+                "key": "X-Device-Id",
+                "value": "{{deviceId}}",
+                "type": "text"
               }
             ],
             "url": "{{baseUrl}}/api/v1/auth/verify-otp",
-            "description": "Stores the returned access token in customerToken or technicianToken, based on user.role.",
+            "description": "Stores the returned access token in customerToken or technicianToken, based on user.role. Successful sign-in revokes the previous session. X-Device-Id is an optional stable app-install identifier.",
             "auth": {
               "type": "noauth"
             },
@@ -1661,6 +1676,41 @@
           "response": []
         },
         {
+          "name": "Update and resubmit denied document",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/technicians/profile/documents/{{documentId}}",
+            "description": "Only works for a DENIED document. Use Body > form-data with a replacement file (required); title and certificate metadata can also be updated. The same document ID is resubmitted as SUBMITTED.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{technicianToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "title",
+                  "value": "Corrected National ID",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Delete my document",
           "request": {
             "method": "DELETE",
@@ -1918,7 +1968,7 @@
             "method": "POST",
             "header": [],
             "url": "{{baseUrl}}/api/v1/jobs/phone-verification/request",
-            "description": "No body. Save verificationId from the response; a fresh verification is required per job.",
+            "description": "Optionally provide phoneNumber to verify a new customer login number. Customers with a verified current number receive verified: true and do not need another OTP; technicians still verify each job.",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -1928,6 +1978,15 @@
                   "type": "string"
                 }
               ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"+250788123456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             }
           },
           "response": []
@@ -1973,7 +2032,7 @@
             "method": "POST",
             "header": [],
             "url": "{{baseUrl}}/api/v1/jobs",
-            "description": "Use Body > form-data. First complete mock payment and job phone OTP verification. Add paymentId, phoneVerificationId, serviceCategoryId, description, locationAddress, latitude, longitude, offeredAmount, and optional priority as text fields. Use photos (up to five) and video (one) as optional File fields.",
+            "description": "Use Body > form-data. First complete mock payment. Include phoneVerificationId for a technician or an unverified customer; omit it for a customer whose account phone is already verified. Add paymentId, serviceCategoryId, description, locationAddress, latitude, longitude, offeredAmount, and optional priority as text fields. Use photos (up to five) and video (one) as optional File fields.",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -2058,7 +2117,7 @@
             "method": "POST",
             "header": [],
             "url": "{{baseUrl}}/api/v1/jobs/sos",
-            "description": "Use Body > form-data after creating an SOS payment and verifying a fresh phone OTP. The system offers to one approved, online matching technician at a time; each has five minutes to accept.",
+            "description": "Use Body > form-data after creating an SOS payment. Include phoneVerificationId for a technician or an unverified customer; omit it for a customer whose account phone is already verified. The system offers to one approved, online matching technician at a time.",
             "auth": {
               "type": "bearer",
               "bearer": [

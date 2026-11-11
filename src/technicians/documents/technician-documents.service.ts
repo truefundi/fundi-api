@@ -18,6 +18,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../../storage/storage.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { ReviewDocumentDto } from './dto/review-document.dto';
+import { UpdateDeniedDocumentDto } from './dto/update-denied-document.dto';
 import { UploadDocumentDto } from './dto/upload-document.dto';
 import {
   detectFileType,
@@ -174,7 +175,9 @@ export class TechnicianDocumentsService {
             title: dto.title,
             titleNormalized,
             certificateType:
-              dto.type === DocumentType.CERTIFICATE ? dto.certificateType! : null,
+              dto.type === DocumentType.CERTIFICATE
+                ? dto.certificateType!
+                : null,
             categoryId: categoryRef.categoryId,
             customCategoryName: categoryRef.customCategoryName,
             customCategoryNormalized: categoryRef.customCategoryNormalized,
@@ -204,6 +207,155 @@ export class TechnicianDocumentsService {
         return document;
       });
       return this.toResponse(created);
+    } catch (error) {
+      await this.deleteQuietly(objectKey);
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          'A matching document was submitted at the same time. Refresh and try again.',
+        );
+      }
+      throw error;
+    }
+  }
+
+  // Replaces a denied document's file/metadata and resubmits the same record.
+  async updateDeniedDocument(
+    userId: string,
+    documentId: string,
+    dto: UpdateDeniedDocumentDto,
+    file: UploadedFileData | undefined,
+  ) {
+    const profile = await this.requireProfile(userId);
+    const document = await this.prisma.technicianDocument.findFirst({
+      where: { id: documentId, technicianId: profile.id },
+    });
+    if (!document) throw new NotFoundException('Document not found.');
+    if (document.status !== DocumentStatus.DENIED) {
+      throw new ConflictException(
+        'Only denied documents can be updated and resubmitted.',
+      );
+    }
+
+    const detected = this.validateFile(file, DOCUMENT_MIME_TYPES);
+    const title = dto.title ?? document.title;
+    const titleNormalized = this.normalizeTitle(title);
+    let categoryRef = EMPTY_CATEGORY_REF;
+    let certificateType: UploadDocumentDto['certificateType'] = undefined;
+
+    if (document.type === DocumentType.CERTIFICATE) {
+      certificateType =
+        dto.certificateType ?? document.certificateType ?? undefined;
+      const categoryChanged =
+        dto.categoryId !== undefined || dto.customCategoryName !== undefined;
+      const categoryInput = categoryChanged
+        ? {
+            categoryId: dto.categoryId,
+            customCategoryName: dto.customCategoryName,
+          }
+        : {
+            categoryId: document.categoryId ?? undefined,
+            customCategoryName: document.customCategoryName ?? undefined,
+          };
+      categoryRef = await this.resolveCertificateCategory({
+        type: DocumentType.CERTIFICATE,
+        title,
+        certificateType,
+        ...categoryInput,
+      });
+    } else if (
+      dto.certificateType !== undefined ||
+      dto.categoryId !== undefined ||
+      dto.customCategoryName !== undefined
+    ) {
+      throw new BadRequestException(
+        'Certificate details can only be changed for certificate documents.',
+      );
+    }
+
+    await this.assertActiveDocumentBudget(profile.id);
+    await this.assertUniqueTitle(profile.id, titleNormalized);
+    if (document.type === DocumentType.NATIONAL_ID) {
+      await this.assertNoLiveNationalId(profile.id);
+    }
+    if (document.type === DocumentType.CERTIFICATE) {
+      await this.assertNoLiveCertificate(
+        profile.id,
+        {
+          type: DocumentType.CERTIFICATE,
+          title,
+          certificateType: certificateType!,
+        },
+        categoryRef,
+      );
+    }
+
+    const objectKey = `technicians/${profile.id}/documents/${randomUUID()}.${detected.extension}`;
+    await this.storage.put(objectKey, file!.buffer, detected.mime);
+    try {
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const result = await tx.technicianDocument.updateMany({
+          where: {
+            id: document.id,
+            technicianId: profile.id,
+            status: DocumentStatus.DENIED,
+          },
+          data: {
+            title,
+            titleNormalized,
+            ...(document.type === DocumentType.CERTIFICATE
+              ? {
+                  certificateType: certificateType!,
+                  categoryId: categoryRef.categoryId,
+                  customCategoryName: categoryRef.customCategoryName,
+                  customCategoryNormalized:
+                    categoryRef.customCategoryNormalized,
+                }
+              : {}),
+            objectKey,
+            mimeType: detected.mime,
+            originalFileName: this.cleanFileName(file!.originalname),
+            sizeBytes: file!.buffer.length,
+            status: DocumentStatus.SUBMITTED,
+            reviewNote: null,
+            reviewedById: null,
+            reviewedAt: null,
+          },
+        });
+        if (!result.count) {
+          throw new ConflictException(
+            'The document is no longer denied and cannot be updated.',
+          );
+        }
+        await this.audit.log(
+          {
+            entityType: 'TechnicianDocument',
+            entityId: document.id,
+            action: 'DOCUMENT_RESUBMITTED',
+            fromStatus: DocumentStatus.DENIED,
+            toStatus: DocumentStatus.SUBMITTED,
+            actorId: userId,
+            metadata: {
+              technicianId: profile.id,
+              type: document.type,
+              certificateType: certificateType ?? null,
+              categoryId: categoryRef.categoryId,
+              customCategoryName: categoryRef.customCategoryName,
+            },
+          },
+          tx,
+        );
+        return tx.technicianDocument.findUniqueOrThrow({
+          where: { id: document.id },
+          include: {
+            category: { select: { id: true, name: true, slug: true } },
+          },
+        });
+      });
+      await this.deleteQuietly(document.objectKey);
+      return this.toResponse(updated);
     } catch (error) {
       await this.deleteQuietly(objectKey);
       if (
@@ -469,7 +621,7 @@ export class TechnicianDocumentsService {
         : has(DocumentStatus.SUBMITTED)
           ? 'Submitted, waiting for review'
           : relevant.length
-            ? 'Denied, upload a new document'
+            ? 'Denied, update and resubmit'
             : 'Not uploaded';
     return {
       key: type,
@@ -538,10 +690,7 @@ export class TechnicianDocumentsService {
   }
 
   // Rejects a title that collides with any live document of the same technician.
-  private async assertUniqueTitle(
-    profileId: string,
-    titleNormalized: string,
-  ) {
+  private async assertUniqueTitle(profileId: string, titleNormalized: string) {
     const duplicate = await this.prisma.technicianDocument.findFirst({
       where: {
         technicianId: profileId,
@@ -649,7 +798,7 @@ export class TechnicianDocumentsService {
   // Keeps only a plain file name for display; it is never used as a storage path.
   private cleanFileName(name: string) {
     const base = name.split(/[\\/]/).pop() ?? '';
-     
+
     const cleaned = base.replace(/[\u0000-\u001f\u007f]/g, '').trim();
     return cleaned.slice(0, 200) || 'file';
   }

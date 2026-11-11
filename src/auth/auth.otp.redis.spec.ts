@@ -23,7 +23,8 @@ const SECRET = 'development_token_hash_secret_change_before_production';
 // up. The check is therefore a synchronous TCP connect that blocks this module's
 // load for at most a second, which is cheap because it happens once per file.
 const isRedisReachable = (): boolean => {
-  const { execFileSync } = require('child_process') as typeof import('child_process');
+  const { execFileSync } =
+    require('child_process') as typeof import('child_process');
   const host = HOST === 'localhost' ? '127.0.0.1' : HOST;
 
   // A separate process does the TCP connect and reports the outcome on stdout.
@@ -56,7 +57,9 @@ const isRedisReachable = (): boolean => {
 const redisAvailable = isRedisReachable();
 
 if (!redisAvailable) {
-  console.warn(`[auth.otp.redis.spec] skipped: no Redis reachable at ${HOST}:${PORT}`);
+  console.warn(
+    `[auth.otp.redis.spec] skipped: no Redis reachable at ${HOST}:${PORT}`,
+  );
 }
 
 const itIfRedis = redisAvailable ? it : it.skip;
@@ -89,14 +92,27 @@ describe('AuthService OTP scripts against Redis', () => {
     key = `auth:otp:${activeUser.id}`;
     triesKey = `auth:otp:tries:${activeUser.id}`;
 
+    const transaction = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      refreshToken: {
+        create: jest.fn().mockResolvedValue({}),
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
     const prisma = {
       user: { findUnique: jest.fn().mockResolvedValue(activeUser) },
-      refreshToken: { create: jest.fn().mockResolvedValue({}), deleteMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      refreshToken: transaction.refreshToken,
+      $transaction: jest.fn(
+        (work: (tx: typeof transaction) => Promise<unknown>) =>
+          work(transaction),
+      ),
     };
     const sms = {
-      sendOtp: jest.fn().mockImplementation(async (phoneNumber: string, code: string) => {
-        sent.push({ phoneNumber, code });
-      }),
+      sendOtp: jest
+        .fn()
+        .mockImplementation(async (phoneNumber: string, code: string) => {
+          sent.push({ phoneNumber, code });
+        }),
     };
     const jwt = { signAsync: jest.fn().mockResolvedValue('token') };
     const config = {
@@ -137,11 +153,14 @@ describe('AuthService OTP scripts against Redis', () => {
       expect(stored.expiresAt).toBeTruthy();
     });
 
-    itIfRedis('sends a six-digit code to the phone number on file', async () => {
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      expect(sent[0].phoneNumber).toBe(activeUser.phoneNumber);
-      expect(lastCode()).toMatch(/^\d{6}$/);
-    });
+    itIfRedis(
+      'sends a six-digit code to the phone number on file',
+      async () => {
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        expect(sent[0].phoneNumber).toBe(activeUser.phoneNumber);
+        expect(lastCode()).toMatch(/^\d{6}$/);
+      },
+    );
 
     itIfRedis('keeps the key alive past the code lifetime', async () => {
       await service.requestLoginOtp(activeUser.phoneNumber);
@@ -151,20 +170,25 @@ describe('AuthService OTP scripts against Redis', () => {
       expect(ttl).toBeLessThanOrEqual(420);
     });
 
-    itIfRedis('stamps the hash with the configured five-minute expiry', async () => {
-      const before = Date.now();
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      const stored = await client.hgetall(key);
-      const seconds = (Number(stored.expiresAt) - before) / 1000;
-      expect(seconds).toBeGreaterThan(295);
-      // `expiresAt` is stamped inside the async call, after `before` was read,
-      // so the measured delta can exceed 300 by the call's own latency; allow a
-      // small epsilon instead of asserting a hard upper bound.
-      expect(seconds).toBeLessThanOrEqual(302);
-    });
+    itIfRedis(
+      'stamps the hash with the configured five-minute expiry',
+      async () => {
+        const before = Date.now();
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        const stored = await client.hgetall(key);
+        const seconds = (Number(stored.expiresAt) - before) / 1000;
+        expect(seconds).toBeGreaterThan(295);
+        // `expiresAt` is stamped inside the async call, after `before` was read,
+        // so the measured delta can exceed 300 by the call's own latency; allow a
+        // small epsilon instead of asserting a hard upper bound.
+        expect(seconds).toBeLessThanOrEqual(302);
+      },
+    );
 
     itIfRedis('tells the caller how long the code stays usable', async () => {
-      await expect(service.requestLoginOtp(activeUser.phoneNumber)).resolves.toMatchObject({
+      await expect(
+        service.requestLoginOtp(activeUser.phoneNumber),
+      ).resolves.toMatchObject({
         message: 'OTP generated. It expires in 5 minutes.',
       });
     });
@@ -180,7 +204,9 @@ describe('AuthService OTP scripts against Redis', () => {
   describe('verifying a code', () => {
     itIfRedis('accepts the correct code and consumes it', async () => {
       await service.requestLoginOtp(activeUser.phoneNumber);
-      await expect(service.verifyOtp(activeUser.phoneNumber, lastCode())).resolves.toMatchObject({
+      await expect(
+        service.verifyOtp(activeUser.phoneNumber, lastCode()),
+      ).resolves.toMatchObject({
         user: { phoneNumber: activeUser.phoneNumber },
       });
       expect(await client.exists(key)).toBe(0);
@@ -190,124 +216,169 @@ describe('AuthService OTP scripts against Redis', () => {
       await service.requestLoginOtp(activeUser.phoneNumber);
       const code = lastCode();
       await service.verifyOtp(activeUser.phoneNumber, code);
-      await expect(service.verifyOtp(activeUser.phoneNumber, code)).rejects.toThrow(
-        'No OTP is pending. Request a new login OTP.',
-      );
+      await expect(
+        service.verifyOtp(activeUser.phoneNumber, code),
+      ).rejects.toThrow('No OTP is pending. Request a new login OTP.');
     });
 
     itIfRedis('rejects an incorrect code as unauthorized', async () => {
       await service.requestLoginOtp(activeUser.phoneNumber);
-      await expect(service.verifyOtp(activeUser.phoneNumber, wrongCode())).rejects.toThrow('The OTP is incorrect.');
+      await expect(
+        service.verifyOtp(activeUser.phoneNumber, wrongCode()),
+      ).rejects.toThrow('The OTP is incorrect.');
       expect(await client.hget(key, 'verificationTries')).toBe('1');
     });
 
     itIfRedis('reports a missing code as a bad request', async () => {
-      await expect(service.verifyOtp(activeUser.phoneNumber, '123456')).rejects.toThrow(
-        'No OTP is pending. Request a new login OTP.',
-      );
+      await expect(
+        service.verifyOtp(activeUser.phoneNumber, '123456'),
+      ).rejects.toThrow('No OTP is pending. Request a new login OTP.');
     });
 
-    itIfRedis('reports an expired code as unauthorized, not as a bad request', async () => {
-      const shortLived = Object.create(service) as AuthService;
-      // readonly is erased at runtime; shortening the window keeps the test quick.
-      (shortLived as unknown as { otpTtlSeconds: number }).otpTtlSeconds = 1;
-      await shortLived.requestLoginOtp(activeUser.phoneNumber);
-      const code = lastCode();
-      await new Promise((resolve) => setTimeout(resolve, 1300));
-      await expect(shortLived.verifyOtp(activeUser.phoneNumber, code)).rejects.toThrow(
-        'The OTP has expired. Request a new login OTP.',
-      );
-    });
+    itIfRedis(
+      'reports an expired code as unauthorized, not as a bad request',
+      async () => {
+        const shortLived = Object.create(service) as AuthService;
+        // readonly is erased at runtime; shortening the window keeps the test quick.
+        (shortLived as unknown as { otpTtlSeconds: number }).otpTtlSeconds = 1;
+        await shortLived.requestLoginOtp(activeUser.phoneNumber);
+        const code = lastCode();
+        await new Promise((resolve) => setTimeout(resolve, 1300));
+        await expect(
+          shortLived.verifyOtp(activeUser.phoneNumber, code),
+        ).rejects.toThrow('The OTP has expired. Request a new login OTP.');
+      },
+    );
   });
 
   describe('limiting repeated wrong guesses', () => {
-    itIfRedis('forbids further attempts once the limit is reached', async () => {
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      const wrong = wrongCode();
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        await expect(service.verifyOtp(activeUser.phoneNumber, wrong)).rejects.toThrow('The OTP is incorrect.');
-      }
-      await expect(service.verifyOtp(activeUser.phoneNumber, wrong)).rejects.toThrow(
-        'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
-      );
-    });
+    itIfRedis(
+      'forbids further attempts once the limit is reached',
+      async () => {
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        const wrong = wrongCode();
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          await expect(
+            service.verifyOtp(activeUser.phoneNumber, wrong),
+          ).rejects.toThrow('The OTP is incorrect.');
+        }
+        await expect(
+          service.verifyOtp(activeUser.phoneNumber, wrong),
+        ).rejects.toThrow(
+          'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
+        );
+      },
+    );
 
-    itIfRedis('still rejects the right code once the limit is reached', async () => {
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      const code = lastCode();
-      const wrong = wrongCode();
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
-      }
-      await expect(service.verifyOtp(activeUser.phoneNumber, code)).rejects.toThrow(
-        'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
-      );
-    });
+    itIfRedis(
+      'still rejects the right code once the limit is reached',
+      async () => {
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        const code = lastCode();
+        const wrong = wrongCode();
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          await service
+            .verifyOtp(activeUser.phoneNumber, wrong)
+            .catch(() => undefined);
+        }
+        await expect(
+          service.verifyOtp(activeUser.phoneNumber, code),
+        ).rejects.toThrow(
+          'Too many incorrect OTP attempts. Wait a few minutes before trying again.',
+        );
+      },
+    );
 
     // The tally must belong to the account, not to whichever code is pending.
-    itIfRedis('does not let a freshly requested code buy back guesses', async () => {
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      const wrong = wrongCode();
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
-      }
-      // A brand new OTP resets the per-code counter...
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      expect(Number(await client.hget(key, 'verificationTries'))).toBe(0);
-      // ...but the account-scoped tally must still refuse the guess.
-      await expect(service.verifyOtp(activeUser.phoneNumber, wrongCode())).rejects.toThrow(
-        'Too many incorrect OTP attempts.',
-      );
-    });
+    itIfRedis(
+      'does not let a freshly requested code buy back guesses',
+      async () => {
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        const wrong = wrongCode();
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          await service
+            .verifyOtp(activeUser.phoneNumber, wrong)
+            .catch(() => undefined);
+        }
+        // A brand new OTP resets the per-code counter...
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        expect(Number(await client.hget(key, 'verificationTries'))).toBe(0);
+        // ...but the account-scoped tally must still refuse the guess.
+        await expect(
+          service.verifyOtp(activeUser.phoneNumber, wrongCode()),
+        ).rejects.toThrow('Too many incorrect OTP attempts.');
+      },
+    );
 
-    itIfRedis('refuses the correct code on a fresh request once the account is locked', async () => {
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      const wrong = wrongCode();
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
-      }
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      const fresh = lastCode();
-      await expect(service.verifyOtp(activeUser.phoneNumber, fresh)).rejects.toThrow(
-        'Too many incorrect OTP attempts.',
-      );
-    });
+    itIfRedis(
+      'refuses the correct code on a fresh request once the account is locked',
+      async () => {
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        const wrong = wrongCode();
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          await service
+            .verifyOtp(activeUser.phoneNumber, wrong)
+            .catch(() => undefined);
+        }
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        const fresh = lastCode();
+        await expect(
+          service.verifyOtp(activeUser.phoneNumber, fresh),
+        ).rejects.toThrow('Too many incorrect OTP attempts.');
+      },
+    );
 
-    itIfRedis('clears the account tally once the right code arrives', async () => {
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      const code = lastCode();
-      const wrong = wrongCode();
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
-      }
-      expect(Number(await client.get(triesKey))).toBe(3);
-      await service.verifyOtp(activeUser.phoneNumber, code);
-      expect(await client.get(triesKey)).toBeNull();
-    });
+    itIfRedis(
+      'clears the account tally once the right code arrives',
+      async () => {
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        const code = lastCode();
+        const wrong = wrongCode();
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          await service
+            .verifyOtp(activeUser.phoneNumber, wrong)
+            .catch(() => undefined);
+        }
+        expect(Number(await client.get(triesKey))).toBe(3);
+        await service.verifyOtp(activeUser.phoneNumber, code);
+        expect(await client.get(triesKey)).toBeNull();
+      },
+    );
 
     itIfRedis('keeps the account tally separate per account', async () => {
       await service.requestLoginOtp(activeUser.phoneNumber);
       const wrong = wrongCode();
       for (let attempt = 0; attempt < 5; attempt += 1) {
-        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
+        await service
+          .verifyOtp(activeUser.phoneNumber, wrong)
+          .catch(() => undefined);
       }
-      await expect(client.get(`auth:otp:tries:somebody-else`)).resolves.toBeNull();
+      await expect(
+        client.get(`auth:otp:tries:somebody-else`),
+      ).resolves.toBeNull();
       expect(Number(await client.get(triesKey))).toBe(5);
     });
   });
 
   describe('resending a code', () => {
-    itIfRedis('replaces the code and invalidates the previous one', async () => {
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      const original = lastCode();
-      await service.resendOtp(activeUser.phoneNumber);
-      expect(lastCode()).not.toBe(original);
-      await expect(service.verifyOtp(activeUser.phoneNumber, original)).rejects.toThrow('The OTP is incorrect.');
-    });
+    itIfRedis(
+      'replaces the code and invalidates the previous one',
+      async () => {
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        const original = lastCode();
+        await service.resendOtp(activeUser.phoneNumber);
+        expect(lastCode()).not.toBe(original);
+        await expect(
+          service.verifyOtp(activeUser.phoneNumber, original),
+        ).rejects.toThrow('The OTP is incorrect.');
+      },
+    );
 
     itIfRedis('reports the remaining resends', async () => {
       await service.requestLoginOtp(activeUser.phoneNumber);
-      await expect(service.resendOtp(activeUser.phoneNumber)).resolves.toMatchObject({
+      await expect(
+        service.resendOtp(activeUser.phoneNumber),
+      ).resolves.toMatchObject({
         message: expect.stringContaining('2 resend'),
       });
     });
@@ -316,7 +387,9 @@ describe('AuthService OTP scripts against Redis', () => {
       await service.requestLoginOtp(activeUser.phoneNumber);
       await service.resendOtp(activeUser.phoneNumber);
       await service.resendOtp(activeUser.phoneNumber);
-      await expect(service.resendOtp(activeUser.phoneNumber)).resolves.toMatchObject({
+      await expect(
+        service.resendOtp(activeUser.phoneNumber),
+      ).resolves.toMatchObject({
         message: expect.stringContaining('0 resend'),
       });
       await expect(service.resendOtp(activeUser.phoneNumber)).rejects.toThrow(
@@ -324,25 +397,35 @@ describe('AuthService OTP scripts against Redis', () => {
       );
     });
 
-    itIfRedis('sends no further code once the resend limit is hit', async () => {
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      await service.resendOtp(activeUser.phoneNumber);
-      await service.resendOtp(activeUser.phoneNumber);
-      await service.resendOtp(activeUser.phoneNumber);
-      const before = sent.length;
-      await expect(service.resendOtp(activeUser.phoneNumber)).rejects.toThrow();
-      expect(sent).toHaveLength(before);
-    });
+    itIfRedis(
+      'sends no further code once the resend limit is hit',
+      async () => {
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        await service.resendOtp(activeUser.phoneNumber);
+        await service.resendOtp(activeUser.phoneNumber);
+        await service.resendOtp(activeUser.phoneNumber);
+        const before = sent.length;
+        await expect(
+          service.resendOtp(activeUser.phoneNumber),
+        ).rejects.toThrow();
+        expect(sent).toHaveLength(before);
+      },
+    );
 
-    itIfRedis('keeps the failed-attempt count so resending cannot reset it', async () => {
-      await service.requestLoginOtp(activeUser.phoneNumber);
-      const wrong = wrongCode();
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        await service.verifyOtp(activeUser.phoneNumber, wrong).catch(() => undefined);
-      }
-      await service.resendOtp(activeUser.phoneNumber);
-      expect(await client.hget(key, 'verificationTries')).toBe('3');
-    });
+    itIfRedis(
+      'keeps the failed-attempt count so resending cannot reset it',
+      async () => {
+        await service.requestLoginOtp(activeUser.phoneNumber);
+        const wrong = wrongCode();
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          await service
+            .verifyOtp(activeUser.phoneNumber, wrong)
+            .catch(() => undefined);
+        }
+        await service.resendOtp(activeUser.phoneNumber);
+        expect(await client.hget(key, 'verificationTries')).toBe('3');
+      },
+    );
 
     itIfRedis('rejects a resend when nothing is pending', async () => {
       await expect(service.resendOtp(activeUser.phoneNumber)).rejects.toThrow(
@@ -355,8 +438,12 @@ describe('AuthService OTP scripts against Redis', () => {
     itIfRedis('surfaces a service-unavailable error', async () => {
       const broken = new AuthService(
         { signAsync: jest.fn() } as unknown as JwtService,
-        { get: jest.fn((_name: string, fallback: unknown) => fallback) } as unknown as ConfigService,
-        { user: { findUnique: jest.fn().mockResolvedValue(activeUser) } } as never,
+        {
+          get: jest.fn((_name: string, fallback: unknown) => fallback),
+        } as unknown as ConfigService,
+        {
+          user: { findUnique: jest.fn().mockResolvedValue(activeUser) },
+        } as never,
         { sendOtp: jest.fn() } as never,
         {
           getClient: () => {
@@ -364,9 +451,9 @@ describe('AuthService OTP scripts against Redis', () => {
           },
         } as never,
       );
-      await expect(broken.requestLoginOtp(activeUser.phoneNumber)).rejects.toThrow(
-        'OTP service is unavailable. Please try again later.',
-      );
+      await expect(
+        broken.requestLoginOtp(activeUser.phoneNumber),
+      ).rejects.toThrow('OTP service is unavailable. Please try again later.');
     });
   });
 });

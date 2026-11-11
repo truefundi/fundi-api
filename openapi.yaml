@@ -927,6 +927,14 @@ paths:
       operationId: AuthController_loginWithPin
       summary: Sign in with a phone number and PIN
       description: Signs in a customer or verified technician who has a PIN configured.
+      parameters:
+        - name: X-Device-Id
+          in: header
+          required: false
+          description: Stable app-install identifier saved with the active session.
+          schema:
+            type: string
+            maxLength: 255
       requestBody:
         required: true
         content:
@@ -1032,8 +1040,16 @@ paths:
       x-fundi-status: implemented
   /auth/verify-otp:
     post:
-      description: Consumes the pending code and issues a token pair. Five incorrect guesses lock verification for that account for fifteen minutes, during which even the correct code is refused.
+      description: Consumes the pending code and issues a token pair. Five incorrect guesses lock verification for that account for fifteen minutes, during which even the correct code is refused. A successful sign-in replaces the account's previous session.
       operationId: AuthController_verifyOtp
+      parameters:
+        - name: X-Device-Id
+          in: header
+          required: false
+          description: Stable app-install identifier saved with the active session.
+          schema:
+            type: string
+            maxLength: 255
       requestBody:
         required: true
         content:
@@ -3139,6 +3155,63 @@ paths:
       summary: Download one of my documents (file bytes)
       x-fundi-status: implemented
   /technicians/profile/documents/{documentId}:
+    patch:
+      operationId: TechnicianDocumentsController_updateDeniedDocument
+      description: Replaces the file and optionally updates metadata on a denied document. The same document record is resubmitted with status SUBMITTED.
+      parameters:
+        - name: documentId
+          required: true
+          in: path
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                title:
+                  type: string
+                certificateType:
+                  type: string
+                  enum:
+                    - TVET_CERTIFICATE
+                    - DIPLOMA
+                    - ADVANCED_DIPLOMA
+                    - DEGREE
+                    - SHORT_COURSE
+                    - OTHER
+                categoryId:
+                  type: string
+                  format: uuid
+                customCategoryName:
+                  type: string
+      responses:
+        '200':
+          description: The updated document resubmitted for review.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      security:
+        - bearerAuth: []
+      tags:
+        - Technicians
+      summary: Update and resubmit a denied document
+      x-fundi-status: implemented
     delete:
       operationId: TechnicianDocumentsController_deleteDocument
       parameters:

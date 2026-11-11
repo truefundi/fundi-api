@@ -7,8 +7,10 @@ administrator session or token. JSON endpoints use
 `multipart/form-data`.
 
 For a normal request, a logged-in customer or technician previews eligible
-technicians, pays the normal category booking fee, verifies their phone for
-this request, creates the job, then proposes one matching technician. For an
+technicians, pays the normal category booking fee, creates the job, then
+proposes one matching technician. A customer verifies their account phone
+before their first job; later jobs use the saved verification and need no new
+OTP. Technicians continue to verify for each job. For an
 SOS request, the owner pays the higher SOS fee and creates the request through
 the SOS endpoint; the system automatically offers it to eligible technicians
 in match order, one at a time, with 30 seconds to respond to each offer.
@@ -21,10 +23,14 @@ in match order, one at a time, with 30 seconds to respond to each offer.
 2. Preview matches using `GET /jobs/matching-technicians`.
 3. Pay the booking fee using `POST /payments/mock`. This development-only
    payment is not a real money transfer.
-4. Request and verify the job owner's phone OTP for this job using
+4. If the customer has not verified their account phone, or the job owner is a
+   technician, request and verify the phone OTP using
    `POST /jobs/phone-verification/request` and
-   `POST /jobs/phone-verification/verify`.
-5. Create the job using the returned `paymentId` and `verificationId`.
+   `POST /jobs/phone-verification/verify`. The verified customer number becomes
+   the account's phone login number. Customers may verify another number later
+   to replace it, provided no other account owns that number.
+5. Create the job using the returned `paymentId` and, when required, the
+   `verificationId`.
 6. Propose a technician from the preview list using
    `POST /jobs/mine/:jobId/requests`.
 
@@ -71,15 +77,24 @@ fields side by side.
 | `POST`   | `/api/v1/jobs/mine/:jobId/media`                     | Add media to an editable job                                                  |
 | `DELETE` | `/api/v1/jobs/mine/:jobId/media/:mediaId`            | Remove media from an editable job                                             |
 
-### Verify a phone number for a job
-
-Each job request requires a new phone verification, even if the job owner
-verified their phone during login or for an earlier request.
+### Verify an account phone before creating a job
 
 **POST** `/api/v1/jobs/phone-verification/request` — customer or technician
-bearer token.
-No request body. In development, read the code from the API terminal when
-`SMS_MODE=console` is configured. The response includes a `verificationId`.
+bearer token. Customers may omit the body to verify the current account phone,
+or submit a different number to verify and replace it. Technicians may only
+verify their current number and still need a new verification for each job.
+
+```json
+{
+  "phoneNumber": "+250788123456"
+}
+```
+
+For customers whose current number is already verified, omitting the number
+returns `verified: true` without sending an OTP. A different number always
+requires verification, and the number cannot belong to another account. In
+development, read the code from the API terminal when `SMS_MODE=console` is
+configured. A pending verification response includes a `verificationId`.
 
 ```json
 {
@@ -98,8 +113,10 @@ No request body. In development, read the code from the API terminal when
 }
 ```
 
-The response contains the same `verificationId` and `verifiedAt`. The
-verification can be consumed only once and must be passed to job creation.
+After a successful OTP, the response includes `phoneNumber` and `verifiedAt`.
+For customers, the verified number is saved as the account's phone number and
+future jobs do not need a `phoneVerificationId`. For a technician, the
+one-use `verificationId` must still be passed to that job.
 
 ### Preview scored technicians
 
@@ -201,15 +218,16 @@ the JSON is a shape reference, not a raw JSON body:
 }
 ```
 
-Required form fields: `paymentId`, `phoneVerificationId`, exactly one of
-`serviceCategoryId` or `otherServiceName`, `description`, `locationAddress`,
-`latitude`, `longitude`, and `offeredAmount`. A payment must belong to this
-customer, be unused, be valid, and match the selected category and
-`requestType` (`NORMAL` by default). Custom
+Required form fields: `paymentId`, exactly one of `serviceCategoryId` or
+`otherServiceName`, `description`, `locationAddress`, `latitude`, `longitude`,
+and `offeredAmount`. Include `phoneVerificationId` only when required by the
+account's verification state (always for technicians; for customers, until
+their account phone is verified). A payment must belong to this customer, be
+unused, be valid, and match the selected category and `requestType` (`NORMAL`
+by default). Custom
 `otherServiceName` requests can be previewed but cannot currently be booked:
-the payment workflow requires a `serviceCategoryId`. Choose a configured
-category to create a paid request. The phone verification is consumed when the
-job is created.
+the payment workflow requires a `serviceCategoryId`. Choose a configured category to create a paid request. A one-use phone
+verification is consumed when supplied.
 
 Optional files: up to five `photos` (JPEG, PNG, or WebP; 5 MiB each) and one
 `video` (MP4; up to 50 MiB and 30 seconds). Use repeated `photos` fields for
@@ -218,9 +236,10 @@ multiple images. For jobs without attachments, the request may use JSON.
 ### Create an SOS job
 
 **POST** `/api/v1/jobs/sos` — customer or technician bearer token; use
-**Body → form-data**. First create an SOS payment (`requestType: "SOS"`) and
-verify the job owner's phone number. Submit the same fields as job creation:
-`paymentId`, `phoneVerificationId`, `serviceCategoryId`, `description`,
+**Body → form-data**. First create an SOS payment (`requestType: "SOS"`). If
+required by the account's verification state, verify the job owner's phone.
+Submit the same fields as job creation:
+`paymentId`, `serviceCategoryId`, `description`,
 `locationAddress`, `latitude`, `longitude`, and `offeredAmount`. Optional
 `priority`, `photos`, and `video` are supported. This route sets the job type
 to `SOS` and automatically sends an offer to the highest-ranked matching

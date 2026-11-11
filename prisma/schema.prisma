@@ -46,6 +46,7 @@ model RefreshToken {
   expiresAt DateTime
   createdAt DateTime @default(now())
   sessionId String   @unique @default(uuid())
+  deviceId  String?
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("refresh_tokens")
@@ -350,14 +351,15 @@ model Broadcast {
 }
 
 model CustomerPhoneVerification {
-  id         String    @id @default(uuid())
-  customerId String
-  expiresAt  DateTime
-  verifiedAt DateTime?
-  consumedAt DateTime?
-  createdAt  DateTime  @default(now())
-  customer   User      @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  job        Job?
+  id          String    @id @default(uuid())
+  customerId  String
+  phoneNumber String
+  expiresAt   DateTime
+  verifiedAt  DateTime?
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  customer    User      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  job         Job?
 
   @@index([customerId, createdAt])
   @@map("customer_phone_verifications")

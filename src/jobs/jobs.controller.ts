@@ -28,6 +28,7 @@ import { JobsService } from './jobs.service';
 import { AuthService } from '../auth/auth.service';
 import { CreateJobMultipartDto } from './dto/create-job-multipart.dto';
 import { VerifyJobPhoneDto } from './dto/verify-job-phone.dto';
+import { RequestJobPhoneDto } from './dto/request-job-phone.dto';
 import { CancelJobDto } from './dto/cancel-job.dto';
 import {
   MatchingTechniciansDto,
@@ -65,8 +66,11 @@ export class JobsController {
   ) {}
 
   @Post('phone-verification/request')
-  requestPhoneVerification(@CurrentUser() user: AuthUser) {
-    return this.auth.requestCustomerJobOtp(user.id);
+  requestPhoneVerification(
+    @CurrentUser() user: AuthUser,
+    @Body() dto?: RequestJobPhoneDto,
+  ) {
+    return this.auth.requestCustomerJobOtp(user.id, dto?.phoneNumber);
   }
 
   @Post('phone-verification/verify')
@@ -101,7 +105,6 @@ export class JobsController {
       type: 'object',
       required: [
         'paymentId',
-        'phoneVerificationId',
         'description',
         'locationAddress',
         'latitude',
@@ -110,7 +113,12 @@ export class JobsController {
       ],
       properties: {
         paymentId: { type: 'string', format: 'uuid' },
-        phoneVerificationId: { type: 'string', format: 'uuid' },
+        phoneVerificationId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Required until the account phone is verified; omit it after verification.',
+        },
         serviceCategoryId: { type: 'string', format: 'uuid' },
         requestType: {
           type: 'string',
@@ -158,7 +166,6 @@ export class JobsController {
       type: 'object',
       required: [
         'paymentId',
-        'phoneVerificationId',
         'serviceCategoryId',
         'description',
         'locationAddress',
@@ -190,7 +197,12 @@ export class JobsController {
     @Body() dto: CreateJobDto,
     @UploadedFiles() files: JobUploadFields,
   ) {
-    return this.jobs.createSos(user.id, dto, files.photos ?? [], files.video?.[0]);
+    return this.jobs.createSos(
+      user.id,
+      dto,
+      files.photos ?? [],
+      files.video?.[0],
+    );
   }
 
   @Get('mine')

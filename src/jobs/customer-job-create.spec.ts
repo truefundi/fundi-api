@@ -5,6 +5,9 @@ describe('JobsService customer job creation', () => {
   it('creates a customer job from a valid payment and phone verification', async () => {
     const jobCreate = jest.fn().mockResolvedValue(undefined);
     const executeRaw = jest.fn().mockResolvedValue(1);
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValue([{ monthKey: '1126', lastNumber: 1 }]);
     const paymentFindFirst = jest.fn().mockResolvedValue({
       id: 'payment-1',
       status: 'VALID',
@@ -31,6 +34,7 @@ describe('JobsService customer job creation', () => {
         updateMany: verificationUpdateMany,
       },
       $executeRaw: executeRaw,
+      $queryRaw: queryRaw,
     };
     const prisma = {
       serviceCategory: { findFirst: categoryFindFirst },
@@ -84,6 +88,7 @@ describe('JobsService customer job creation', () => {
     expect(jobCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         customerId: 'customer-1',
+        reference: 'FD-1126001',
         serviceCategoryId: 'category-1',
         otherServiceName: null,
         phoneVerificationId: 'verification-1',
@@ -115,6 +120,7 @@ describe('JobsService customer job creation', () => {
         action: 'JOB_CREATED',
         actorId: 'customer-1',
         toStatus: 'OPEN',
+        metadata: expect.objectContaining({ reference: 'FD-1126001' }),
       }),
       tx,
     );

@@ -3,6 +3,21 @@ import { randomUUID } from 'crypto';
 
 const prisma = new PrismaClient();
 
+// Allocates the same FD-MMYYNNN job reference the API hands out, so seeded
+// data looks like production data and never collides with real jobs.
+async function nextJobReference(): Promise<string> {
+  const rows = await prisma.$queryRaw<
+    Array<{ monthKey: string; lastNumber: number }>
+  >`
+    INSERT INTO "job_number_counters" ("monthKey", "lastNumber")
+    VALUES (to_char(now() AT TIME ZONE 'Africa/Kigali', 'MMYY'), 1)
+    ON CONFLICT ("monthKey")
+    DO UPDATE SET "lastNumber" = "job_number_counters"."lastNumber" + 1
+    RETURNING "monthKey", "lastNumber"`;
+  const { monthKey, lastNumber } = rows[0];
+  return `FD-${monthKey}${String(lastNumber).padStart(3, '0')}`;
+}
+
 async function main() {
   console.log('Starting mock data seeding...');
 
@@ -79,6 +94,7 @@ async function main() {
     const job = await prisma.job.create({
       data: {
         id: randomUUID(),
+        reference: await nextJobReference(),
         customerId: customer.id,
         serviceCategoryId: cat.id,
         description: `Need ${cat.name.toLowerCase()} service - job request #${i + 1}`,

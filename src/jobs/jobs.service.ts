@@ -425,27 +425,43 @@ export class JobsService {
             'A valid, unused booking payment for this service category is required.',
           );
         }
-        const phoneVerification = await tx.customerPhoneVerification.findFirst({
-          where: {
-            id: dto.phoneVerificationId,
-            customerId,
-            verifiedAt: { not: null },
-            consumedAt: null,
-            expiresAt: { gt: now },
-          },
-          select: { id: true },
+        const account = await tx.user.findUnique({
+          where: { id: customerId },
+          select: { role: true, phoneVerifiedAt: true },
         });
-        if (!phoneVerification) {
+        if (!account) throw new NotFoundException('Account not found.');
+        const accountPhoneIsVerified =
+          account.role === UserRole.CUSTOMER &&
+          account.phoneVerifiedAt !== null;
+        if (!dto.phoneVerificationId && !accountPhoneIsVerified) {
           throw new ConflictException(
             'Verify your phone number for this job request before submitting it.',
           );
+        }
+        if (dto.phoneVerificationId) {
+          const phoneVerification =
+            await tx.customerPhoneVerification.findFirst({
+              where: {
+                id: dto.phoneVerificationId,
+                customerId,
+                verifiedAt: { not: null },
+                consumedAt: null,
+                expiresAt: { gt: now },
+              },
+              select: { id: true },
+            });
+          if (!phoneVerification) {
+            throw new ConflictException(
+              'Verify your phone number for this job request before submitting it.',
+            );
+          }
         }
         await tx.job.create({
           data: {
             id: jobId,
             customerId,
             ...selection,
-            phoneVerificationId: dto.phoneVerificationId,
+            phoneVerificationId: dto.phoneVerificationId ?? null,
             description: dto.description.trim(),
             locationAddress: dto.locationAddress.trim(),
             latitude: dto.latitude,
@@ -481,20 +497,22 @@ export class JobsService {
             'The booking payment has already been used.',
           );
         }
-        const consumed = await tx.customerPhoneVerification.updateMany({
-          where: {
-            id: dto.phoneVerificationId,
-            customerId,
-            verifiedAt: { not: null },
-            consumedAt: null,
-            expiresAt: { gt: now },
-          },
-          data: { consumedAt: now },
-        });
-        if (!consumed.count) {
-          throw new ConflictException(
-            'Phone verification has already been used. Verify again.',
-          );
+        if (dto.phoneVerificationId) {
+          const consumed = await tx.customerPhoneVerification.updateMany({
+            where: {
+              id: dto.phoneVerificationId,
+              customerId,
+              verifiedAt: { not: null },
+              consumedAt: null,
+              expiresAt: { gt: now },
+            },
+            data: { consumedAt: now },
+          });
+          if (!consumed.count) {
+            throw new ConflictException(
+              'Phone verification has already been used. Verify again.',
+            );
+          }
         }
         await this.audit.log(
           {
@@ -508,7 +526,7 @@ export class JobsService {
               matchCount: candidates.length,
               paymentId: payment.id,
               requestType,
-              phoneVerificationId: dto.phoneVerificationId,
+              phoneVerificationId: dto.phoneVerificationId ?? null,
             },
           },
           tx,

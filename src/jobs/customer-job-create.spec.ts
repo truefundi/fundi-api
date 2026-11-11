@@ -18,9 +18,14 @@ describe('JobsService customer job creation', () => {
     const verificationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const auditLog = jest.fn().mockResolvedValue(undefined);
     const categoryFindFirst = jest.fn().mockResolvedValue({ id: 'category-1' });
+    const userFindUnique = jest.fn().mockResolvedValue({
+      role: 'CUSTOMER',
+      phoneVerifiedAt: null,
+    });
 
     const tx = {
       job: { create: jobCreate },
+      user: { findUnique: userFindUnique },
       bookingPayment: {
         findFirst: paymentFindFirst,
         update: jest.fn(),
@@ -122,5 +127,78 @@ describe('JobsService customer job creation', () => {
       'customer-1',
       expect.any(String),
     );
+  });
+
+  it('creates a later customer job without another phone verification', async () => {
+    const jobCreate = jest.fn().mockResolvedValue(undefined);
+    const executeRaw = jest.fn().mockResolvedValue(1);
+    const paymentUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const auditLog = jest.fn().mockResolvedValue(undefined);
+    const userFindUnique = jest.fn().mockResolvedValue({
+      role: 'CUSTOMER',
+      phoneVerifiedAt: new Date(),
+    });
+    const verificationFindFirst = jest.fn();
+    const tx = {
+      job: { create: jobCreate },
+      user: { findUnique: userFindUnique },
+      bookingPayment: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'payment-1',
+          status: 'VALID',
+          validUntil: new Date(Date.now() + 60_000),
+          requestType: 'NORMAL',
+        }),
+        update: jest.fn(),
+        updateMany: paymentUpdateMany,
+      },
+      customerPhoneVerification: {
+        findFirst: verificationFindFirst,
+        updateMany: jest.fn(),
+      },
+      $executeRaw: executeRaw,
+    };
+    const prisma = {
+      serviceCategory: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'category-1' }),
+      },
+      $transaction: jest
+        .fn()
+        .mockImplementation(async (operation: (client: typeof tx) => unknown) =>
+          operation(tx),
+        ),
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      { put: jest.fn(), delete: jest.fn() } as unknown as never,
+      { log: auditLog } as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+      undefined as unknown as never,
+    );
+    jest.spyOn(service as any, 'findMatches').mockResolvedValue([]);
+    jest
+      .spyOn(service, 'getCustomerJob')
+      .mockResolvedValue({ id: 'job-created' } as any);
+
+    await service.create(
+      'customer-1',
+      {
+        paymentId: 'payment-1',
+        serviceCategoryId: 'category-1',
+        description: 'The kitchen sink has been leaking since yesterday.',
+        locationAddress: 'Kimironko, Gasabo',
+        latitude: -1.9441,
+        longitude: 30.0619,
+        offeredAmount: 20_000,
+      } as any,
+      [],
+    );
+
+    expect(verificationFindFirst).not.toHaveBeenCalled();
+    expect(jobCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ phoneVerificationId: null }),
+    });
   });
 });

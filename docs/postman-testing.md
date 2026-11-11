@@ -749,6 +749,16 @@ bearer token; no body.
 technician bearer token; no body. Only `SUBMITTED` or `DENIED` documents can
 be deleted.
 
+### Update and resubmit a denied document
+
+**PATCH**
+`{{baseUrl}}/api/v1/technicians/profile/documents/{{documentId}}` —
+technician bearer token. Use form-data with a replacement `file` (required).
+Optionally include `title`; for certificates you can also update
+`certificateType` and provide `categoryId` or `customCategoryName`. Only a
+`DENIED` document can be changed. The same document ID is returned with status
+`SUBMITTED`.
+
 ### List a technician's documents (admin)
 
 **GET**

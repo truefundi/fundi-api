@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Header,
+  Patch,
   Param,
   ParseUUIDPipe,
   Post,
@@ -21,6 +22,7 @@ import {
 } from '../../common/decorators/auth.decorator';
 import { TechniciansService } from '../technicians.service';
 import { UploadDocumentDto } from './dto/upload-document.dto';
+import { UpdateDeniedDocumentDto } from './dto/update-denied-document.dto';
 import {
   MAX_UPLOAD_BYTES,
   toStreamableFile,
@@ -96,6 +98,33 @@ export class TechnicianDocumentsController {
     @UploadedFile() file: UploadedFileData,
   ) {
     return this.documents.uploadDocument(user.id, dto, file);
+  }
+
+  // Replaces and resubmits a document that an administrator denied.
+  @Patch('documents/:documentId')
+  @Auth(UserRole.TECHNICIAN)
+  @UseInterceptors(FileInterceptor('file', UPLOAD_LIMITS))
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        title: { type: 'string', example: 'National ID (front and back)' },
+        certificateType: { type: 'string' },
+        categoryId: { type: 'string', format: 'uuid' },
+        customCategoryName: { type: 'string' },
+      },
+    },
+  })
+  updateDeniedDocument(
+    @CurrentUser() user: AuthUser,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+    @Body() dto: UpdateDeniedDocumentDto,
+    @UploadedFile() file: UploadedFileData,
+  ) {
+    return this.documents.updateDeniedDocument(user.id, documentId, dto, file);
   }
 
   // Lists the technician's own documents and their review status.

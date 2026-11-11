@@ -250,7 +250,7 @@ export class AuthService {
   }
 
   // Verifies a time-limited OTP and creates persisted refresh-token state.
-  async verifyOtp(phoneNumber: string, otp: string) {
+  async verifyOtp(phoneNumber: string, otp: string, deviceId?: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user)
       throw new NotFoundException(
@@ -265,11 +265,15 @@ export class AuthService {
         data: { phoneVerifiedAt: new Date() },
       });
     }
-    return this.createUserSession(user);
+    return this.createUserSession(user, deviceId);
   }
 
   // Authenticates a customer or technician using an optional account password.
-  async loginWithPassword(phoneNumber: string, password: string) {
+  async loginWithPassword(
+    phoneNumber: string,
+    password: string,
+    deviceId?: string,
+  ) {
     this.assertPasswordLength(password);
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) {
@@ -301,11 +305,11 @@ export class AuthService {
       );
     }
     await this.clearPasswordAttempts(user.id);
-    return this.createUserSession(user);
+    return this.createUserSession(user, deviceId);
   }
 
   // Authenticates a customer or verified technician using a phone number and PIN.
-  async loginWithPin(phoneNumber: string, pin: string) {
+  async loginWithPin(phoneNumber: string, pin: string, deviceId?: string) {
     this.assertPin(pin);
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) {
@@ -332,7 +336,7 @@ export class AuthService {
       throw new UnauthorizedException('The phone number or PIN is incorrect.');
     }
     await this.clearPasswordAttempts(user.id);
-    return this.createUserSession(user);
+    return this.createUserSession(user, deviceId);
   }
 
   // Resets a password only after consuming an OTP sent to the account phone.
@@ -507,6 +511,7 @@ export class AuthService {
   async verifyPasskeyAuthentication(
     phoneNumber: string,
     response: AuthenticationResponseJSON,
+    deviceId?: string,
   ) {
     const user = await this.prisma.user.findUnique({
       where: { phoneNumber },
@@ -577,7 +582,7 @@ export class AuthService {
         'The passkey credential has already been used. Start sign-in again.',
       );
     }
-    return this.createUserSession(user);
+    return this.createUserSession(user, deviceId);
   }
 
   // Returns metadata for the caller's registered passkeys without exposing keys.
@@ -665,7 +670,13 @@ export class AuthService {
         );
       }
       await tx.refreshToken.create({
-        data: { token: rotatedHash, sessionId, userId: user.id, expiresAt },
+        data: {
+          token: rotatedHash,
+          sessionId,
+          userId: user.id,
+          deviceId: session.deviceId,
+          expiresAt,
+        },
       });
     });
     return {
@@ -757,25 +768,61 @@ export class AuthService {
     return this.verifyCode(this.otpKey(userId), this.otpTriesKey(userId), otp);
   }
 
-  async requestCustomerJobOtp(customerId: string) {
+  async requestCustomerJobOtp(
+    customerId: string,
+    requestedPhoneNumber?: string,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { id: customerId },
-      select: { id: true, phoneNumber: true, role: true, status: true },
+      select: {
+        id: true,
+        phoneNumber: true,
+        phoneVerifiedAt: true,
+        role: true,
+        status: true,
+      },
     });
     if (!user || user.role === UserRole.ADMIN) {
       throw new NotFoundException('Account not found.');
     }
     this.ensureActive(user.status);
+    const phoneNumber = requestedPhoneNumber?.trim() || user.phoneNumber;
+    if (user.role !== UserRole.CUSTOMER && phoneNumber !== user.phoneNumber) {
+      throw new BadRequestException(
+        'Only customer accounts can verify a different phone number.',
+      );
+    }
+    if (
+      user.role === UserRole.CUSTOMER &&
+      user.phoneVerifiedAt &&
+      phoneNumber === user.phoneNumber
+    ) {
+      return {
+        verified: true,
+        phoneNumber: user.phoneNumber,
+        message: 'The account phone number is already verified.',
+      };
+    }
+    const phoneOwner = await this.prisma.user.findUnique({
+      where: { phoneNumber },
+      select: { id: true },
+    });
+    if (phoneOwner && phoneOwner.id !== customerId) {
+      throw new ConflictException(
+        'This phone number is already associated with another account.',
+      );
+    }
     const verification = await this.prisma.customerPhoneVerification.create({
       data: {
         customerId,
+        phoneNumber,
         expiresAt: new Date(Date.now() + this.otpTtlSeconds * 1000),
       },
     });
     const key = this.jobVerificationOtpKey(verification.id);
     try {
       const code = await this.issueOtpForKeys(key);
-      await this.deliverOtp(user.id, user.phoneNumber, code, key);
+      await this.deliverOtp(user.id, phoneNumber, code, key);
     } catch (error) {
       await this.prisma.customerPhoneVerification.delete({
         where: { id: verification.id },
@@ -829,26 +876,51 @@ export class AuthService {
       otp,
     );
     const verifiedAt = new Date();
-    const updated = await this.prisma.customerPhoneVerification.updateMany({
-      where: {
-        id: verification.id,
-        customerId,
-        verifiedAt: null,
-        consumedAt: null,
-        expiresAt: { gt: verifiedAt },
-      },
-      data: { verifiedAt },
-    });
-    if (!updated.count) {
-      throw new ConflictException(
-        'Phone verification expired or was already used. Request a new OTP.',
-      );
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.customerPhoneVerification.updateMany({
+          where: {
+            id: verification.id,
+            customerId,
+            verifiedAt: null,
+            consumedAt: null,
+            expiresAt: { gt: verifiedAt },
+          },
+          data: { verifiedAt },
+        });
+        if (!updated.count) {
+          throw new ConflictException(
+            'Phone verification expired or was already used. Request a new OTP.',
+          );
+        }
+        const user = await tx.user.findUnique({
+          where: { id: customerId },
+          select: { role: true },
+        });
+        if (!user) throw new NotFoundException('Account not found.');
+        await tx.user.update({
+          where: { id: customerId },
+          data: {
+            phoneVerifiedAt: verifiedAt,
+            ...(user.role === UserRole.CUSTOMER
+              ? { phoneNumber: verification.phoneNumber }
+              : {}),
+          },
+        });
+      });
+    } catch (error) {
+      if (this.isPrismaError(error, 'P2002')) {
+        throw new ConflictException(
+          'This phone number is already associated with another account.',
+        );
+      }
+      throw error;
     }
-    await this.prisma.user.update({
-      where: { id: customerId },
-      data: { phoneVerifiedAt: verifiedAt },
-    });
-    return { verificationId: verification.id, verifiedAt };
+    return {
+      verificationId: verification.id,
+      phoneNumber: verification.phoneNumber,
+      verifiedAt,
+    };
   }
 
   private async verifyCode(
@@ -1080,21 +1152,38 @@ export class AuthService {
     }
   }
 
+  private normalizeDeviceId(deviceId?: string) {
+    const normalized = deviceId?.trim();
+    if (normalized && normalized.length > 255) {
+      throw new BadRequestException(
+        'The X-Device-Id header must not exceed 255 characters.',
+      );
+    }
+    return normalized || null;
+  }
+
   private async createUserSession(
     user: Pick<User, 'id' | 'fullName' | 'phoneNumber' | 'role'>,
+    deviceId?: string,
   ) {
+    const normalizedDeviceId = this.normalizeDeviceId(deviceId);
     const { sessionId, ...tokens } = await this.generateTokens(
       user.id,
       user.phoneNumber,
       user.role,
     );
-    await this.prisma.refreshToken.create({
-      data: {
-        token: this.hash(tokens.refreshToken),
-        sessionId,
-        userId: user.id,
-        expiresAt: this.refreshTokenExpiresAt(),
-      },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${user.id} FOR UPDATE`;
+      await tx.refreshToken.deleteMany({ where: { userId: user.id } });
+      await tx.refreshToken.create({
+        data: {
+          token: this.hash(tokens.refreshToken),
+          sessionId,
+          userId: user.id,
+          deviceId: normalizedDeviceId,
+          expiresAt: this.refreshTokenExpiresAt(),
+        },
+      });
     });
     return {
       user: {

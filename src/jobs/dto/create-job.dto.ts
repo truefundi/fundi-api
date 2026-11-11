@@ -20,7 +20,8 @@ export class CreateJobDto {
     required: false,
     enum: JobRequestType,
     default: JobRequestType.NORMAL,
-    description: 'SOS requests automatically rotate through matching technicians.',
+    description:
+      'SOS requests automatically rotate through matching technicians.',
   })
   @IsOptional()
   @IsEnum(JobRequestType)
@@ -29,8 +30,15 @@ export class CreateJobDto {
   @IsUUID('4')
   paymentId!: string;
 
+  @ApiProperty({
+    required: false,
+    format: 'uuid',
+    description:
+      'Required until the account phone is verified. Once verified, omit this field on later jobs.',
+  })
+  @IsOptional()
   @IsUUID('4')
-  phoneVerificationId!: string;
+  phoneVerificationId?: string;
 
   @ApiProperty({
     required: false,
@@ -70,7 +78,8 @@ export class CreateJobDto {
     minLength: 10,
     maxLength: 5000,
     description: 'What needs fixing, in the customer’s own words.',
-    example: 'The kitchen sink has been leaking under the cabinet since yesterday.',
+    example:
+      'The kitchen sink has been leaking under the cabinet since yesterday.',
   })
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()

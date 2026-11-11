@@ -363,6 +363,8 @@ A technician cannot accept another job while a job is `ASSIGNED`. A mutually
 | -------- | ----------------------------------------------------- | ------------------------------------------------ |
 | `GET`    | `/api/v1/admin/jobs`                                  | List all jobs, offers, and assignment history    |
 | `GET`    | `/api/v1/admin/jobs/summary`                          | Dashboard job counts                             |
+| `GET`    | `/api/v1/admin/jobs/pipeline`                         | Ten dashboard pipeline stage counts              |
+| `GET`    | `/api/v1/admin/jobs/pipeline/:stage`                  | One page of jobs at a pipeline stage             |
 | `POST`   | `/api/v1/admin/jobs`                                  | Create and dispatch a job on a customer's behalf |
 | `GET`    | `/api/v1/admin/jobs/cancellation-requests`            | List technician cancellation requests            |
 | `PATCH`  | `/api/v1/admin/jobs/cancellation-requests/:requestId` | Approve or reject a technician cancellation      |
@@ -423,6 +425,76 @@ Example admin response:
 `active` counts `OPEN`, `ASSIGNED`, and `PAUSED` jobs. `completed` counts jobs
 with `status: "COMPLETED"`. `FAILED` and `CANCELLED` jobs are terminal and
 excluded. `openDisputes` counts dispute records without an admin resolution.
+
+## Job pipeline
+
+`GET /api/v1/admin/jobs/pipeline` returns the ten stages the dashboard shows, in
+lifecycle order. Each stage reports `key`, `label`, `tracked`, `count`, and a
+`description` of how the count is derived. The response also carries
+`generatedAt`.
+
+Only stages backed by stored job state are counted. Because the API has no
+diagnosis, quote, or quote-approval records, those three stages return
+`tracked: false` and `count: null`; the endpoint never invents a zero.
+
+| Stage    | Derivation                                                                                                                |
+| -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Request  | `status: OPEN` and `dispatchStatus: PENDING`                                                                              |
+| Match    | `status: OPEN` and `dispatchStatus` is `OFFERED`, `EXHAUSTED`, or `STOPPED`                                               |
+| Accept   | `status` is `ASSIGNED`/`PAUSED`, a technician is assigned, and `cooperationStatus: PENDING`                              |
+| Visit    | `status` is `ASSIGNED`/`PAUSED`, `cooperationStatus: CONFIRMED`, and neither side's progress is `IN_PROGRESS`/`COMPLETED` |
+| Diagnose | Not tracked                                                                                                               |
+| Quote    | Not tracked                                                                                                               |
+| Approve  | Not tracked                                                                                                               |
+| Repair   | `status` is `ASSIGNED`/`PAUSED`, `cooperationStatus: CONFIRMED`, and either side's progress is `IN_PROGRESS`/`COMPLETED`  |
+| Settle   | `status: COMPLETED` and `ratedAt` is null                                                                                 |
+| Rate     | `status: COMPLETED` and `ratedAt` is set                                                                                  |
+
+Cancelled and failed jobs are terminal and appear in no in-flight stage, so the
+tracked counts are indicators rather than a partition of every job.
+
+```json
+{
+  "stages": [
+    {
+      "key": "request",
+      "label": "Request",
+      "count": 4,
+      "tracked": true,
+      "description": "Open jobs still waiting for dispatch to start."
+    },
+    {
+      "key": "diagnose",
+      "label": "Diagnose",
+      "count": null,
+      "tracked": false,
+      "description": "Not tracked: the backend does not record diagnosis separately from work progress."
+    }
+  ],
+  "generatedAt": "2026-11-09T09:00:00.000Z"
+}
+```
+
+`GET /api/v1/admin/jobs/pipeline/:stage` returns one page of the same admin job
+objects as `GET /api/v1/admin/jobs/:jobId`, wrapped in
+`{ stage, data, pagination }`. `stage` repeats the stage summary with `count`
+equal to the page total. Untracked stages return an empty page with `total: 0`
+rather than an error. Paging uses `page` (default 1) and `limit` (default 20,
+maximum 100).
+
+```json
+{
+  "stage": {
+    "key": "visit",
+    "label": "Visit",
+    "count": 8,
+    "tracked": true,
+    "description": "Cooperation is confirmed and neither side has started the work yet."
+  },
+  "data": [{ "id": "…", "status": "ASSIGNED" }],
+  "pagination": { "page": 1, "limit": 20, "total": 8, "totalPages": 1 }
+}
+```
 
 ## Job and payment status
 

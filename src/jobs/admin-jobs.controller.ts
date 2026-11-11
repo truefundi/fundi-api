@@ -4,17 +4,30 @@ import {
   Delete,
   Get,
   Param,
+  ParseEnumPipe,
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import {
   Auth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
+import {
+  ApiForbidden,
+  ApiTokenRequired,
+  ApiValidationFailed,
+} from '../common/decorators/api-error-responses.decorator';
+import { PagedQueryDto } from '../common/dto/paged-query.dto';
+import { JobPipelineStage } from './job-pipeline';
+import {
+  JobPipelineResponseDto,
+  JobPipelineStagePageDto,
+} from './dto/job-pipeline-response.dto';
 import { JobSummaryResponseDto } from './dto/job-summary-response.dto';
 import { AdminCancelJobDto } from './dto/admin-cancel-job.dto';
 import { AdminCreateJobDto } from './dto/admin-create-job.dto';
@@ -50,6 +63,50 @@ export class AdminJobsController {
   })
   summary() {
     return this.jobs.summaryForAdmin();
+  }
+
+  // Both pipeline routes sit before ':jobId' so the literal segment is not
+  // parsed as a UUID.
+  @Get('pipeline')
+  @ApiOperation({
+    summary: 'Get job pipeline counts (admin only)',
+    description:
+      'Returns the ten dashboard stages in lifecycle order. Diagnose, Quote, and ' +
+      'Approve return `count: null` with `tracked: false` because the backend does ' +
+      'not record those steps.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Pipeline stage counts',
+    type: JobPipelineResponseDto,
+  })
+  @ApiTokenRequired()
+  @ApiForbidden('The caller is not an administrator.')
+  pipeline() {
+    return this.jobs.pipelineForAdmin();
+  }
+
+  @Get('pipeline/:stage')
+  @ApiOperation({
+    summary: 'List jobs at one pipeline stage (admin only)',
+    description:
+      'Returns one page of admin job objects for a stage key. Untracked stages ' +
+      'return an empty page with `tracked: false`.',
+  })
+  @ApiParam({ name: 'stage', enum: JobPipelineStage })
+  @ApiResponse({
+    status: 200,
+    description: 'One page of jobs at the stage',
+    type: JobPipelineStagePageDto,
+  })
+  @ApiValidationFailed()
+  @ApiTokenRequired()
+  @ApiForbidden('The caller is not an administrator.')
+  pipelineStage(
+    @Param('stage', new ParseEnumPipe(JobPipelineStage)) stage: JobPipelineStage,
+    @Query() query: PagedQueryDto,
+  ) {
+    return this.jobs.pipelineStageForAdmin(stage, query);
   }
 
   @Get('cancellation-requests')

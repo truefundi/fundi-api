@@ -2953,6 +2953,32 @@
           "response": []
         },
         {
+          "name": "Get job pipeline counts (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/jobs/pipeline",
+            "description": "Returns the ten dashboard stages in lifecycle order. Diagnose, Quote, and Approve return count null with tracked false because the backend does not record them.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List jobs at a pipeline stage (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/jobs/pipeline/visit?page=1&limit=20",
+            "description": "One page of admin job objects at a stage: request, match, accept, visit, diagnose, quote, approve, repair, settle, or rate. Untracked stages return an empty page.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Get job by ID (admin)",
           "request": {
             "method": "GET",

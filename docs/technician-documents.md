@@ -64,8 +64,10 @@ certificateType)`. Uploading a second certificate for the same
 | `OTHER`            | Anything else                   |
 
 A certificate can link to the service it qualifies the technician for. The
-technician picks either a real service category (`categoryId`) or types a
+technician picks either a real catalog service (`categoryId`) or types a
 name (`customCategoryName`) if the service is not in the catalogue yet.
+`categoryId` is the service ID for compatibility with the existing API; it
+does not identify the service's parent category.
 Certificates are optional and are not part of the approval checklist.
 
 ## Document statuses

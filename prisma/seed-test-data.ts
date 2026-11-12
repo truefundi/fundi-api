@@ -195,13 +195,21 @@ const at = (anchor: Date, minutesBefore: number) =>
 // ─── Seeders ───────────────────────────────────────────────────────────────
 
 async function seedCategories() {
+  const parentCategory = await prisma.catalogCategory.upsert({
+    where: { name: 'Home Services' },
+    update: { description: 'Repairs and maintenance for homes.' },
+    create: {
+      name: 'Home Services',
+      description: 'Repairs and maintenance for homes.',
+    },
+  });
   const categories = [];
   for (const name of CATEGORIES) {
     const slug = slugify(name);
     const category = await prisma.serviceCategory.upsert({
       where: { slug },
-      update: { name, isActive: true },
-      create: { name, slug },
+      update: { name, categoryId: parentCategory.id, isActive: true },
+      create: { name, slug, categoryId: parentCategory.id },
     });
     categories.push(category);
   }

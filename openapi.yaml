@@ -1966,46 +1966,46 @@ paths:
       x-fundi-status: implemented
   /catalog/categories:
     get:
-      operationId: CatalogController_list
+      operationId: CatalogController_listCategories
       responses:
         '200':
-          description: Active service categories including their booking fees.
+          description: Active parent categories.
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ServiceCategory'
+                  $ref: '#/components/schemas/CatalogCategory'
       tags:
         - Catalog
-      summary: List active service categories (public)
+      summary: List active categories (public)
       x-fundi-status: implemented
     post:
-      operationId: CatalogController_create
+      operationId: CatalogController_createCategory
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CategoryWrite'
+              $ref: '#/components/schemas/CatalogCategoryCreate'
       responses:
         '201':
-          description: Created category.
+          description: Created parent category.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ServiceCategoryFull'
+                $ref: '#/components/schemas/CatalogCategory'
         '409':
           $ref: '#/components/responses/Conflict'
       security:
         - adminAccessToken: []
       tags:
         - Catalog
-      summary: Create a category (admin)
+      summary: Create a parent category (admin)
       x-fundi-status: implemented
   /catalog/categories/search:
     get:
-      operationId: CatalogController_search
+      operationId: CatalogController_searchCategories
       parameters:
         - name: name
           required: true
@@ -2014,62 +2014,50 @@ paths:
             type: string
       responses:
         '200':
-          description: Matching active categories.
+          description: Active parent categories whose names contain the query.
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ServiceCategory'
+                  $ref: '#/components/schemas/CatalogCategory'
       tags:
         - Catalog
-      summary: Search active categories by name or keywords (public)
+      summary: Search active categories by name (public)
       x-fundi-status: implemented
   /catalog/categories/{id}:
     parameters:
       - $ref: '#/components/parameters/CategoryId'
     get:
-      operationId: CatalogController_getActiveById
-      parameters:
-        - name: id
-          required: true
-          in: path
-          schema:
-            type: string
+      operationId: CatalogController_getActiveCategoryById
       responses:
         '200':
-          description: The active category.
+          description: The active parent category.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ServiceCategory'
+                $ref: '#/components/schemas/CatalogCategory'
         '404':
           $ref: '#/components/responses/NotFound'
       tags:
         - Catalog
-      summary: Get an active category (public)
+      summary: Get an active parent category (public)
       x-fundi-status: implemented
     patch:
-      operationId: CatalogController_update
-      parameters:
-        - name: id
-          required: true
-          in: path
-          schema:
-            type: string
+      operationId: CatalogController_updateCategory
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CategoryWrite'
+              $ref: '#/components/schemas/CatalogCategoryWrite'
       responses:
         '200':
-          description: Updated category.
+          description: Updated parent category.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ServiceCategoryFull'
+                $ref: '#/components/schemas/CatalogCategory'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -2078,19 +2066,13 @@ paths:
         - adminAccessToken: []
       tags:
         - Catalog
-      summary: Update a category (admin)
+      summary: Update a parent category (admin)
       x-fundi-status: implemented
     delete:
-      operationId: CatalogController_deactivate
-      parameters:
-        - name: id
-          required: true
-          in: path
-          schema:
-            type: string
+      operationId: CatalogController_deactivateCategory
       responses:
         '200':
-          description: Category deactivated.
+          description: Parent category deactivated.
           content:
             application/json:
               schema:
@@ -2099,34 +2081,34 @@ paths:
                   message:
                     type: string
                   category:
-                    $ref: '#/components/schemas/ServiceCategoryFull'
+                    $ref: '#/components/schemas/CatalogCategory'
       security:
         - adminAccessToken: []
       tags:
         - Catalog
-      summary: Deactivate a category (admin)
+      summary: Deactivate a parent category (admin)
       x-fundi-status: implemented
   /catalog/admin/categories:
     get:
-      operationId: CatalogController_listAll
+      operationId: CatalogController_listAllCategories
       responses:
         '200':
-          description: All categories, including inactive ones.
+          description: Parent categories, including inactive ones.
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ServiceCategoryFull'
+                  $ref: '#/components/schemas/CatalogCategory'
       security:
         - adminAccessToken: []
       tags:
         - Catalog
-      summary: List active and inactive categories (admin)
+      summary: List active and inactive parent categories (admin)
       x-fundi-status: implemented
   /catalog/admin/categories/by-name:
     get:
-      operationId: CatalogController_getByName
+      operationId: CatalogController_getCategoryByName
       parameters:
         - name: name
           required: true
@@ -2135,22 +2117,22 @@ paths:
             type: string
       responses:
         '200':
-          description: The category.
+          description: The parent category.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ServiceCategoryFull'
+                $ref: '#/components/schemas/CatalogCategory'
         '404':
           $ref: '#/components/responses/NotFound'
       security:
         - adminAccessToken: []
       tags:
         - Catalog
-      summary: Find a category by exact name (admin)
+      summary: Find a parent category by exact name (admin)
       x-fundi-status: implemented
   /catalog/admin/categories/{id}:
     get:
-      operationId: CatalogController_getById
+      operationId: CatalogController_getCategoryById
       parameters:
         - name: id
           required: true
@@ -2159,18 +2141,212 @@ paths:
             type: string
       responses:
         '200':
-          description: The category.
+          description: The parent category.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ServiceCategoryFull'
+                $ref: '#/components/schemas/CatalogCategory'
         '404':
           $ref: '#/components/responses/NotFound'
       security:
         - adminAccessToken: []
       tags:
         - Catalog
-      summary: Get any category including inactive (admin)
+      summary: Get any parent category including inactive (admin)
+      x-fundi-status: implemented
+  /catalog/services:
+    get:
+      operationId: CatalogController_listActiveServices
+      responses:
+        '200':
+          description: Active services with their parent category details.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CatalogServiceFull'
+      tags:
+        - Catalog
+      summary: List active services (public)
+      x-fundi-status: implemented
+    post:
+      operationId: CatalogController_createService
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceCreateWrite'
+      responses:
+        '201':
+          description: Created service, including its parent category.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogServiceFull'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      security:
+        - adminAccessToken: []
+      tags:
+        - Catalog
+      summary: Create a service (admin)
+      x-fundi-status: implemented
+  /catalog/services/search:
+    get:
+      operationId: CatalogController_searchActiveServices
+      parameters:
+        - name: name
+          required: true
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Active services matching the name or keywords.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CatalogServiceFull'
+      tags:
+        - Catalog
+      summary: Search active services by name or keywords (public)
+      x-fundi-status: implemented
+  /catalog/services/{id}:
+    get:
+      operationId: CatalogController_getActiveServiceById
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+      responses:
+        '200':
+          description: Active service with its parent category details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogServiceFull'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      tags:
+        - Catalog
+      summary: Get an active service (public)
+      x-fundi-status: implemented
+    patch:
+      operationId: CatalogController_updateService
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceWrite'
+      responses:
+        '200':
+          description: Updated service, including its parent category.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogServiceFull'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      security:
+        - adminAccessToken: []
+      tags:
+        - Catalog
+      summary: Update a service (admin)
+      x-fundi-status: implemented
+    delete:
+      operationId: CatalogController_deactivateService
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+      responses:
+        '200':
+          description: Service deactivated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  service:
+                    $ref: '#/components/schemas/CatalogServiceFull'
+      security:
+        - adminAccessToken: []
+      tags:
+        - Catalog
+      summary: Deactivate a service (admin)
+      x-fundi-status: implemented
+  /catalog/admin/services:
+    get:
+      operationId: CatalogController_listAllServices
+      responses:
+        '200':
+          description: All services, including inactive, with parent category details.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CatalogServiceFull'
+      security:
+        - adminAccessToken: []
+      tags:
+        - Catalog
+      summary: List all services (admin)
+      x-fundi-status: implemented
+  /catalog/admin/services/by-name:
+    get:
+      operationId: CatalogController_getServiceByName
+      parameters:
+        - name: name
+          required: true
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The service with its parent category details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogServiceFull'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - adminAccessToken: []
+      tags:
+        - Catalog
+      summary: Find a service by exact name (admin)
+      x-fundi-status: implemented
+  /catalog/admin/services/{id}:
+    get:
+      operationId: CatalogController_getServiceById
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+      responses:
+        '200':
+          description: The service with its parent category details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogServiceFull'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - adminAccessToken: []
+      tags:
+        - Catalog
+      summary: Get any service including inactive (admin)
       x-fundi-status: implemented
   /technicians/profile:
     post:
@@ -3855,6 +4031,13 @@ components:
       schema:
         type: string
         format: uuid
+    ServiceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     JobId:
       name: jobId
       in: path
@@ -4399,17 +4582,64 @@ components:
             $ref: '#/components/schemas/User'
         pagination:
           $ref: '#/components/schemas/PaginationMeta'
-    ServiceCategory:
+    CatalogCategory:
       type: object
       required:
         - id
         - name
-        - slug
         - description
-        - category
-        - bookingFee
-        - emergencyVisitFee
-        - keywords
+        - isActive
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Home Services
+        description:
+          type: string
+          example: Repairs and maintenance for homes.
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CatalogCategoryCreate:
+      type: object
+      required:
+        - name
+        - description
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 60
+          example: Home Services
+        description:
+          type: string
+          minLength: 2
+          maxLength: 2000
+          example: Repairs and maintenance for homes.
+    CatalogCategoryWrite:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 60
+        description:
+          type: string
+          minLength: 2
+          maxLength: 2000
+        isActive:
+          type: boolean
+    ServiceCategory:
+      type: object
       properties:
         id:
           type: string
@@ -4420,65 +4650,86 @@ components:
         slug:
           type: string
           example: plumbing
+    CatalogService:
+      type: object
+      required:
+        - id
+        - categoryId
+        - name
+        - slug
+        - description
+        - bookingFee
+        - emergencyVisitFee
+        - keywords
+        - category
+      properties:
+        id:
+          type: string
+          format: uuid
+        categoryId:
+          type: string
+          format: uuid
+          description: ID of the parent category.
+        name:
+          type: string
+          example: Plumbing
+        slug:
+          type: string
+          example: plumbing
         description:
           type: string
           description: What the service covers, shown to customers.
           example: Leaks, blocked drains, taps, and pipe repairs.
-        category:
-          type: string
-          description: Dashboard grouping for the service.
-          enum:
-            - Home Services
-            - Car Services
-          example: Home Services
         keywords:
           type: string
           description: Optional extra words customers can use to find this service.
           example: leak repair, pipes, blocked drain
         bookingFee:
-          type: number
-          format: double
+          type: integer
           minimum: 0
           description: Booking (visit/diagnostic) fee in RWF.
-          example: 75
+          example: 1000
         emergencyVisitFee:
-          type: number
-          format: double
+          type: integer
           minimum: 0
-          description: Booking fee when the customer marks the request as an emergency.
-          example: 110
+          description: Emergency booking fee in RWF.
+          example: 1500
         sosBookingFee:
           type:
             - integer
             - 'null'
-          minimum: 0
+          minimum: 1
           description: Optional SOS booking fee in RWF.
-          example: 250
+          example: 2500
         icon:
           type:
             - string
             - 'null'
           description: Optional icon identifier.
           example: wrench
-    ServiceCategoryFull:
+        category:
+          $ref: '#/components/schemas/CatalogCategory'
+    CatalogServiceFull:
       allOf:
-        - $ref: '#/components/schemas/ServiceCategory'
+        - $ref: '#/components/schemas/CatalogService'
         - type: object
           properties:
             isActive:
               type: boolean
-              description: Inactive categories stay in history but cannot be requested.
+              description: Inactive services cannot be newly requested.
             createdAt:
               type: string
               format: date-time
             updatedAt:
               type: string
               format: date-time
-    CategoryWrite:
+    ServiceWrite:
       type: object
-      required:
-        - name
       properties:
+        categoryId:
+          type: string
+          format: uuid
+          description: ID of the active parent category for the service.
         name:
           type: string
           minLength: 2
@@ -4488,39 +4739,30 @@ components:
           type: string
           maxLength: 2000
           example: Leaks, blocked drains, taps, and pipe repairs.
-        category:
-          type: string
-          minLength: 2
-          maxLength: 60
-          enum:
-            - Home Services
-            - Car Services
-          example: Home Services
         keywords:
           type: string
           maxLength: 500
           description: Optional extra words customers can use to find this service.
           example: leak repair, pipes, blocked drain
         bookingFee:
-          type: number
-          format: double
+          type: integer
           minimum: 0
           maximum: 2000000000
-          description: Booking fee in the job currency.
-          example: 75
+          description: Booking fee in RWF.
+          example: 1000
         emergencyVisitFee:
-          type: number
-          format: double
+          type: integer
           minimum: 0
           maximum: 2000000000
-          description: Emergency booking fee in the job currency.
-          example: 110
+          description: Emergency booking fee in RWF.
+          example: 1500
         sosBookingFee:
           type: integer
+          nullable: true
           minimum: 1
           maximum: 2000000000
           description: Optional SOS booking fee, greater than bookingFee.
-          example: 250
+          example: 2500
         icon:
           type:
             - string
@@ -4529,6 +4771,13 @@ components:
           example: wrench
         isActive:
           type: boolean
+    ServiceCreateWrite:
+      allOf:
+        - $ref: '#/components/schemas/ServiceWrite'
+        - type: object
+          required:
+            - categoryId
+            - name
     ServiceExperience:
       type: object
       properties:

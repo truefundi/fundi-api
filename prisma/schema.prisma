@@ -66,13 +66,24 @@ model PasskeyCredential {
   @@map("passkey_credentials")
 }
 
+model CatalogCategory {
+  id          String            @id @default(uuid())
+  name        String            @unique
+  description String
+  isActive    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  services    ServiceCategory[]
+
+  @@map("catalog_categories")
+}
+
 model ServiceCategory {
   id                String               @id @default(uuid())
+  categoryId        String
   name              String               @unique
   slug              String               @unique
   description       String               @default("")
-  /// Service group shown in the admin dashboard: "Home Services" or "Car Services".
-  category          String               @default("Home Services")
   /// Optional extra words customers can use to find this service.
   keywords          String               @default("")
   /// Booking (visit/diagnostic) fee charged for this service, in RWF.
@@ -89,7 +100,9 @@ model ServiceCategory {
   technicians       TechnicianCategory[]
   documents         TechnicianDocument[]
   bookingPayments   BookingPayment[]
+  category          CatalogCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
 
+  @@index([categoryId])
   @@map("service_categories")
 }
 

@@ -8,16 +8,43 @@ import { Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
+import { CreateServiceDto, UpdateServiceDto } from './dto/service.dto';
 
-const slugify = (s: string) =>
-  s
+const slugify = (value: string) =>
+  value
     .toLowerCase()
     .trim()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 
-const toCategoryResponse = <T extends { visitFee: number }>(category: T) => {
-  const { visitFee, ...rest } = category;
+const SERVICE_SELECT = {
+  id: true,
+  categoryId: true,
+  name: true,
+  slug: true,
+  description: true,
+  keywords: true,
+  visitFee: true,
+  emergencyVisitFee: true,
+  sosBookingFee: true,
+  icon: true,
+  isActive: true,
+  createdAt: true,
+  updatedAt: true,
+  category: {
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      isActive: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  },
+} satisfies Prisma.ServiceCategorySelect;
+
+const toServiceResponse = <T extends { visitFee: number }>(service: T) => {
+  const { visitFee, ...rest } = service;
   return { ...rest, bookingFee: visitFee };
 };
 
@@ -28,118 +55,220 @@ export class CatalogService {
     private readonly audit: AuditService,
   ) {}
 
-  async listActive() {
-    const categories = await this.prisma.serviceCategory.findMany({
+  async listCategories() {
+    return this.prisma.catalogCategory.findMany({
       where: { isActive: true },
       orderBy: { name: 'asc' },
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-        description: true,
-        category: true,
-        keywords: true,
-        visitFee: true,
-        emergencyVisitFee: true,
-        sosBookingFee: true,
-        icon: true,
-      },
     });
-    return categories.map(toCategoryResponse);
   }
 
-  // Returns categories available for new jobs and technician selections.
-  async searchActive(name: string) {
-    const query = name.trim();
-    const categories = await this.prisma.serviceCategory.findMany({
+  async searchCategories(name: string) {
+    return this.prisma.catalogCategory.findMany({
       where: {
         isActive: true,
+        name: { contains: name.trim(), mode: 'insensitive' },
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async getActiveCategoryById(id: string) {
+    const category = await this.prisma.catalogCategory.findFirst({
+      where: { id, isActive: true },
+    });
+    if (!category) throw new NotFoundException('Category not found.');
+    return category;
+  }
+
+  async listAllCategories() {
+    return this.prisma.catalogCategory.findMany({
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  async getCategoryById(id: string) {
+    const category = await this.prisma.catalogCategory.findUnique({
+      where: { id },
+    });
+    if (!category) throw new NotFoundException('Category not found.');
+    return category;
+  }
+
+  async getCategoryByName(name: string) {
+    const category = await this.prisma.catalogCategory.findFirst({
+      where: { name: { equals: name.trim(), mode: 'insensitive' } },
+    });
+    if (!category) throw new NotFoundException('Category not found.');
+    return category;
+  }
+
+  async createCategory(dto: CreateCategoryDto, actorId: string) {
+    const name = dto.name.trim();
+    const description = dto.description.trim();
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const category = await tx.catalogCategory.create({
+          data: { name, description },
+        });
+        await this.audit.log(
+          {
+            entityType: 'CatalogCategory',
+            entityId: category.id,
+            action: 'CREATED',
+            actorId,
+            metadata: { name, description },
+          },
+          tx,
+        );
+        return category;
+      });
+    } catch (error) {
+      this.rethrow(error);
+    }
+  }
+
+  async updateCategory(id: string, dto: UpdateCategoryDto, actorId: string) {
+    if (
+      dto.name === undefined &&
+      dto.description === undefined &&
+      dto.isActive === undefined
+    ) {
+      throw new BadRequestException(
+        'Provide a category name, description, or isActive value to update.',
+      );
+    }
+    const name = dto.name?.trim();
+    const description = dto.description?.trim();
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.catalogCategory.update({
+          where: { id },
+          data: { name, description, isActive: dto.isActive },
+        });
+        await this.audit.log(
+          {
+            entityType: 'CatalogCategory',
+            entityId: id,
+            action: 'UPDATED',
+            actorId,
+            metadata: {
+              ...(name !== undefined ? { name } : {}),
+              ...(description !== undefined ? { description } : {}),
+              ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+            },
+          },
+          tx,
+        );
+        return updated;
+      });
+    } catch (error) {
+      this.rethrow(error);
+    }
+  }
+
+  async deactivateCategory(id: string, actorId: string) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const category = await tx.catalogCategory.update({
+          where: { id },
+          data: { isActive: false },
+        });
+        await this.audit.log(
+          {
+            entityType: 'CatalogCategory',
+            entityId: id,
+            action: 'DEACTIVATED',
+            actorId,
+            metadata: { isActive: false },
+          },
+          tx,
+        );
+        return { message: 'Category deactivated.', category };
+      });
+    } catch (error) {
+      this.rethrow(error);
+    }
+  }
+
+  async listActiveServices() {
+    const services = await this.prisma.serviceCategory.findMany({
+      where: { isActive: true, category: { isActive: true } },
+      orderBy: { name: 'asc' },
+      select: SERVICE_SELECT,
+    });
+    return services.map(toServiceResponse);
+  }
+
+  async searchActiveServices(name: string) {
+    const query = name.trim();
+    const services = await this.prisma.serviceCategory.findMany({
+      where: {
+        isActive: true,
+        category: { isActive: true },
         OR: [
           { name: { contains: query, mode: 'insensitive' } },
           { keywords: { contains: query, mode: 'insensitive' } },
         ],
       },
       orderBy: { name: 'asc' },
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-        description: true,
-        category: true,
-        keywords: true,
-        visitFee: true,
-        emergencyVisitFee: true,
-        sosBookingFee: true,
-        icon: true,
-      },
+      select: SERVICE_SELECT,
     });
-    return categories.map(toCategoryResponse);
+    return services.map(toServiceResponse);
   }
 
-  // Returns all categories, including inactive ones, to an administrator.
-  async listAll() {
-    const categories = await this.prisma.serviceCategory.findMany({
+  async getActiveServiceById(id: string) {
+    const service = await this.prisma.serviceCategory.findFirst({
+      where: { id, isActive: true, category: { isActive: true } },
+      select: SERVICE_SELECT,
+    });
+    if (!service) throw new NotFoundException('Service not found.');
+    return toServiceResponse(service);
+  }
+
+  async listAllServices() {
+    const services = await this.prisma.serviceCategory.findMany({
       orderBy: { name: 'asc' },
+      select: SERVICE_SELECT,
     });
-    return categories.map(toCategoryResponse);
+    return services.map(toServiceResponse);
   }
 
-  // Finds an active category by ID for public clients.
-  async getActiveById(id: string) {
-    const category = await this.prisma.serviceCategory.findFirst({
-      where: { id, isActive: true },
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-        description: true,
-        category: true,
-        keywords: true,
-        visitFee: true,
-        emergencyVisitFee: true,
-        sosBookingFee: true,
-        icon: true,
-      },
-    });
-    if (!category) throw new NotFoundException('Service category not found.');
-    return toCategoryResponse(category);
-  }
-
-  // Finds any category by ID for administrator management.
-  async getById(id: string) {
-    const category = await this.prisma.serviceCategory.findUnique({
+  async getServiceById(id: string) {
+    const service = await this.prisma.serviceCategory.findUnique({
       where: { id },
+      select: SERVICE_SELECT,
     });
-    if (!category) throw new NotFoundException('Service category not found.');
-    return toCategoryResponse(category);
+    if (!service) throw new NotFoundException('Service not found.');
+    return toServiceResponse(service);
   }
 
-  // Finds one category by exact name without case sensitivity.
-  async getByName(name: string) {
-    const category = await this.prisma.serviceCategory.findFirst({
+  async getServiceByName(name: string) {
+    const service = await this.prisma.serviceCategory.findFirst({
       where: { name: { equals: name.trim(), mode: 'insensitive' } },
+      select: SERVICE_SELECT,
     });
-    if (!category) throw new NotFoundException('Service category not found.');
-    return toCategoryResponse(category);
+    if (!service) throw new NotFoundException('Service not found.');
+    return toServiceResponse(service);
   }
 
-  // Creates a category and its audit row in a single database transaction.
-  async create(dto: CreateCategoryDto, actorId: string) {
+  async createService(dto: CreateServiceDto, actorId: string) {
     const name = dto.name.trim();
     const slug = slugify(name);
-    if (!slug)
+    if (!slug) {
       throw new BadRequestException(
-        'Category name must contain letters or numbers.',
+        'Service name must contain letters or numbers.',
       );
+    }
     this.assertBookingFees(dto.bookingFee, dto.sosBookingFee);
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const category = await tx.serviceCategory.create({
+        await this.assertActiveCategory(tx, dto.categoryId);
+        const service = await tx.serviceCategory.create({
           data: {
             name,
             slug,
+            categoryId: dto.categoryId,
             description: dto.description?.trim() ?? '',
-            category: dto.category?.trim() || 'Home Services',
             keywords: dto.keywords?.trim() ?? '',
             visitFee: dto.bookingFee ?? 0,
             emergencyVisitFee: dto.emergencyVisitFee ?? 0,
@@ -147,79 +276,79 @@ export class CatalogService {
             sosBookingFee: dto.sosBookingFee ?? null,
             icon: dto.icon?.trim() || null,
           },
+          select: SERVICE_SELECT,
         });
         await this.audit.log(
           {
             entityType: 'ServiceCategory',
-            entityId: category.id,
+            entityId: service.id,
             action: 'CREATED',
             actorId,
             metadata: {
               name,
-              category: category.category,
-              bookingFee: category.visitFee,
-              emergencyVisitFee: category.emergencyVisitFee,
-              sosBookingFee: category.sosBookingFee,
-              icon: category.icon,
-              keywords: category.keywords,
+              categoryId: service.categoryId,
+              bookingFee: service.visitFee,
+              emergencyVisitFee: service.emergencyVisitFee,
+              sosBookingFee: service.sosBookingFee,
+              icon: service.icon,
+              keywords: service.keywords,
             },
           },
           tx,
         );
-        return toCategoryResponse(category);
+        return toServiceResponse(service);
       });
-    } catch (e) {
-      this.rethrow(e);
+    } catch (error) {
+      this.rethrow(error);
     }
   }
 
-  // Updates category data and records the change atomically.
-  async update(id: string, dto: UpdateCategoryDto, actorId: string) {
+  async updateService(id: string, dto: UpdateServiceDto, actorId: string) {
     if (
       dto.name === undefined &&
+      dto.categoryId === undefined &&
       dto.description === undefined &&
       dto.keywords === undefined &&
-      dto.category === undefined &&
       dto.bookingFee === undefined &&
       dto.emergencyVisitFee === undefined &&
       dto.isActive === undefined &&
       dto.sosBookingFee === undefined &&
       dto.icon === undefined
     ) {
-      throw new BadRequestException(
-        'Provide a category name, description, category, fee, or isActive value to update.',
-      );
+      throw new BadRequestException('Provide a service field to update.');
     }
     const name = dto.name?.trim();
     const slug = name === undefined ? undefined : slugify(name);
     if (name !== undefined && !slug) {
       throw new BadRequestException(
-        'Category name must contain letters or numbers.',
+        'Service name must contain letters or numbers.',
       );
     }
     const description =
       dto.description === undefined ? undefined : dto.description.trim();
-    const category =
-      dto.category === undefined ? undefined : dto.category.trim();
     try {
       return await this.prisma.$transaction(async (tx) => {
         const current = await tx.serviceCategory.findUnique({
           where: { id },
           select: { visitFee: true, sosBookingFee: true },
         });
-        if (!current)
-          throw new NotFoundException('Service category not found.');
+        if (!current) throw new NotFoundException('Service not found.');
         this.assertBookingFees(
           dto.bookingFee ?? current.visitFee,
-          dto.sosBookingFee ?? current.sosBookingFee,
+          dto.sosBookingFee === undefined
+            ? current.sosBookingFee
+            : dto.sosBookingFee,
         );
+        if (dto.categoryId !== undefined) {
+          await this.assertActiveCategory(tx, dto.categoryId);
+        }
         const updated = await tx.serviceCategory.update({
           where: { id },
           data: {
             name,
             slug,
+            categoryId: dto.categoryId,
             description,
-            category,
             keywords:
               dto.keywords === undefined ? undefined : dto.keywords.trim(),
             visitFee: dto.bookingFee,
@@ -228,6 +357,7 @@ export class CatalogService {
             sosBookingFee: dto.sosBookingFee,
             icon: dto.icon === undefined ? undefined : dto.icon?.trim() || null,
           },
+          select: SERVICE_SELECT,
         });
         await this.audit.log(
           {
@@ -237,11 +367,13 @@ export class CatalogService {
             actorId,
             metadata: {
               ...(name !== undefined ? { name } : {}),
+              ...(dto.categoryId !== undefined
+                ? { categoryId: dto.categoryId }
+                : {}),
               ...(description !== undefined ? { description } : {}),
               ...(dto.keywords !== undefined
                 ? { keywords: dto.keywords.trim() }
                 : {}),
-              ...(category !== undefined ? { category } : {}),
               ...(dto.bookingFee !== undefined
                 ? { bookingFee: dto.bookingFee }
                 : {}),
@@ -259,10 +391,53 @@ export class CatalogService {
           },
           tx,
         );
-        return toCategoryResponse(updated);
+        return toServiceResponse(updated);
       });
-    } catch (e) {
-      this.rethrow(e);
+    } catch (error) {
+      this.rethrow(error);
+    }
+  }
+
+  async deactivateService(id: string, actorId: string) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const service = await tx.serviceCategory.update({
+          where: { id },
+          data: { isActive: false },
+          select: SERVICE_SELECT,
+        });
+        await this.audit.log(
+          {
+            entityType: 'ServiceCategory',
+            entityId: id,
+            action: 'DEACTIVATED',
+            actorId,
+            metadata: { isActive: false },
+          },
+          tx,
+        );
+        return {
+          message: 'Service deactivated.',
+          service: toServiceResponse(service),
+        };
+      });
+    } catch (error) {
+      this.rethrow(error);
+    }
+  }
+
+  private async assertActiveCategory(
+    tx: Prisma.TransactionClient,
+    categoryId: string,
+  ) {
+    const category = await tx.catalogCategory.findFirst({
+      where: { id: categoryId, isActive: true },
+      select: { id: true },
+    });
+    if (!category) {
+      throw new BadRequestException(
+        'The selected category does not exist or is inactive.',
+      );
     }
   }
 
@@ -283,40 +458,19 @@ export class CatalogService {
     }
   }
 
-  // Deactivates instead of deleting so existing job/profile relations are preserved.
-  async deactivate(id: string, actorId: string) {
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        const category = await tx.serviceCategory.update({
-          where: { id },
-          data: { isActive: false },
-        });
-        await this.audit.log(
-          {
-            entityType: 'ServiceCategory',
-            entityId: id,
-            action: 'DEACTIVATED',
-            actorId,
-            metadata: { isActive: false },
-          },
-          tx,
+  private rethrow(error: unknown): never {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === 'P2002') {
+        throw new ConflictException(
+          'A category or service with this name already exists.',
         );
-        return {
-          message: 'Service category deactivated.',
-          category: toCategoryResponse(category),
-        };
-      });
-    } catch (e) {
-      this.rethrow(e);
+      }
+      if (error.code === 'P2025') {
+        throw new NotFoundException(
+          'The requested catalog record was not found.',
+        );
+      }
     }
-  }
-
-  private rethrow(e: unknown): never {
-    if (e instanceof Prisma.PrismaClientKnownRequestError) {
-      if (e.code === 'P2002')
-        throw new ConflictException('A category with this name already exists');
-      if (e.code === 'P2025') throw new NotFoundException('Category not found');
-    }
-    throw e;
+    throw error;
   }
 }

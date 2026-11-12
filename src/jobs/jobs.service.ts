@@ -183,6 +183,20 @@ interface MediaInput {
 export class JobsService {
   private readonly logger = new Logger(JobsService.name);
 
+  static shouldRetainSingleMatchOffer(waitingOfferCount: number): boolean {
+    return waitingOfferCount === 1;
+  }
+
+  static selectOfferForDispatch<T extends { id: string }>(
+    waitingOffers: T[],
+  ): T | null {
+    if (!waitingOffers.length) return null;
+    if (JobsService.shouldRetainSingleMatchOffer(waitingOffers.length)) {
+      return waitingOffers[0];
+    }
+    return waitingOffers[0];
+  }
+
   static adjustMatchScore(
     score: number,
     rejectionCount: number,

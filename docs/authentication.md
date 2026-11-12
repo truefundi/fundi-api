@@ -16,7 +16,7 @@ Each customer or technician account has one active bearer-token session. Every s
 
 No authentication required. `email` and `role` are optional. Phone numbers must be Rwandan mobile numbers: `078`, `079`, `072`, or `073` followed by seven digits, or the equivalent international `+250` format. Spaces, parentheses, and hyphens are removed, and accepted values are normalized to `+250` format. Email addresses must be valid; surrounding whitespace is trimmed and the address is lowercased.
 
-Request:
+Send this as a JSON request body with `Content-Type: application/json`:
 
 ```json
 {
@@ -27,6 +27,25 @@ Request:
   "password": "optional-secure-password"
 }
 ```
+
+For PowerShell, serialize the object and explicitly set the content type:
+
+```powershell
+$body = @{
+  fullName = "Prince Example"
+  email = "prince@example.com"
+  role = "TECHNICIAN"
+  phoneNumber = "+250788123456"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:3000/api/v1/auth/register" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+In Postman, choose **Body → raw → JSON**. If validation reports that `fullName` and `phoneNumber` are not strings even though they are present in the JSON, verify the request actually sends this body and the `Content-Type: application/json` header; the shown validation error is also returned when those required fields are missing from the parsed body. Public registration is handled by this auth endpoint. `POST /api/v1/users` is a separate, administrator-only account-creation route.
 
 For a customer, registration creates the account without an OTP.
 

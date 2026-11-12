@@ -89,7 +89,7 @@ export interface TechnicianResponse {
   profilePictureUrl: string | null;
   paymentMethod: string | null;
   paymentNumber: string | null;
-  nationalIdNumber: string | null;
+  nationalIdNumber?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -895,6 +895,16 @@ export class TechniciansService {
       nextAvailability = TechnicianAvailability.OFFLINE;
     }
 
+    const userData: Prisma.UserUpdateInput = {};
+    if (dto.fullName !== undefined) userData.fullName = dto.fullName.trim();
+    if (dto.phoneNumber !== undefined) userData.phoneNumber = dto.phoneNumber;
+    if (dto.email !== undefined) {
+      userData.email = dto.email?.trim().toLowerCase() || null;
+    }
+    if (Object.keys(userData).length) {
+      await tx.user.update({ where: { id: current.userId }, data: userData });
+    }
+
     await tx.technicianProfile.update({
       where: { id: current.id },
       data: {
@@ -1278,7 +1288,6 @@ export class TechniciansService {
           updatedAt: profile.user.updatedAt,
         },
         gender: profile.gender,
-        nationalIdNumber: null,
         yearsOfExperience: totalYearsOfExperience,
         serviceExperiences,
         verificationStatus: profile.verificationStatus,

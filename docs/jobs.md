@@ -17,9 +17,9 @@ in match order, one at a time, with 30 seconds to respond to each offer.
 
 ## Booking flow
 
-1. List service categories with `GET /catalog/categories`; select a category
-   with a configured positive `visitFee` and, for SOS requests, a higher
-   `sosBookingFee`.
+1. List services with `GET /catalog/services`; each response includes its
+   parent category. Select a service with a configured positive `bookingFee`
+   and, for SOS requests, a higher `sosBookingFee`.
 2. Preview matches using `GET /jobs/matching-technicians`.
 3. Pay the booking fee using `POST /payments/mock`. This development-only
    payment is not a real money transfer.
@@ -33,6 +33,9 @@ in match order, one at a time, with 30 seconds to respond to each offer.
    `verificationId`.
 6. Propose a technician from the preview list using
    `POST /jobs/mine/:jobId/requests`.
+
+   The job field `serviceCategoryId` continues to contain the selected **service
+   ID** for compatibility; it is not the ID of the new parent catalog category.
 
 See [Booking Payments API](booking-payments.md) for payment records, validity,
 and administrator extensions.

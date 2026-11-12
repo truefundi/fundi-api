@@ -4,9 +4,9 @@ An administrator supplies an email address and a password, then a six-digit code
 
 The second factor is a time-based one-time password computed on the administrator's own device. Nothing is sent anywhere: there is no SMS provider to configure, no code to intercept in transit, and no `2fa/resend` endpoint, because there is nothing to resend.
 
-This is a separate flow from [phone authentication](authentication.md), where customers and technicians receive bearer tokens they hold themselves. An administrator never handles a token at all: the session lives entirely in `httpOnly` cookies that no script on the page can read.
+This is a separate flow from [phone authentication](authentication.md), where customers and technicians receive bearer tokens they hold themselves. An administrator never handles a token at all: the session lives entirely in `httpOnly` cookies that no script on the page can read. The phone-OTP endpoints refuse `ADMIN` accounts outright, and every admin route accepts only the session cookie, so an administrator identity presented as a bearer token is rejected even if one were ever issued.
 
-Only the provisioning script can set an administrator's password. No route writes `passwordHash`, so the password that makes an account able to sign in here is reachable only by `npm run prisma:seed-admin`. An administrator row created through `POST /api/v1/users`, or promoted later through `PATCH /api/v1/users/:id`, has no password and cannot complete sign-in until the script has run for it.
+The provisioning script sets an administrator's first password. After that, the signed-in administrator can change it through `POST /api/v1/auth/admin/change-password`, which requires the current password. There is no unauthenticated reset route, so an account that has no password still has to be provisioned with `npm run prisma:seed-admin`. An administrator row created through `POST /api/v1/users`, or promoted later through `PATCH /api/v1/users/:id`, has no password and cannot complete sign-in until the script has run for it.
 
 The password step deliberately reveals nothing: a wrong password, an unknown address, a non-administrator, a disabled account, and an account with no password set all return `401` with the identical message `Invalid email or password.`. An unknown address is also compared against a dummy hash so the response takes about as long as a real one, which stops timing from disclosing whether an address exists.
 
@@ -124,6 +124,49 @@ Success response (`200`):
 }
 ```
 
+## `POST /api/v1/auth/admin/change-password`
+
+Requires the admin session cookies. Changes the signed-in administrator's
+password after proving the current one.
+
+```json
+{
+  "currentPassword": "Admin@123",
+  "newPassword": "NewAdmin@456"
+}
+```
+
+`newPassword` follows the same rules as the sign-in form: at least 8 characters,
+at least one uppercase letter, one number, and one non-alphanumeric character,
+and at most 72 because bcrypt ignores anything beyond that. Reusing the current
+password is rejected.
+
+Success response (`200`):
+
+```json
+{
+  "message": "Password updated. Sign in again with the new password.",
+  "sessionsRevoked": true
+}
+```
+
+Every stored refresh session for the account is deleted in the same transaction
+as the password update, so other devices are signed out and the current access
+cookie stops working on its next request — `JwtStrategy` checks the session row
+on every call. The dashboard should send the administrator back to the sign-in
+screen and clear its cookies after this succeeds.
+
+The change is written to `audit_logs` as `ADMIN_PASSWORD_CHANGED`, with the
+administrator as actor.
+
+Errors: `400` when the new password fails validation or equals the current one,
+or when the account has no password to change; `401` when the current password
+is wrong; `403` when the caller is no longer an active administrator.
+
+There is no self-service reset for a forgotten password. An administrator who no
+longer knows the current password must be re-provisioned with
+`npm run prisma:seed-admin`, which resets the hash.
+
 ## Development-only OTP sign-in
 
 A second, deliberately non-production way to sign in exists so a developer can reach admin-only screens without provisioning a password or an authenticator app. It is two routes, off in production, and is meant to be deleted before launch.
@@ -159,7 +202,7 @@ Set the values below and run `npm run prisma:seed-admin`. Re-running it resets t
 | `ADMIN_FULL_NAME` | Display name. |
 | `ADMIN_PHONE_NUMBER` | Contact number. Must be unique. Still required by the schema, but no longer used for the second factor — the authenticator is. |
 
-The password is checked against the same rules the login endpoint enforces, so an administrator cannot be created with a password the API would later reject. There is no password-change or reset route yet; a lost admin password has to be repaired by re-running the script or in the database directly.
+The password is checked against the same rules the login endpoint enforces, so an administrator cannot be created with a password the API would later reject. Re-running the script also resets the password of an existing administrator, which is the recovery path for a forgotten current password; otherwise use `POST /api/v1/auth/admin/change-password`.
 
 A row with the `ADMIN` role can also be produced through `POST /api/v1/users` or `PATCH /api/v1/users/:id`, both of which need an administrator session already. That yields an account with no password, which cannot sign in here: it fails with `Invalid email or password.` until the script has been run for it. This is deliberate, so a compromised admin session can create an administrator row but cannot make it usable without the provisioning environment.
 
@@ -195,8 +238,8 @@ Two further restrictions exist because cookies travel automatically. `PATCH` and
 | `ADMIN_TOTP_ISSUER` | `Fundi` | Label shown in the app. Must match in both the `otpauth://` label and its query parameter. |
 | `ADMIN_TOTP_WINDOW` | `1` | Clock-drift tolerance in 30-second steps either side. |
 | `ADMIN_TOTP_ENCRYPTION_KEY` | none | 64 hex characters. Encrypts the authenticator secret at rest. Sign-in fails with `503` until set. |
-| `ADMIN_ACCESS_EXPIRES_IN` | `15m` | Access token lifetime. |
-| `ADMIN_REFRESH_EXPIRES_IN` | `12h` | Refresh token and matching database row. |
+| `ADMIN_ACCESS_EXPIRES_IN` | `1d` | Access token lifetime. |
+| `ADMIN_REFRESH_EXPIRES_IN` | `5d` | Refresh token and matching database row. |
 | `ADMIN_COOKIE_SAME_SITE` | `lax` | Cookie `SameSite` flag. |
 | `ADMIN_COOKIE_SECURE` | `true` in production | Cookie `Secure` flag. |
 | `ADMIN_COOKIE_DOMAIN` | unset | Cookie domain. Leave unset to keep cookies host-only. |

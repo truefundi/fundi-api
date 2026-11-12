@@ -1,16 +1,20 @@
 # Phone Authentication API
 
-This guide covers customers and technicians, who sign in with a phone number and an SMS code and receive bearer tokens they hold themselves. Administrators sign in separately with an email address, a password, and a second SMS code; their session lives in `httpOnly` cookies instead of tokens. That flow is documented in [admin-authentication.md](admin-authentication.md). The two flows share no endpoints, and public registration cannot create an administrator.
+This guide covers customers and technicians, who can sign in with an SMS code, an optional account password or PIN, or a registered passkey and receive bearer tokens they hold themselves. Administrators sign in separately with an email address, a password, and an authenticator-app code; their session lives in `httpOnly` cookies instead of tokens. That flow is documented in [admin-authentication.md](admin-authentication.md). The two flows share no endpoints, public registration cannot create an administrator, and the phone endpoints below answer `403` for an `ADMIN` account so a texted code can never mint a token that admin routes would accept.
 
-Phone numbers are the login identifier. Public registration accepts `CUSTOMER` or `TECHNICIAN` (case-insensitive) and defaults to `CUSTOMER`; it cannot create an administrator. New accounts default to `ACTIVE`.
+Phone numbers are the login identifier. Public registration accepts `CUSTOMER` or `TECHNICIAN` (case-insensitive) and defaults to `CUSTOMER`; it cannot create an administrator. Names may contain Unicode letters, spaces, apostrophes, and hyphens, but not digits or other punctuation. New accounts default to `ACTIVE`. Customer registration is immediate and does not send an OTP. Technician registration sends an OTP, which must be verified before the technician can create or update a profile. Both roles use login OTPs after registration. Customers verify their account phone before their first job; after successful verification, later jobs do not require another OTP. See [Jobs API](jobs.md#verify-a-phone-number-for-a-job).
 
 Send `Content-Type: application/json` for requests with a body. OTP hashes and resend/verification counters are stored temporarily in Redis, where the OTP key expires automatically after five minutes; PostgreSQL stores user and refresh-token data, not OTPs. During development, `SMS_MODE=console` prints OTP codes in the backend terminal, not in the HTTP response. OTPs can be resent at most three times and are rejected after five incorrect attempts. The five-attempt limit is counted per account rather than per code, so requesting or resending a new OTP does not reset it. After five incorrect guesses the account is locked out of verification for fifteen minutes, and each further guess restarts that window; a successful verification clears the count.
 
 Lifetimes are settings, not constants: `OTP_TTL_SECONDS` (default `300`, five minutes) controls how long a code stays usable, `JWT_ACCESS_EXPIRES_IN` (default `7d`) the access token, and `JWT_REFRESH_EXPIRES_IN` (default `30d`) the refresh token and the matching `refresh_tokens` row. Durations accept `s`, `m`, `h`, `d`, `w`, and `y`; there is no month unit, so a month is expressed as `30d`. Note that a one-week access token means a leaked token stays usable until it expires or the session is revoked, so keep `JWT_ACCESS_SECRET` private and prefer the shortest lifetime that still suits the client.
 
+Passwords are optional at registration. They are bcrypt-hashed, limited to 8–72 UTF-8 bytes, and subject to a per-account failed-login limit (`AUTH_PASSWORD_MAX_ATTEMPTS`, default `5`; `AUTH_PASSWORD_LOCKOUT_SECONDS`, default `900`). PINs contain 4–6 digits, are also bcrypt-hashed, and share the same per-account failed-login limit as password sign-in. Existing accounts set or reset a password only by verifying an SMS OTP. Passkeys use WebAuthn: the device performs local PIN/biometric verification and signs a challenge; the API does not receive or store the device PIN, pattern, or biometric data. Configure `WEBAUTHN_RP_ID` to the relying-party domain and `WEBAUTHN_ORIGIN` to the exact allowed origin(s), comma-separated. Production requires both settings and HTTPS. Passkey registration and authentication options must be completed by a WebAuthn-capable web or mobile client; Postman can submit a credential response but cannot generate one.
+
+Each customer or technician account has one active bearer-token session. Every successful sign-in (OTP, password, PIN, or passkey) revokes any previous session, so signing in on another device immediately invalidates the old device's access and refresh tokens. Clients may send a stable app-install identifier in the `X-Device-Id` header on token-issuing requests; it is optional for compatibility and is stored with the session for device tracking. Refreshing a token preserves the session's device ID. This policy does not change the separate administrator cookie-session flow.
+
 ## `POST /api/v1/auth/register`
 
-No authentication required. `email` and `role` are optional. Phone numbers may include a leading `+`; spaces, parentheses, and hyphens are removed.
+No authentication required. `email` and `role` are optional. Phone numbers must be Rwandan mobile numbers: `078`, `079`, `072`, or `073` followed by seven digits, or the equivalent international `+250` format. Spaces, parentheses, and hyphens are removed, and accepted values are normalized to `+250` format. Email addresses must be valid; surrounding whitespace is trimmed and the address is lowercased.
 
 Send this as a JSON request body with `Content-Type: application/json`:
 
@@ -19,7 +23,8 @@ Send this as a JSON request body with `Content-Type: application/json`:
   "fullName": "Prince Example",
   "email": "prince@example.com",
   "role": "technician",
-  "phoneNumber": "+250788123456"
+  "phoneNumber": "+250788123456",
+  "password": "optional-secure-password"
 }
 ```
 
@@ -42,11 +47,27 @@ Invoke-RestMethod `
 
 In Postman, choose **Body → raw → JSON**. If validation reports that `fullName` and `phoneNumber` are not strings even though they are present in the JSON, verify the request actually sends this body and the `Content-Type: application/json` header; the shown validation error is also returned when those required fields are missing from the parsed body. Public registration is handled by this auth endpoint. `POST /api/v1/users` is a separate, administrator-only account-creation route.
 
-Success response (`200`):
+For a customer, registration creates the account without an OTP.
+
+Success response (`200`, customer):
 
 ```json
 {
-  "message": "OTP generated. Verify it to complete registration.",
+  "message": "Customer account registered successfully.",
+  "user": {
+    "id": "generated-user-id",
+    "fullName": "Prince Example",
+    "phoneNumber": "+250788123456",
+    "role": "CUSTOMER"
+  }
+}
+```
+
+For a technician, registration starts phone verification:
+
+```json
+{
+  "message": "OTP generated. Verify it to complete technician registration.",
   "user": {
     "id": "generated-user-id",
     "fullName": "Prince Example",
@@ -55,6 +76,95 @@ Success response (`200`):
   }
 }
 ```
+
+Find the technician registration code in the API terminal during development and submit it to `POST /api/v1/auth/verify-otp`. That endpoint returns the user and bearer tokens. Successful verification sets a technician's `phoneVerifiedAt`. A customer can verify an OTP during login, but that does not replace the per-job verification.
+
+## `POST /api/v1/auth/register/pin`
+
+Creates a customer account using the existing phone-number format and a PIN instead of a password. `fullName`, `phoneNumber`, and `pin` are required. The PIN must contain 4–6 digits and is stored as a bcrypt hash.
+
+Request:
+
+```json
+{
+  "fullName": "Prince Example",
+  "phoneNumber": "+250788123456",
+  "pin": "123456"
+}
+```
+
+Success response (`200`): the same customer registration response as `/register`. A duplicate phone number returns `409`.
+
+## `POST /api/v1/auth/login/password`
+
+Signs in a customer or verified technician who has configured an account password. OTP sign-in remains available as a fallback.
+
+```json
+{
+  "phoneNumber": "+250788123456",
+  "password": "secure-password"
+}
+```
+
+Success response (`200`): the same user and bearer-token format returned by `verify-otp`. Five failed attempts within the configured lockout window temporarily block password sign-in for that account.
+
+## `POST /api/v1/auth/login/pin`
+
+Signs in a customer or verified technician who has a PIN configured. The endpoint returns the same user and bearer-token format as password sign-in. Five failed password or PIN attempts within the configured lockout window temporarily block credential sign-in for that account.
+
+```json
+{
+  "phoneNumber": "+250788123456",
+  "pin": "123456"
+}
+```
+
+## `POST /api/v1/auth/password/reset`
+
+Request an OTP first using `POST /api/v1/auth/login`, then submit it with the new password. This route sets a password for an account that has none or replaces its existing password. Existing refresh-token sessions are revoked after a reset.
+
+```json
+{
+  "phoneNumber": "+250788123456",
+  "otp": "123456",
+  "newPassword": "new-secure-password"
+}
+```
+
+Success response (`200`):
+
+```json
+{
+  "message": "Password reset successfully. You can now sign in."
+}
+```
+
+## Passkey endpoints
+
+Passkey enrollment requires a signed-in customer or verified technician. Start enrollment with `POST /api/v1/auth/passkeys/registration/options` using the bearer token; pass the returned options to the device's WebAuthn API; then submit that API's JSON credential result to `POST /api/v1/auth/passkeys/registration/verify`:
+
+```json
+{
+  "response": {
+    "...": "JSON credential response from the device"
+  }
+}
+```
+
+Passkey sign-in uses `POST /api/v1/auth/passkeys/authentication/options` with the account phone number, followed by the device passkey API, then `POST /api/v1/auth/passkeys/authentication/verify`:
+
+```json
+{
+  "phoneNumber": "+250788123456",
+  "response": {
+    "...": "JSON assertion response from the device"
+  }
+}
+```
+
+The options endpoints return the full WebAuthn options object, including its short-lived challenge. A challenge is single-use and expires after `PASSKEY_CHALLENGE_TTL_SECONDS` (default `300`). Passkeys require local user verification (`userVerification: required`). Only the credential's public key, authenticator counter, and transport hints are stored.
+
+Use `GET /api/v1/auth/passkeys` with the bearer token to list the current account's registered passkeys, and `DELETE /api/v1/auth/passkeys/:id` to revoke one. Removing a passkey does not prevent OTP or password sign-in.
 
 ## `POST /api/v1/auth/login`
 

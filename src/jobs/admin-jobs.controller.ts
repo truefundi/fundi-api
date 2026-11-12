@@ -1,9 +1,41 @@
-import { Controller, Get, Param, ParseUUIDPipe } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseEnumPipe,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
+import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
-import { Auth } from '../common/decorators/auth.decorator';
+import {
+  Auth,
+  AuthUser,
+  CurrentUser,
+} from '../common/decorators/auth.decorator';
+import {
+  ApiForbidden,
+  ApiTokenRequired,
+  ApiValidationFailed,
+} from '../common/decorators/api-error-responses.decorator';
+import { PagedQueryDto } from '../common/dto/paged-query.dto';
+import { JobPipelineStage } from './job-pipeline';
+import {
+  JobPipelineResponseDto,
+  JobPipelineStagePageDto,
+} from './dto/job-pipeline-response.dto';
 import { JobSummaryResponseDto } from './dto/job-summary-response.dto';
+import { AdminCancelJobDto } from './dto/admin-cancel-job.dto';
+import { AdminCreateJobDto } from './dto/admin-create-job.dto';
+import { AdminReassignJobDto } from './dto/admin-reassign-job.dto';
+import { AdminRateJobDto } from './dto/admin-rate-job.dto';
+import { UpdateJobDto } from './dto/update-job.dto';
 import { JobsService } from './jobs.service';
+import { ReviewCancellationDto } from './dto/cancel-job.dto';
 
 @ApiTags('Admin jobs')
 @Controller('api/v1/admin/jobs')
@@ -21,8 +53,8 @@ export class AdminJobsController {
   @ApiOperation({
     summary: 'Get dashboard job counts (admin only)',
     description:
-      'Counts active (OPEN or ASSIGNED) and COMPLETED jobs. `openDisputes` is null until ' +
-      'the disputes feature is implemented, which tells the dashboard to show a placeholder.',
+      'Counts active (OPEN, ASSIGNED, or PAUSED) and COMPLETED jobs, plus disputes that ' +
+      'have no resolution yet.',
   })
   @ApiResponse({
     status: 200,
@@ -33,8 +65,157 @@ export class AdminJobsController {
     return this.jobs.summaryForAdmin();
   }
 
+  // Both pipeline routes sit before ':jobId' so the literal segment is not
+  // parsed as a UUID.
+  @Get('pipeline')
+  @ApiOperation({
+    summary: 'Get job pipeline counts (admin only)',
+    description:
+      'Returns the ten dashboard stages in lifecycle order. Diagnose, Quote, and ' +
+      'Approve return `count: null` with `tracked: false` because the backend does ' +
+      'not record those steps.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Pipeline stage counts',
+    type: JobPipelineResponseDto,
+  })
+  @ApiTokenRequired()
+  @ApiForbidden('The caller is not an administrator.')
+  pipeline() {
+    return this.jobs.pipelineForAdmin();
+  }
+
+  @Get('pipeline/:stage')
+  @ApiOperation({
+    summary: 'List jobs at one pipeline stage (admin only)',
+    description:
+      'Returns one page of admin job objects for a stage key. Untracked stages ' +
+      'return an empty page with `tracked: false`.',
+  })
+  @ApiParam({ name: 'stage', enum: JobPipelineStage })
+  @ApiResponse({
+    status: 200,
+    description: 'One page of jobs at the stage',
+    type: JobPipelineStagePageDto,
+  })
+  @ApiValidationFailed()
+  @ApiTokenRequired()
+  @ApiForbidden('The caller is not an administrator.')
+  pipelineStage(
+    @Param('stage', new ParseEnumPipe(JobPipelineStage)) stage: JobPipelineStage,
+    @Query() query: PagedQueryDto,
+  ) {
+    return this.jobs.pipelineStageForAdmin(stage, query);
+  }
+
+  @Get('cancellation-requests')
+  listCancellationRequests() {
+    return this.jobs.listCancellationRequests();
+  }
+
+  @Patch('cancellation-requests/:requestId')
+  reviewCancellation(
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+    @Body() dto: ReviewCancellationDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.jobs.reviewCancellation(requestId, dto, user.id);
+  }
+
+  @Post()
+  @ApiOperation({
+    summary: 'Create a job for a customer (admin only)',
+    description:
+      'Creates the request on an active customer’s behalf. The job is dispatched ' +
+      'like a customer request: matching technicians receive offers immediately.',
+  })
+  @ApiResponse({ status: 201, description: 'The created job' })
+  create(@CurrentUser() user: AuthUser, @Body() dto: AdminCreateJobDto) {
+    return this.jobs.createForAdmin(dto, user.id);
+  }
+
   @Get(':jobId')
   get(@Param('jobId', ParseUUIDPipe) jobId: string) {
     return this.jobs.getForAdmin(jobId);
+  }
+
+  @Patch(':jobId')
+  @ApiOperation({
+    summary: 'Edit a job (admin only)',
+    description:
+      'An unassigned OPEN job is re-matched after the change. Once a technician ' +
+      'is assigned the job stays with them and its fields are corrected in place.',
+  })
+  @ApiResponse({ status: 200, description: 'The updated job' })
+  update(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: UpdateJobDto,
+  ) {
+    return this.jobs.adminUpdate(jobId, dto, user.id);
+  }
+
+  @Post(':jobId/cancel')
+  @ApiOperation({
+    summary: 'Cancel a job (admin only)',
+    description:
+      'Cancels an OPEN or ASSIGNED job, withdraws pending offers, closes the ' +
+      'assignment, and declines any open negotiation with the reason kept on the job.',
+  })
+  @ApiResponse({ status: 201, description: 'The cancelled job' })
+  cancel(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: AdminCancelJobDto,
+  ) {
+    return this.jobs.adminCancel(jobId, dto.reason, user.id);
+  }
+
+  @Post(':jobId/reassign')
+  @ApiOperation({
+    summary: 'Reassign a job to another technician (admin only)',
+    description:
+      'Moves an OPEN or ASSIGNED job to an approved, active technician. The ' +
+      'previous assignment ends, pending offers are withdrawn, and progress restarts.',
+  })
+  @ApiResponse({ status: 201, description: 'The reassigned job' })
+  reassign(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: AdminReassignJobDto,
+  ) {
+    return this.jobs.adminReassign(jobId, dto.technicianId, user.id);
+  }
+
+  @Post(':jobId/rating')
+  @ApiOperation({
+    summary: 'Rate a job (admin only)',
+    description:
+      'Records the customer’s post-job rating on their behalf. All six categories ' +
+      'are whole stars from 1 to 5; `overall` is the average shown in the dashboard.',
+  })
+  @ApiResponse({ status: 201, description: 'The rated job' })
+  rate(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: AdminRateJobDto,
+  ) {
+    return this.jobs.adminRate(jobId, dto, user.id);
+  }
+
+  @Delete(':jobId')
+  @ApiOperation({
+    summary: 'Permanently delete a completed or cancelled job (admin only)',
+    description:
+      'Permanently deletes a completed or cancelled job while retaining payment ' +
+      'and audit history. Open or assigned jobs must not be deleted.',
+  })
+  @ApiResponse({ status: 200, description: 'Job permanently deleted' })
+  delete(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.permanentlyDelete(jobId, user.id);
   }
 }

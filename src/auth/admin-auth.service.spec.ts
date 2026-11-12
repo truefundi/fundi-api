@@ -9,10 +9,11 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UserRole } from '@prisma/client';
-import { hashSync } from 'bcrypt';
+import { hashSync, compare } from 'bcrypt';
 import { authenticator } from 'otplib';
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
+import { AuditService } from '../audit/audit.service';
 import { AdminAuthService } from './admin-auth.service';
 import { AuthService } from './auth.service';
 import { TotpCryptoService } from './totp-crypto.service';
@@ -83,6 +84,7 @@ describe('AdminAuthService', () => {
       eval: jest.fn().mockResolvedValue(1),
     };
     const tx = {
+      user: { update: jest.fn().mockResolvedValue({}) },
       refreshToken: {
         deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
         create: jest.fn().mockResolvedValue({}),
@@ -127,6 +129,7 @@ describe('AdminAuthService', () => {
       verifyOtpCode: jest.fn().mockResolvedValue(undefined),
       otpLifetimeSeconds: jest.fn().mockReturnValue(300),
     };
+    const audit = { log: jest.fn().mockResolvedValue(undefined) };
     const service = new AdminAuthService(
       jwt as unknown as JwtService,
       config as unknown as ConfigService,
@@ -134,8 +137,9 @@ describe('AdminAuthService', () => {
       { getClient: () => redisClient } as unknown as RedisService,
       totpCrypto as unknown as TotpCryptoService,
       authService as unknown as AuthService,
+      audit as unknown as AuditService,
     );
-    return { service, prisma, totpCrypto, jwt, redisClient, tx, authService };
+    return { service, prisma, totpCrypto, jwt, redisClient, tx, authService, audit };
   };
 
   // Captures a rejection so both its type and its HTTP status can be asserted.
@@ -364,7 +368,8 @@ describe('AdminAuthService', () => {
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
       });
-      expect(result.expiresInSeconds).toBe(900);
+      // Falls back to the configured default when ADMIN_ACCESS_EXPIRES_IN is unset.
+      expect(result.expiresInSeconds).toBe(86400);
     });
 
     // Clock skew between the server and a phone is normal, so the neighbouring step
@@ -644,6 +649,99 @@ describe('AdminAuthService', () => {
       await expect(service.getAdminUser('gone')).rejects.toBeInstanceOf(
         UnauthorizedException,
       );
+    });
+  });
+
+  describe('changePassword', () => {
+    const NEW_PASSWORD = 'NewAdmin#2026';
+
+    it('rehashes the password, revokes every session, and audits the change', async () => {
+      const { service, prisma, tx, audit } = createService({
+        'adminAuth.bcryptRounds': 4,
+      });
+
+      const result = await service.changePassword(adminUser.id, {
+        currentPassword: PASSWORD,
+        newPassword: NEW_PASSWORD,
+      });
+
+      expect(result).toEqual({
+        message: 'Password updated. Sign in again with the new password.',
+        sessionsRevoked: true,
+      });
+      const stored = tx.user.update.mock.calls[0][0] as {
+        where: { id: string };
+        data: { passwordHash: string };
+      };
+      expect(stored.where).toEqual({ id: adminUser.id });
+      await expect(compare(NEW_PASSWORD, stored.data.passwordHash)).resolves.toBe(true);
+      expect(tx.refreshToken.deleteMany).toHaveBeenCalledWith({
+        where: { userId: adminUser.id },
+      });
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ADMIN_PASSWORD_CHANGED',
+          actorId: adminUser.id,
+        }),
+        tx,
+      );
+      expect(prisma.user.findUnique).toHaveBeenCalled();
+    });
+
+    it('refuses a wrong current password without touching the stored hash', async () => {
+      const { service, tx } = createService({ 'adminAuth.bcryptRounds': 4 });
+
+      await expect(
+        service.changePassword(adminUser.id, {
+          currentPassword: 'Wrong#Password1',
+          newPassword: NEW_PASSWORD,
+        }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(tx.user.update).not.toHaveBeenCalled();
+      expect(tx.refreshToken.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('refuses reusing the current password', async () => {
+      const { service, tx } = createService({ 'adminAuth.bcryptRounds': 4 });
+
+      const error = await captureError(
+        service.changePassword(adminUser.id, {
+          currentPassword: PASSWORD,
+          newPassword: PASSWORD,
+        }),
+      );
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(tx.user.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses an account that is not an active administrator', async () => {
+      const { service, prisma } = createService({ 'adminAuth.bcryptRounds': 4 });
+      prisma.user.findUnique.mockResolvedValue({
+        ...adminUser,
+        role: UserRole.CUSTOMER,
+      });
+
+      await expect(
+        service.changePassword(adminUser.id, {
+          currentPassword: PASSWORD,
+          newPassword: NEW_PASSWORD,
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('refuses an administrator that has no password provisioned', async () => {
+      const { service, prisma } = createService({ 'adminAuth.bcryptRounds': 4 });
+      prisma.user.findUnique.mockResolvedValue({ ...adminUser, passwordHash: null });
+
+      const error = await captureError(
+        service.changePassword(adminUser.id, {
+          currentPassword: PASSWORD,
+          newPassword: NEW_PASSWORD,
+        }),
+      );
+
+      expect(error).toBeInstanceOf(BadRequestException);
     });
   });
 

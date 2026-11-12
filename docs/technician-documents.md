@@ -20,10 +20,11 @@ service; job media also uses this configured driver.
 - **Documents** are verification files. A document is either a
   **`NATIONAL_ID`** (an identity card) or a **`CERTIFICATE`** (a
   qualification). Each certificate records a `certificateType` and links to a
-  service category. Every document has a review `status` set by an
-  administrator.
+  service category. Certificates are optional; the National ID card is
+  required. Every document has a review `status` set by an administrator.
 - **Verification** (`verificationStatus` on the technician profile) can only
-  become `APPROVED` once the approval checklist is satisfied.
+  become `APPROVED` once the required National ID document is accepted. An
+  accepted certificate is not required for approval.
 
 Technician routes require a `TECHNICIAN` access token. Admin routes require an
 `ADMIN` access token. Uploads use `multipart/form-data`; every other request
@@ -46,39 +47,39 @@ body is JSON with `Content-Type: application/json`.
     `customCategoryName` (a free-text service name for a service that is not
     yet in the catalogue).
 - At most one live `CERTIFICATE` per `(technician, category-or-custom-name,
-  certificateType)`. Uploading a second certificate for the same
+certificateType)`. Uploading a second certificate for the same
   combination while the first is still live returns `409`.
 
 ## Certificate types
 
 `CERTIFICATE` documents carry a `certificateType`:
 
-| Value | Meaning |
-| --- | --- |
+| Value              | Meaning                         |
+| ------------------ | ------------------------------- |
 | `TVET_CERTIFICATE` | Rwanda TVET Board qualification |
-| `DIPLOMA` | Diploma |
-| `ADVANCED_DIPLOMA` | Advanced diploma |
-| `DEGREE` | Degree |
-| `SHORT_COURSE` | Short course completion |
-| `OTHER` | Anything else |
+| `DIPLOMA`          | Diploma                         |
+| `ADVANCED_DIPLOMA` | Advanced diploma                |
+| `DEGREE`           | Degree                          |
+| `SHORT_COURSE`     | Short course completion         |
+| `OTHER`            | Anything else                   |
 
-A certificate also links to the service it qualifies the technician for. The
+A certificate can link to the service it qualifies the technician for. The
 technician picks either a real service category (`categoryId`) or types a
-name (`customCategoryName`) if the service is not in the catalogue yet. The
-approval checklist specifically requires an accepted certificate of type
-`TVET_CERTIFICATE`.
+name (`customCategoryName`) if the service is not in the catalogue yet.
+Certificates are optional and are not part of the approval checklist.
 
 ## Document statuses
 
-| Status | Meaning |
-| --- | --- |
-| `SUBMITTED` | Uploaded and waiting for an administrator. |
-| `REVIEWING` | An administrator has started reviewing it (optional step). |
-| `ACCEPTED` | Approved. Final: it can no longer be deleted or changed. |
-| `DENIED` | Rejected, with a review note. Final: upload a new document to replace it. |
+| Status      | Meaning                                                                   |
+| ----------- | ------------------------------------------------------------------------- |
+| `SUBMITTED` | Uploaded and waiting for an administrator.                                |
+| `REVIEWING` | An administrator has started reviewing it (optional step).                |
+| `ACCEPTED`  | Approved. Final: it can no longer be deleted or changed.                  |
+| `DENIED`    | Rejected, with a review note. Can be corrected and resubmitted with `PATCH /api/v1/technicians/profile/documents/:documentId`. |
 
-Flow: `SUBMITTED` → `REVIEWING` (optional) → `ACCEPTED` or `DENIED`. Every
-upload, review, and deletion is written to the audit log.
+Flow: `SUBMITTED` → `REVIEWING` (optional) → `ACCEPTED` or `DENIED`. A
+technician can update a denied document to return it to `SUBMITTED`. Every
+upload, update, review, and deletion is written to the audit log.
 
 ## Technician self-service
 
@@ -104,13 +105,13 @@ Success response (`200`): the full technician object (see
 
 **Errors**
 
-| Status | When |
-| --- | --- |
-| `400` | No file, unsupported type (e.g. PDF, GIF), or file over 5 MiB |
-| `401` | Missing or invalid token |
-| `403` | Caller is not a `TECHNICIAN` |
-| `404` | No technician profile registered yet |
-| `409` | Concurrent update — retry |
+| Status | When                                                          |
+| ------ | ------------------------------------------------------------- |
+| `400`  | No file, unsupported type (e.g. PDF, GIF), or file over 5 MiB |
+| `401`  | Missing or invalid token                                      |
+| `403`  | Caller is not a `TECHNICIAN`                                  |
+| `404`  | No technician profile registered yet                          |
+| `409`  | Concurrent update — retry                                     |
 
 ### `DELETE /api/v1/technicians/profile/picture`
 
@@ -126,14 +127,14 @@ Uploads a verification document. Send `multipart/form-data`.
 
 **Fields**
 
-| Name | Required | Notes |
-| --- | --- | --- |
-| `file` | Yes | JPEG, PNG, WebP, or PDF; up to 5 MiB |
-| `type` | Yes | `NATIONAL_ID` or `CERTIFICATE` |
-| `title` | Yes | Unique among the technician's non-denied documents |
-| `certificateType` | When `type=CERTIFICATE` | See [Certificate types](#certificate-types) |
-| `categoryId` | When `type=CERTIFICATE` — mutually exclusive with `customCategoryName` | UUID of an active `ServiceCategory` |
-| `customCategoryName` | When `type=CERTIFICATE` — mutually exclusive with `categoryId` | Free-text service name |
+| Name                 | Required                                                               | Notes                                              |
+| -------------------- | ---------------------------------------------------------------------- | -------------------------------------------------- |
+| `file`               | Yes                                                                    | JPEG, PNG, WebP, or PDF; up to 5 MiB               |
+| `type`               | Yes                                                                    | `NATIONAL_ID` or `CERTIFICATE`                     |
+| `title`              | Yes                                                                    | Unique among the technician's non-denied documents |
+| `certificateType`    | When `type=CERTIFICATE`                                                | See [Certificate types](#certificate-types)        |
+| `categoryId`         | When `type=CERTIFICATE` — mutually exclusive with `customCategoryName` | UUID of an active `ServiceCategory`                |
+| `customCategoryName` | When `type=CERTIFICATE` — mutually exclusive with `categoryId`         | Free-text service name                             |
 
 The document starts as `SUBMITTED`.
 
@@ -176,18 +177,18 @@ Success response (`201`): the created document object (see
 
 **Errors**
 
-| Status | When |
-| --- | --- |
-| `400` | No file, unsupported type, or file over 5 MiB |
-| `400` | Missing `type` or `title` |
-| `400` | `type=CERTIFICATE` but no `certificateType` |
-| `400` | `type=CERTIFICATE` and both or neither of `categoryId` / `customCategoryName` |
-| `400` | `categoryId` is not an active category |
-| `401` | Missing or invalid token |
-| `403` | Caller is not a `TECHNICIAN` |
-| `404` | No technician profile registered yet |
-| `409` | Duplicate title, second live `NATIONAL_ID`, or duplicate live certificate for the same `(category, certificateType)` |
-| `409` | More than 10 non-denied documents |
+| Status | When                                                                                                                 |
+| ------ | -------------------------------------------------------------------------------------------------------------------- |
+| `400`  | No file, unsupported type, or file over 5 MiB                                                                        |
+| `400`  | Missing `type` or `title`                                                                                            |
+| `400`  | `type=CERTIFICATE` but no `certificateType`                                                                          |
+| `400`  | `type=CERTIFICATE` and both or neither of `categoryId` / `customCategoryName`                                        |
+| `400`  | `categoryId` is not an active category                                                                               |
+| `401`  | Missing or invalid token                                                                                             |
+| `403`  | Caller is not a `TECHNICIAN`                                                                                         |
+| `404`  | No technician profile registered yet                                                                                 |
+| `409`  | Duplicate title, second live `NATIONAL_ID`, or duplicate live certificate for the same `(category, certificateType)` |
+| `409`  | More than 10 non-denied documents                                                                                    |
 
 ### `GET /api/v1/technicians/profile/documents`
 
@@ -207,10 +208,10 @@ Success response (`200`): the file bytes with a
 
 **Errors**
 
-| Status | When |
-| --- | --- |
-| `400` | `:documentId` is not a UUID |
-| `404` | Document not found, or not owned by the caller |
+| Status | When                                           |
+| ------ | ---------------------------------------------- |
+| `400`  | `:documentId` is not a UUID                    |
+| `404`  | Document not found, or not owned by the caller |
 
 ### `DELETE /api/v1/technicians/profile/documents/:documentId`
 
@@ -227,11 +228,32 @@ A document that is `REVIEWING` or `ACCEPTED` cannot be deleted.
 
 **Errors**
 
-| Status | When |
-| --- | --- |
-| `400` | `:documentId` is not a UUID |
-| `404` | Document not found, or not owned by the caller |
-| `409` | Document is `REVIEWING` or `ACCEPTED` |
+| Status | When                                           |
+| ------ | ---------------------------------------------- |
+| `400`  | `:documentId` is not a UUID                    |
+| `404`  | Document not found, or not owned by the caller |
+| `409`  | Document is `REVIEWING` or `ACCEPTED`          |
+
+### `PATCH /api/v1/technicians/profile/documents/:documentId`
+
+Replaces and resubmits one of your denied documents. Send
+`multipart/form-data` with a required `file` field (JPEG, PNG, WebP, or PDF,
+up to 5 MiB). You can also update `title`; for a `CERTIFICATE`, you can update
+`certificateType` and provide exactly one of `categoryId` or
+`customCategoryName`. The document type cannot be changed.
+
+The existing document record and ID are retained. A successful update changes
+its status to `SUBMITTED` and clears the old review note and reviewer details.
+Only documents with `DENIED` status can be updated; uploading creates no new
+document record.
+
+**Errors**
+
+| Status | When                                                                                   |
+| ------ | -------------------------------------------------------------------------------------- |
+| `400`  | Invalid document ID, file, title, or certificate details                               |
+| `404`  | Document not found, or not owned by the caller                                         |
+| `409`  | Document is no longer denied, or updated details conflict with another active document |
 
 ### `GET /api/v1/technicians/profile/verification-checklist`
 
@@ -255,10 +277,10 @@ Success response (`200`): an array of document objects with
 
 **Errors**
 
-| Status | When |
-| --- | --- |
-| `400` | `:id` is not a UUID |
-| `404` | Technician not found |
+| Status | When                 |
+| ------ | -------------------- |
+| `400`  | `:id` is not a UUID  |
+| `404`  | Technician not found |
 
 ### `GET /api/v1/admin/technicians/:id/verification-checklist`
 
@@ -278,24 +300,24 @@ Success response (`200`): the file bytes with a
 
 **Errors**
 
-| Status | When |
-| --- | --- |
-| `400` | `:documentId` is not a UUID |
-| `404` | Document not found |
+| Status | When                        |
+| ------ | --------------------------- |
+| `400`  | `:documentId` is not a UUID |
+| `404`  | Document not found          |
 
 ### `PATCH /api/v1/admin/technician-documents/:documentId/review`
 
 Moves a document through the review flow.
 
-`status` is one of `REVIEWING`, `ACCEPTED`, or `DENIED`. A `reviewNote` is
-required when denying and optional otherwise. `ACCEPTED` and `DENIED` are
-final.
+`status` is one of `REVIEWING`, `ACCEPTED`, or `DENIED`. A `reviewNote` is required when denying and optional otherwise. Administrators
+cannot change `ACCEPTED` or `DENIED` decisions; a technician can resubmit a
+denied document with the self-service `PATCH` endpoint.
 
 Allowed transitions:
 
 - `SUBMITTED` → `REVIEWING`, `ACCEPTED`, or `DENIED`
 - `REVIEWING` → `ACCEPTED` or `DENIED`
-- `ACCEPTED` / `DENIED` → none (a second attempt returns `409`)
+- `ACCEPTED` / `DENIED` → none for administrators (a second attempt returns `409`)
 
 Request:
 
@@ -310,13 +332,13 @@ Success response (`200`): the updated document object.
 
 **Errors**
 
-| Status | When |
-| --- | --- |
-| `400` | `:documentId` is not a UUID |
-| `400` | `status` is not one of the allowed values |
-| `400` | `status=DENIED` without a `reviewNote` |
-| `404` | Document not found |
-| `409` | The document is already decided and cannot move to the requested status |
+| Status | When                                                                    |
+| ------ | ----------------------------------------------------------------------- |
+| `400`  | `:documentId` is not a UUID                                             |
+| `400`  | `status` is not one of the allowed values                               |
+| `400`  | `status=DENIED` without a `reviewNote`                                  |
+| `404`  | Document not found                                                      |
+| `409`  | The document is already decided and cannot move to the requested status |
 
 ## Approving a technician
 
@@ -349,8 +371,9 @@ response so the caller can render the same view as
    `verificationStatus` to `APPROVED`.
 6. The technician can now go `ONLINE`.
 
-If a document is denied, the technician reads the `reviewNote`, deletes
-nothing (denied documents stay for the record), and uploads a replacement.
+If a document is denied, the technician reads the `reviewNote` and uses the
+self-service `PATCH /api/v1/technicians/profile/documents/:documentId` endpoint
+to replace the file and resubmit the same document record.
 The technician may also upload additional `CERTIFICATE` documents for other
 categories or other certificate types at any time — the checklist only
 requires one accepted `TVET_CERTIFICATE`, not one per category.
@@ -425,7 +448,7 @@ only returned to administrators.
 `complete` is `true` and every item is `satisfied` when the technician can be
 approved. `detail` reflects the current state of the underlying document:
 `"Not uploaded"`, `"Submitted, waiting for review"`, `"Under review"`,
-`"Accepted"`, or `"Denied, upload a new document"`.
+`"Accepted"`, or `"Denied, update and resubmit"`.
 
 ## Full technician response
 
@@ -507,11 +530,11 @@ redaction matrix.
 
 ## Enums
 
-| Enum | Values |
-| --- | --- |
-| `type` | `NATIONAL_ID`, `CERTIFICATE` |
+| Enum              | Values                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| `type`            | `NATIONAL_ID`, `CERTIFICATE`                                                         |
 | `certificateType` | `TVET_CERTIFICATE`, `DIPLOMA`, `ADVANCED_DIPLOMA`, `DEGREE`, `SHORT_COURSE`, `OTHER` |
-| `status` | `SUBMITTED`, `REVIEWING`, `ACCEPTED`, `DENIED` |
+| `status`          | `SUBMITTED`, `REVIEWING`, `ACCEPTED`, `DENIED`                                       |
 
 ## Errors
 
@@ -541,7 +564,3 @@ Common statuses:
   live certificate for the same `(category, certificateType)`, more than 10
   non-denied documents, a document that is already decided, or a concurrent
   update that should be retried.
-
-
-
-  

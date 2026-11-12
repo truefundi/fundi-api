@@ -8,14 +8,41 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, randomInt, randomUUID } from 'crypto';
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+} from '@simplewebauthn/server';
+import type {
+  AuthenticationResponseJSON,
+  RegistrationResponseJSON,
+  WebAuthnCredential,
+} from '@simplewebauthn/server';
 import { PrismaService } from '../database/prisma.service';
 import { SmsService } from '../sms/sms.service';
 import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
-import { UserRole } from '@prisma/client';
+import { PinRegisterDto } from './dto/pin-register.dto';
+import { UserRole, type User } from '@prisma/client';
+
+const PASSWORD_ATTEMPT_SCRIPT = `
+local attempts = tonumber(redis.call('GET', KEYS[1]) or '0')
+if attempts >= tonumber(ARGV[1]) then return -1 end
+attempts = redis.call('INCR', KEYS[1])
+if attempts == 1 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2])) end
+return attempts
+`;
+
+const CONSUME_CHALLENGE_SCRIPT = `
+local challenge = redis.call('GET', KEYS[1])
+if challenge then redis.call('DEL', KEYS[1]) end
+return challenge
+`;
 
 // Creates the initial OTP hash and applies its Redis TTL atomically. The absolute
 // expiry is stored as a field so an expired code stays distinguishable from one
@@ -77,6 +104,10 @@ export class AuthService {
   // Sliding window for the account-wide wrong-guess tally, so a slow trickle of
   // guesses cannot accumulate forever while a genuine typo recovers within minutes.
   private readonly otpAttemptWindowSeconds = 900;
+  private readonly passwordBcryptRounds: number;
+  private readonly passwordMaxAttempts: number;
+  private readonly passwordLockoutSeconds: number;
+  private readonly passkeyChallengeTtlSeconds: number;
 
   constructor(
     private jwtService: JwtService,
@@ -86,25 +117,84 @@ export class AuthService {
     private redisService: RedisService,
   ) {
     this.otpTtlSeconds = this.configService.get<number>('otp.ttlSeconds', 300);
+    this.passwordBcryptRounds = this.configService.get<number>(
+      'auth.passwordBcryptRounds',
+      12,
+    );
+    this.passwordMaxAttempts = this.configService.get<number>(
+      'auth.passwordMaxAttempts',
+      5,
+    );
+    this.passwordLockoutSeconds = this.configService.get<number>(
+      'auth.passwordLockoutSeconds',
+      900,
+    );
+    this.passkeyChallengeTtlSeconds = this.configService.get<number>(
+      'auth.passkeyChallengeTtlSeconds',
+      300,
+    );
   }
 
-  // Creates a customer or technician account, defaulting to customer, then starts OTP verification.
+  // Customer registration is immediate; technician registration starts phone OTP verification.
   async register(input: RegisterDto) {
+    this.assertPasswordLength(input.password);
+    const passwordHash =
+      input.password === undefined
+        ? undefined
+        : await bcrypt.hash(input.password, this.passwordBcryptRounds);
     try {
       const user = await this.prisma.user.create({
         data: {
           fullName: input.fullName.trim(),
           phoneNumber: input.phoneNumber,
           email: input.email || null,
-          role: input.role === 'TECHNICIAN' ? UserRole.TECHNICIAN : UserRole.CUSTOMER,
+          role:
+            input.role === 'TECHNICIAN'
+              ? UserRole.TECHNICIAN
+              : UserRole.CUSTOMER,
+          passwordHash,
         },
         select: { id: true, fullName: true, phoneNumber: true, role: true },
       });
-      await this.issueOtp(user.id, user.phoneNumber);
-      return { message: 'OTP generated. Verify it to complete registration.', user };
+      if (user.role === UserRole.TECHNICIAN) {
+        await this.issueOtp(user.id, user.phoneNumber);
+        return {
+          message:
+            'OTP generated. Verify it to complete technician registration.',
+          user,
+        };
+      }
+      return { message: 'Customer account registered successfully.', user };
     } catch (error) {
       if (this.isPrismaError(error, 'P2002')) {
-        throw new ConflictException('An account with this phone number or email already exists.');
+        throw new ConflictException(
+          'An account with this phone number or email already exists.',
+        );
+      }
+      throw error;
+    }
+  }
+
+  // Creates a customer account with an independently stored PIN credential.
+  async registerWithPin(input: PinRegisterDto) {
+    this.assertPin(input.pin);
+    const pinHash = await bcrypt.hash(input.pin, this.passwordBcryptRounds);
+    try {
+      const user = await this.prisma.user.create({
+        data: {
+          fullName: input.fullName.trim(),
+          phoneNumber: input.phoneNumber,
+          pinHash,
+          role: UserRole.CUSTOMER,
+        },
+        select: { id: true, fullName: true, phoneNumber: true, role: true },
+      });
+      return { message: 'Customer account registered successfully.', user };
+    } catch (error) {
+      if (this.isPrismaError(error, 'P2002')) {
+        throw new ConflictException(
+          'An account with this phone number already exists.',
+        );
       }
       throw error;
     }
@@ -113,16 +203,26 @@ export class AuthService {
   // Checks account existence and active status before creating a login OTP.
   async requestLoginOtp(phoneNumber: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
-    if (!user) throw new NotFoundException('No account was found for this phone number.');
+    if (!user)
+      throw new NotFoundException(
+        'No account was found for this phone number.',
+      );
+    this.rejectAdminPhoneLogin(user.role);
     this.ensureActive(user.status);
     await this.issueOtp(user.id, user.phoneNumber);
-    return { message: `OTP generated. It expires in ${this.otpLifetimeMinutes()} minutes.` };
+    return {
+      message: `OTP generated. It expires in ${this.otpLifetimeMinutes()} minutes.`,
+    };
   }
 
   // Issues a replacement OTP while Redis retains its resend and attempt counters.
   async resendOtp(phoneNumber: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
-    if (!user) throw new NotFoundException('No account was found for this phone number.');
+    if (!user)
+      throw new NotFoundException(
+        'No account was found for this phone number.',
+      );
+    this.rejectAdminPhoneLogin(user.role);
     this.ensureActive(user.status);
     const code = randomInt(100000, 1000000).toString();
     const resendCount = await this.runOtpScript(
@@ -134,31 +234,381 @@ export class AuthService {
       String(this.otpKeyTtlSeconds()),
     );
     if (resendCount === -1) {
-      throw new BadRequestException('There is no pending OTP. Request a login OTP first.');
+      throw new BadRequestException(
+        'There is no pending OTP. Request a login OTP first.',
+      );
     }
     if (resendCount === -2) {
-      throw new BadRequestException('The maximum of three OTP resends has been reached.');
+      throw new BadRequestException(
+        'The maximum of three OTP resends has been reached.',
+      );
     }
     await this.deliverOtp(user.id, user.phoneNumber, code);
-    return { message: `OTP resent. ${this.maxOtpResends - resendCount} resend(s) remain.` };
+    return {
+      message: `OTP resent. ${this.maxOtpResends - resendCount} resend(s) remain.`,
+    };
   }
 
   // Verifies a time-limited OTP and creates persisted refresh-token state.
-  async verifyOtp(phoneNumber: string, otp: string) {
+  async verifyOtp(phoneNumber: string, otp: string, deviceId?: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
-    if (!user) throw new NotFoundException('No account was found for this phone number.');
+    if (!user)
+      throw new NotFoundException(
+        'No account was found for this phone number.',
+      );
+    this.rejectAdminPhoneLogin(user.role);
     this.ensureActive(user.status);
     await this.verifyOtpCode(user.id, otp);
-    const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
-    const refreshHash = this.hash(tokens.refreshToken);
-    const refreshExpiresAt = this.refreshTokenExpiresAt();
-    await this.prisma.refreshToken.create({
-      data: { token: refreshHash, sessionId, userId: user.id, expiresAt: refreshExpiresAt },
+    if (user.role === UserRole.TECHNICIAN && !user.phoneVerifiedAt) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { phoneVerifiedAt: new Date() },
+      });
+    }
+    return this.createUserSession(user, deviceId);
+  }
+
+  // Authenticates a customer or technician using an optional account password.
+  async loginWithPassword(
+    phoneNumber: string,
+    password: string,
+    deviceId?: string,
+  ) {
+    this.assertPasswordLength(password);
+    const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
+    if (!user) {
+      throw new UnauthorizedException(
+        'The phone number or password is incorrect.',
+      );
+    }
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    this.ensureTechnicianPhoneVerified(user);
+
+    const attempts = await this.consumePasswordAttempt(user.id);
+    if (attempts === -1) {
+      throw new ForbiddenException(
+        'Too many incorrect password attempts. Wait before trying again.',
+      );
+    }
+    const passwordMatches =
+      user.passwordHash !== null &&
+      (await bcrypt.compare(password, user.passwordHash));
+    if (!passwordMatches) {
+      if (attempts >= this.passwordMaxAttempts) {
+        throw new ForbiddenException(
+          'Too many incorrect password attempts. Wait before trying again.',
+        );
+      }
+      throw new UnauthorizedException(
+        'The phone number or password is incorrect.',
+      );
+    }
+    await this.clearPasswordAttempts(user.id);
+    return this.createUserSession(user, deviceId);
+  }
+
+  // Authenticates a customer or verified technician using a phone number and PIN.
+  async loginWithPin(phoneNumber: string, pin: string, deviceId?: string) {
+    this.assertPin(pin);
+    const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
+    if (!user) {
+      throw new UnauthorizedException('The phone number or PIN is incorrect.');
+    }
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    this.ensureTechnicianPhoneVerified(user);
+
+    const attempts = await this.consumePasswordAttempt(user.id);
+    if (attempts === -1) {
+      throw new ForbiddenException(
+        'Too many incorrect PIN attempts. Wait before trying again.',
+      );
+    }
+    const pinMatches =
+      user.pinHash !== null && (await bcrypt.compare(pin, user.pinHash));
+    if (!pinMatches) {
+      if (attempts >= this.passwordMaxAttempts) {
+        throw new ForbiddenException(
+          'Too many incorrect PIN attempts. Wait before trying again.',
+        );
+      }
+      throw new UnauthorizedException('The phone number or PIN is incorrect.');
+    }
+    await this.clearPasswordAttempts(user.id);
+    return this.createUserSession(user, deviceId);
+  }
+
+  // Resets a password only after consuming an OTP sent to the account phone.
+  async resetPassword(phoneNumber: string, otp: string, newPassword: string) {
+    this.assertPasswordLength(newPassword);
+    const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
+    if (!user) {
+      throw new UnauthorizedException('The phone number or OTP is incorrect.');
+    }
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    await this.verifyOtpCode(user.id, otp);
+    await this.clearPasswordAttempts(user.id);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash: await bcrypt.hash(
+            newPassword,
+            this.passwordBcryptRounds,
+          ),
+          ...(user.role === UserRole.TECHNICIAN && !user.phoneVerifiedAt
+            ? { phoneVerifiedAt: new Date() }
+            : {}),
+        },
+      });
+      await tx.refreshToken.deleteMany({ where: { userId: user.id } });
     });
-    return {
-      user: { id: user.id, fullName: user.fullName, phoneNumber: user.phoneNumber, role: user.role },
-      ...tokens,
-    };
+    return { message: 'Password reset successfully. You can now sign in.' };
+  }
+
+  // Starts passkey enrollment for the currently authenticated account.
+  async generatePasskeyRegistrationOptions(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Account not found.');
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    const { rpId, rpName } = this.webauthnConfiguration();
+    const existingCredentials = await this.prisma.passkeyCredential.findMany({
+      where: { userId },
+      select: { credentialId: true, transports: true },
+    });
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID: rpId,
+      userID: Buffer.from(user.id),
+      userName: user.phoneNumber,
+      userDisplayName: user.fullName,
+      attestationType: 'none',
+      excludeCredentials: existingCredentials.map((credential) => ({
+        id: credential.credentialId,
+        transports: this.authenticatorTransports(credential.transports),
+      })),
+      authenticatorSelection: {
+        residentKey: 'preferred',
+        userVerification: 'required',
+      },
+    });
+    await this.storePasskeyChallenge(
+      this.passkeyRegistrationChallengeKey(userId),
+      options.challenge,
+    );
+    return options;
+  }
+
+  // Verifies and stores a device's public credential; its private key never leaves it.
+  async verifyPasskeyRegistration(
+    userId: string,
+    response: RegistrationResponseJSON,
+  ) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Account not found.');
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    const { rpId, origins } = this.webauthnConfiguration();
+    const challenge = await this.consumePasskeyChallenge(
+      this.passkeyRegistrationChallengeKey(userId),
+    );
+    if (!challenge) {
+      throw new BadRequestException(
+        'No passkey registration is pending or the challenge has expired. Start again.',
+      );
+    }
+
+    let verification;
+    try {
+      verification = await verifyRegistrationResponse({
+        response,
+        expectedChallenge: challenge,
+        expectedOrigin: origins,
+        expectedRPID: rpId,
+        requireUserVerification: true,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Passkey registration verification failed for user ${userId}: ${this.errorMessage(error)}`,
+      );
+      throw new UnauthorizedException(
+        'The passkey registration response could not be verified.',
+      );
+    }
+    if (!verification.verified) {
+      throw new UnauthorizedException(
+        'The passkey registration response could not be verified.',
+      );
+    }
+
+    const credential = verification.registrationInfo.credential;
+    try {
+      const saved = await this.prisma.passkeyCredential.create({
+        data: {
+          credentialId: credential.id,
+          publicKey: Buffer.from(credential.publicKey).toString('base64url'),
+          counter: BigInt(credential.counter),
+          transports: this.authenticatorTransports(
+            credential.transports ?? response.response.transports ?? [],
+          ),
+          userId,
+        },
+        select: { id: true, createdAt: true },
+      });
+      return {
+        message: 'Passkey registered successfully.',
+        passkey: saved,
+      };
+    } catch (error) {
+      if (this.isPrismaError(error, 'P2002')) {
+        throw new ConflictException(
+          'This passkey is already registered to an account.',
+        );
+      }
+      throw error;
+    }
+  }
+
+  // Starts a passkey sign-in challenge for a phone number and its registered credentials.
+  async generatePasskeyAuthenticationOptions(phoneNumber: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { phoneNumber },
+      include: { passkeyCredentials: true },
+    });
+    if (!user) {
+      throw new UnauthorizedException(
+        'No passkey sign-in is available for this account.',
+      );
+    }
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    this.ensureTechnicianPhoneVerified(user);
+    if (!user.passkeyCredentials.length) {
+      throw new UnauthorizedException(
+        'No passkey is registered. Sign in with OTP or password first.',
+      );
+    }
+    const { rpId } = this.webauthnConfiguration();
+    const options = await generateAuthenticationOptions({
+      rpID: rpId,
+      userVerification: 'required',
+      allowCredentials: user.passkeyCredentials.map((credential) => ({
+        id: credential.credentialId,
+        transports: this.authenticatorTransports(credential.transports),
+      })),
+    });
+    await this.storePasskeyChallenge(
+      this.passkeyAuthenticationChallengeKey(user.id),
+      options.challenge,
+    );
+    return options;
+  }
+
+  // Verifies the passkey assertion, advances its signature counter, and creates a session.
+  async verifyPasskeyAuthentication(
+    phoneNumber: string,
+    response: AuthenticationResponseJSON,
+    deviceId?: string,
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { phoneNumber },
+      include: { passkeyCredentials: true },
+    });
+    if (!user) {
+      throw new UnauthorizedException('The passkey response is invalid.');
+    }
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    this.ensureTechnicianPhoneVerified(user);
+    const credential = user.passkeyCredentials.find(
+      (candidate) => candidate.credentialId === response.id,
+    );
+    if (!credential) {
+      throw new UnauthorizedException('The passkey response is invalid.');
+    }
+    const challenge = await this.consumePasskeyChallenge(
+      this.passkeyAuthenticationChallengeKey(user.id),
+    );
+    if (!challenge) {
+      throw new BadRequestException(
+        'No passkey sign-in is pending or the challenge has expired. Start again.',
+      );
+    }
+    const { rpId, origins } = this.webauthnConfiguration();
+    const storedCounter = Number(credential.counter);
+    if (!Number.isSafeInteger(storedCounter)) {
+      throw new UnauthorizedException('The passkey credential is invalid.');
+    }
+
+    let verification;
+    try {
+      const storedCredential: WebAuthnCredential = {
+        id: credential.credentialId,
+        publicKey: Buffer.from(credential.publicKey, 'base64url'),
+        counter: storedCounter,
+        transports: this.authenticatorTransports(credential.transports),
+      };
+      verification = await verifyAuthenticationResponse({
+        response,
+        expectedChallenge: challenge,
+        expectedOrigin: origins,
+        expectedRPID: rpId,
+        credential: storedCredential,
+        requireUserVerification: true,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Passkey authentication verification failed for user ${user.id}: ${this.errorMessage(error)}`,
+      );
+      throw new UnauthorizedException('The passkey response is invalid.');
+    }
+    if (!verification.verified) {
+      throw new UnauthorizedException('The passkey response is invalid.');
+    }
+
+    const updated = await this.prisma.passkeyCredential.updateMany({
+      where: {
+        id: credential.id,
+        userId: user.id,
+        counter: credential.counter,
+      },
+      data: { counter: BigInt(verification.authenticationInfo.newCounter) },
+    });
+    if (!updated.count) {
+      throw new UnauthorizedException(
+        'The passkey credential has already been used. Start sign-in again.',
+      );
+    }
+    return this.createUserSession(user, deviceId);
+  }
+
+  // Returns metadata for the caller's registered passkeys without exposing keys.
+  async listPasskeys(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Account not found.');
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    return this.prisma.passkeyCredential.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, createdAt: true, transports: true },
+    });
+  }
+
+  // Revokes one of the caller's passkeys, including a lost or compromised device.
+  async removePasskey(userId: string, passkeyId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Account not found.');
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    const removed = await this.prisma.passkeyCredential.deleteMany({
+      where: { id: passkeyId, userId },
+    });
+    if (!removed.count) throw new NotFoundException('Passkey not found.');
+    return { message: 'Passkey removed successfully.' };
   }
 
   // Deletes the matching stored refresh-token hash to end the session.
@@ -166,41 +616,76 @@ export class AuthService {
     const result = await this.prisma.refreshToken.deleteMany({
       where: { userId, token: this.hash(refreshToken) },
     });
-    if (result.count === 0) throw new UnauthorizedException('The refresh token is invalid or already revoked.');
+    if (result.count === 0)
+      throw new UnauthorizedException(
+        'The refresh token is invalid or already revoked.',
+      );
     return { message: 'Logged out successfully.' };
   }
 
   // Exchanges a valid refresh token for a fresh pair and rotates the stored session.
   async refreshTokens(refreshToken: string) {
     const currentHash = this.hash(refreshToken);
-    const session = await this.prisma.refreshToken.findUnique({ where: { token: currentHash } });
+    const session = await this.prisma.refreshToken.findUnique({
+      where: { token: currentHash },
+    });
     if (!session) {
-      throw new UnauthorizedException('The refresh token is invalid or already revoked.');
+      throw new UnauthorizedException(
+        'The refresh token is invalid or already revoked.',
+      );
     }
     if (session.expiresAt.getTime() <= Date.now()) {
-      throw new UnauthorizedException('The refresh token has expired. Log in again.');
+      throw new UnauthorizedException(
+        'The refresh token has expired. Log in again.',
+      );
     }
-    const user = await this.prisma.user.findUnique({ where: { id: session.userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: session.userId },
+    });
     if (!user) {
-      throw new UnauthorizedException('The account associated with this token no longer exists.');
+      throw new UnauthorizedException(
+        'The account associated with this token no longer exists.',
+      );
     }
+    // Stops a bearer session minted for an administrator before the phone flow was
+    // closed from being renewed indefinitely.
+    this.rejectAdminPhoneLogin(user.role);
     this.ensureActive(user.status);
-    const { sessionId, ...tokens } = await this.generateTokens(user.id, user.phoneNumber, user.role);
+    const { sessionId, ...tokens } = await this.generateTokens(
+      user.id,
+      user.phoneNumber,
+      user.role,
+    );
     const expiresAt = this.refreshTokenExpiresAt();
     const rotatedHash = this.hash(tokens.refreshToken);
     // Deleting and reinserting in one transaction keeps the old token single-use: two
     // concurrent refreshes race on the same row and only one delete can report a match.
     await this.prisma.$transaction(async (tx) => {
-      const revoked = await tx.refreshToken.deleteMany({ where: { id: session.id, userId: user.id } });
+      const revoked = await tx.refreshToken.deleteMany({
+        where: { id: session.id, userId: user.id },
+      });
       if (revoked.count === 0) {
-        throw new UnauthorizedException('The refresh token is invalid or already revoked.');
+        throw new UnauthorizedException(
+          'The refresh token is invalid or already revoked.',
+        );
       }
       await tx.refreshToken.create({
-        data: { token: rotatedHash, sessionId, userId: user.id, expiresAt },
+        data: {
+          token: rotatedHash,
+          sessionId,
+          userId: user.id,
+          deviceId: session.deviceId,
+          expiresAt,
+        },
       });
     });
     return {
-      user: { id: user.id, fullName: user.fullName, phoneNumber: user.phoneNumber, role: user.role },
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        phoneNumber: user.phoneNumber,
+        role: user.role,
+      },
       ...tokens,
     };
   }
@@ -217,15 +702,30 @@ export class AuthService {
       this.configService.get<string>('jwt.refreshSecret') ||
       'default_dev_refresh_secret_32chars';
 
-    const accessToken = await this.jwtService.signAsync(payload, {
-      secret: accessSecret,
-      expiresIn: this.configService.get<string>('jwt.accessExpiresIn', '7d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
-    });
+    // `typ` pins each token to its purpose. Without it a refresh token is a valid
+    // JWT for the access-secret check whenever the two secrets are configured the
+    // same, and admin and phone tokens share the same secrets in this project.
+    const accessToken = await this.jwtService.signAsync(
+      { ...payload, typ: 'access' },
+      {
+        secret: accessSecret,
+        expiresIn: this.configService.get<string>(
+          'jwt.accessExpiresIn',
+          '7d',
+        ) as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      },
+    );
 
-    const refreshToken = await this.jwtService.signAsync(payload, {
-      secret: refreshSecret,
-      expiresIn: this.configService.get<string>('jwt.refreshExpiresIn', '30d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
-    });
+    const refreshToken = await this.jwtService.signAsync(
+      { ...payload, typ: 'refresh' },
+      {
+        secret: refreshSecret,
+        expiresIn: this.configService.get<string>(
+          'jwt.refreshExpiresIn',
+          '30d',
+        ) as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+      },
+    );
 
     return {
       accessToken,
@@ -244,10 +744,14 @@ export class AuthService {
   // own channel can hand the code over itself. Reused by the development-only admin
   // sign-in, which returns the code in the response instead of texting it.
   async issueOtpCode(userId: string): Promise<string> {
+    return this.issueOtpForKeys(this.otpKey(userId));
+  }
+
+  private async issueOtpForKeys(otpKey: string): Promise<string> {
     const code = randomInt(100000, 1000000).toString();
     await this.runOtpScript(
       CREATE_OTP_SCRIPT,
-      [this.otpKey(userId)],
+      [otpKey],
       this.hash(code),
       '0',
       '0',
@@ -261,9 +765,172 @@ export class AuthService {
   // same errors the phone flow does on every kind of failure. Split out so the
   // development-only admin sign-in reuses this exact logic rather than a copy.
   async verifyOtpCode(userId: string, otp: string): Promise<void> {
+    return this.verifyCode(this.otpKey(userId), this.otpTriesKey(userId), otp);
+  }
+
+  async requestCustomerJobOtp(
+    customerId: string,
+    requestedPhoneNumber?: string,
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: customerId },
+      select: {
+        id: true,
+        phoneNumber: true,
+        phoneVerifiedAt: true,
+        role: true,
+        status: true,
+      },
+    });
+    if (!user || user.role === UserRole.ADMIN) {
+      throw new NotFoundException('Account not found.');
+    }
+    this.ensureActive(user.status);
+    const phoneNumber = requestedPhoneNumber?.trim() || user.phoneNumber;
+    if (user.role !== UserRole.CUSTOMER && phoneNumber !== user.phoneNumber) {
+      throw new BadRequestException(
+        'Only customer accounts can verify a different phone number.',
+      );
+    }
+    if (
+      user.role === UserRole.CUSTOMER &&
+      user.phoneVerifiedAt &&
+      phoneNumber === user.phoneNumber
+    ) {
+      return {
+        verified: true,
+        phoneNumber: user.phoneNumber,
+        message: 'The account phone number is already verified.',
+      };
+    }
+    const phoneOwner = await this.prisma.user.findUnique({
+      where: { phoneNumber },
+      select: { id: true },
+    });
+    if (phoneOwner && phoneOwner.id !== customerId) {
+      throw new ConflictException(
+        'This phone number is already associated with another account.',
+      );
+    }
+    const verification = await this.prisma.customerPhoneVerification.create({
+      data: {
+        customerId,
+        phoneNumber,
+        expiresAt: new Date(Date.now() + this.otpTtlSeconds * 1000),
+      },
+    });
+    const key = this.jobVerificationOtpKey(verification.id);
+    try {
+      const code = await this.issueOtpForKeys(key);
+      await this.deliverOtp(user.id, phoneNumber, code, key);
+    } catch (error) {
+      await this.prisma.customerPhoneVerification.delete({
+        where: { id: verification.id },
+      });
+      throw error;
+    }
+    return {
+      verificationId: verification.id,
+      expiresAt: verification.expiresAt,
+      message: `OTP sent. It expires in ${this.otpLifetimeMinutes()} minutes.`,
+    };
+  }
+
+  async requestTechnicianRegistrationOtp(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, phoneNumber: true, role: true, status: true },
+    });
+    if (!user || user.role !== UserRole.TECHNICIAN) {
+      throw new NotFoundException('Technician account not found.');
+    }
+    this.ensureActive(user.status);
+    await this.issueOtp(user.id, user.phoneNumber);
+    return {
+      message: `OTP generated. Verify it to activate your technician registration phone. It expires in ${this.otpLifetimeMinutes()} minutes.`,
+    };
+  }
+
+  async verifyCustomerJobOtp(
+    customerId: string,
+    verificationId: string,
+    otp: string,
+  ) {
+    const verification = await this.prisma.customerPhoneVerification.findFirst({
+      where: {
+        id: verificationId,
+        customerId,
+        consumedAt: null,
+        verifiedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    if (!verification) {
+      throw new BadRequestException(
+        'Phone verification is missing, expired, or already used.',
+      );
+    }
+    await this.verifyCode(
+      this.jobVerificationOtpKey(verification.id),
+      this.jobVerificationOtpTriesKey(verification.id),
+      otp,
+    );
+    const verifiedAt = new Date();
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.customerPhoneVerification.updateMany({
+          where: {
+            id: verification.id,
+            customerId,
+            verifiedAt: null,
+            consumedAt: null,
+            expiresAt: { gt: verifiedAt },
+          },
+          data: { verifiedAt },
+        });
+        if (!updated.count) {
+          throw new ConflictException(
+            'Phone verification expired or was already used. Request a new OTP.',
+          );
+        }
+        const user = await tx.user.findUnique({
+          where: { id: customerId },
+          select: { role: true },
+        });
+        if (!user) throw new NotFoundException('Account not found.');
+        await tx.user.update({
+          where: { id: customerId },
+          data: {
+            phoneVerifiedAt: verifiedAt,
+            ...(user.role === UserRole.CUSTOMER
+              ? { phoneNumber: verification.phoneNumber }
+              : {}),
+          },
+        });
+      });
+    } catch (error) {
+      if (this.isPrismaError(error, 'P2002')) {
+        throw new ConflictException(
+          'This phone number is already associated with another account.',
+        );
+      }
+      throw error;
+    }
+    return {
+      verificationId: verification.id,
+      phoneNumber: verification.phoneNumber,
+      verifiedAt,
+    };
+  }
+
+  private async verifyCode(
+    otpKey: string,
+    triesKey: string,
+    otp: string,
+  ): Promise<void> {
     const verificationResult = await this.runOtpScript(
       VERIFY_OTP_SCRIPT,
-      [this.otpKey(userId), this.otpTriesKey(userId)],
+      [otpKey, triesKey],
       this.hash(otp),
       String(this.maxOtpVerificationTries),
       String(Date.now()),
@@ -271,10 +938,14 @@ export class AuthService {
       String(this.otpAttemptWindowSeconds),
     );
     if (verificationResult === -1) {
-      throw new BadRequestException('No OTP is pending. Request a new login OTP.');
+      throw new BadRequestException(
+        'No OTP is pending. Request a new login OTP.',
+      );
     }
     if (verificationResult === -3) {
-      throw new UnauthorizedException('The OTP has expired. Request a new login OTP.');
+      throw new UnauthorizedException(
+        'The OTP has expired. Request a new login OTP.',
+      );
     }
     if (verificationResult === -2) {
       throw new ForbiddenException(
@@ -293,28 +964,47 @@ export class AuthService {
   }
 
   // Sends the code and clears its Redis key if delivery fails.
-  private async deliverOtp(userId: string, phoneNumber: string, code: string) {
+  private async deliverOtp(
+    userId: string,
+    phoneNumber: string,
+    code: string,
+    otpKey = this.otpKey(userId),
+  ) {
     try {
       await this.smsService.sendOtp(phoneNumber, code);
     } catch (error) {
       try {
-        await this.redisService.getClient().del(this.otpKey(userId));
+        await this.redisService.getClient().del(otpKey);
       } catch (cleanupError) {
-        this.logger.error(`Could not clear OTP key for user ${userId}: ${this.errorMessage(cleanupError)}`);
+        this.logger.error(
+          `Could not clear OTP key for user ${userId}: ${this.errorMessage(cleanupError)}`,
+        );
       }
-      this.logger.error(`OTP delivery failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(
+        `OTP delivery failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
       throw error;
     }
   }
 
   // Executes an atomic OTP operation and translates Redis outages to a service error.
-  private async runOtpScript(script: string, keys: string[], ...args: string[]): Promise<number> {
+  private async runOtpScript(
+    script: string,
+    keys: string[],
+    ...args: string[]
+  ): Promise<number> {
     try {
-      const result = await this.redisService.getClient().eval(script, keys.length, ...keys, ...args);
+      const result = await this.redisService
+        .getClient()
+        .eval(script, keys.length, ...keys, ...args);
       return Number(result);
     } catch (error) {
-      this.logger.error(`OTP Redis operation failed: ${this.errorMessage(error)}`);
-      throw new ServiceUnavailableException('OTP service is unavailable. Please try again later.');
+      this.logger.error(
+        `OTP Redis operation failed: ${this.errorMessage(error)}`,
+      );
+      throw new ServiceUnavailableException(
+        'OTP service is unavailable. Please try again later.',
+      );
     }
   }
 
@@ -327,6 +1017,183 @@ export class AuthService {
   // hash so that issuing a new code cannot reset it.
   private otpTriesKey(userId: string) {
     return `auth:otp:tries:${userId}`;
+  }
+
+  private jobVerificationOtpKey(verificationId: string) {
+    return `jobs:phone-otp:${verificationId}`;
+  }
+
+  private jobVerificationOtpTriesKey(verificationId: string) {
+    return `jobs:phone-otp:tries:${verificationId}`;
+  }
+
+  private passwordAttemptsKey(userId: string) {
+    return `auth:password:attempts:${userId}`;
+  }
+
+  private passkeyRegistrationChallengeKey(userId: string) {
+    return `auth:passkey:registration:${userId}`;
+  }
+
+  private passkeyAuthenticationChallengeKey(userId: string) {
+    return `auth:passkey:authentication:${userId}`;
+  }
+
+  private async consumePasswordAttempt(userId: string): Promise<number> {
+    try {
+      const result = await this.redisService
+        .getClient()
+        .eval(
+          PASSWORD_ATTEMPT_SCRIPT,
+          1,
+          this.passwordAttemptsKey(userId),
+          String(this.passwordMaxAttempts),
+          String(this.passwordLockoutSeconds),
+        );
+      return Number(result);
+    } catch (error) {
+      this.logger.error(
+        `Credential login throttling failed: ${this.errorMessage(error)}`,
+      );
+      throw new ServiceUnavailableException(
+        'Credential sign-in is unavailable. Please try again later.',
+      );
+    }
+  }
+
+  private async clearPasswordAttempts(userId: string) {
+    try {
+      await this.redisService.getClient().del(this.passwordAttemptsKey(userId));
+    } catch (error) {
+      this.logger.error(
+        `Could not clear credential attempts for user ${userId}: ${this.errorMessage(error)}`,
+      );
+      throw new ServiceUnavailableException(
+        'Credential sign-in is unavailable. Please try again later.',
+      );
+    }
+  }
+
+  private async storePasskeyChallenge(key: string, challenge: string) {
+    try {
+      await this.redisService
+        .getClient()
+        .set(key, challenge, 'EX', this.passkeyChallengeTtlSeconds);
+    } catch (error) {
+      this.logger.error(
+        `Could not store passkey challenge: ${this.errorMessage(error)}`,
+      );
+      throw new ServiceUnavailableException(
+        'Passkey authentication is unavailable. Please try again later.',
+      );
+    }
+  }
+
+  private async consumePasskeyChallenge(key: string): Promise<string | null> {
+    try {
+      const challenge = await this.redisService
+        .getClient()
+        .eval(CONSUME_CHALLENGE_SCRIPT, 1, key);
+      return typeof challenge === 'string' ? challenge : null;
+    } catch (error) {
+      this.logger.error(
+        `Could not consume passkey challenge: ${this.errorMessage(error)}`,
+      );
+      throw new ServiceUnavailableException(
+        'Passkey authentication is unavailable. Please try again later.',
+      );
+    }
+  }
+
+  private webauthnConfiguration() {
+    const rpId = this.configService.get<string>('webauthn.rpId');
+    const origins = this.configService.get<string[]>('webauthn.origins', []);
+    if (!rpId || !origins.length) {
+      throw new ServiceUnavailableException(
+        'Passkey authentication is not configured. Set WEBAUTHN_RP_ID and WEBAUTHN_ORIGIN.',
+      );
+    }
+    return {
+      rpId,
+      origins,
+      rpName: this.configService.get<string>('webauthn.rpName', 'Fundi'),
+    };
+  }
+
+  private authenticatorTransports(transports: string[]): string[] {
+    const allowed = new Set(['ble', 'hybrid', 'internal', 'nfc', 'usb']);
+    return transports.filter((transport) => allowed.has(transport));
+  }
+
+  private ensureTechnicianPhoneVerified(user: {
+    role: string;
+    phoneVerifiedAt: Date | null;
+  }) {
+    if (user.role === UserRole.TECHNICIAN && !user.phoneVerifiedAt) {
+      throw new ForbiddenException(
+        'Verify the technician account phone with OTP before signing in.',
+      );
+    }
+  }
+
+  private assertPasswordLength(password: string | undefined) {
+    if (password === undefined) return;
+    const bytes = Buffer.byteLength(password, 'utf8');
+    if (bytes < 8 || bytes > 72) {
+      throw new BadRequestException(
+        'Passwords must be between 8 and 72 bytes when encoded as UTF-8.',
+      );
+    }
+  }
+
+  private assertPin(pin: string) {
+    if (!/^\d{4,6}$/.test(pin)) {
+      throw new BadRequestException('PINs must contain 4 to 6 digits.');
+    }
+  }
+
+  private normalizeDeviceId(deviceId?: string) {
+    const normalized = deviceId?.trim();
+    if (normalized && normalized.length > 255) {
+      throw new BadRequestException(
+        'The X-Device-Id header must not exceed 255 characters.',
+      );
+    }
+    return normalized || null;
+  }
+
+  private async createUserSession(
+    user: Pick<User, 'id' | 'fullName' | 'phoneNumber' | 'role'>,
+    deviceId?: string,
+  ) {
+    const normalizedDeviceId = this.normalizeDeviceId(deviceId);
+    const { sessionId, ...tokens } = await this.generateTokens(
+      user.id,
+      user.phoneNumber,
+      user.role,
+    );
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${user.id} FOR UPDATE`;
+      await tx.refreshToken.deleteMany({ where: { userId: user.id } });
+      await tx.refreshToken.create({
+        data: {
+          token: this.hash(tokens.refreshToken),
+          sessionId,
+          userId: user.id,
+          deviceId: normalizedDeviceId,
+          expiresAt: this.refreshTokenExpiresAt(),
+        },
+      });
+    });
+    return {
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        phoneNumber: user.phoneNumber,
+        role: user.role,
+      },
+      ...tokens,
+    };
   }
 
   // Absolute expiry stamp stored on the hash and treated as authoritative.
@@ -350,10 +1217,24 @@ export class AuthService {
     return error instanceof Error ? error.message : String(error);
   }
 
+  // Administrators never hold bearer tokens: their session is an httpOnly cookie
+  // issued only after password + authenticator verification. Letting an ADMIN
+  // account through the phone-OTP flow would mint a token that admin routes accept,
+  // turning a texted code into full dashboard access.
+  private rejectAdminPhoneLogin(role: string) {
+    if (role === UserRole.ADMIN) {
+      throw new ForbiddenException(
+        'Administrators must sign in through the admin portal.',
+      );
+    }
+  }
+
   // Ensures only active accounts can receive login codes or authenticate.
   private ensureActive(status: string) {
     if (status !== 'ACTIVE') {
-      throw new ForbiddenException('This account is not active. Please contact the administrator through the Contact Us page.');
+      throw new ForbiddenException(
+        'This account is not active. Please contact the administrator through the Contact Us page.',
+      );
     }
   }
 
@@ -362,18 +1243,32 @@ export class AuthService {
   private durationToSeconds(value: string): number {
     const match = /^(\d+)\s*(s|m|h|d|w|y)?$/i.exec(String(value).trim());
     if (!match) return 30 * 24 * 60 * 60;
-    const units: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 604800, y: 31536000 };
+    const units: Record<string, number> = {
+      s: 1,
+      m: 60,
+      h: 3600,
+      d: 86400,
+      w: 604800,
+      y: 31536000,
+    };
     return Number(match[1]) * units[(match[2] || 's').toLowerCase()];
   }
 
   // Expiry stored on a refresh-token row, kept in step with jwt.refreshExpiresIn.
   private refreshTokenExpiresAt(): Date {
-    return new Date(Date.now() + this.durationToSeconds(this.configService.get<string>('jwt.refreshExpiresIn', '30d')) * 1000);
+    return new Date(
+      Date.now() +
+        this.durationToSeconds(
+          this.configService.get<string>('jwt.refreshExpiresIn', '30d'),
+        ) *
+          1000,
+    );
   }
 
   // Hashes OTP and refresh-token secrets before storing them in the database.
   private hash(value: string) {
-    const secret = this.configService.get<string>('jwt.tokenHashSecret') ||
+    const secret =
+      this.configService.get<string>('jwt.tokenHashSecret') ||
       this.configService.get<string>('jwt.refreshSecret') ||
       'development_token_hash_secret_change_before_production';
     return createHmac('sha256', secret).update(value).digest('hex');
@@ -381,6 +1276,11 @@ export class AuthService {
 
   // Recognizes expected Prisma constraint errors for readable API responses.
   private isPrismaError(error: unknown, code: string): boolean {
-    return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === code
+    );
   }
 }

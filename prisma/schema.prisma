@@ -10,20 +10,31 @@ datasource db {
 }
 
 model User {
-  id                String             @id @default(uuid())
-  email             String?            @unique
-  phoneNumber       String             @unique
-  fullName          String
-  role              UserRole           @default(CUSTOMER)
-  status            UserStatus         @default(ACTIVE)
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  passwordHash      String?
-  totpSecret        String?
-  totpEnabledAt     DateTime?
-  customerJobs      Job[]              @relation("JobCustomer")
-  refreshTokens     RefreshToken[]
-  technicianProfile TechnicianProfile?
+  id                 String                      @id @default(uuid())
+  email              String?                     @unique
+  phoneNumber        String                      @unique
+  fullName           String
+  role               UserRole                    @default(CUSTOMER)
+  status             UserStatus                  @default(ACTIVE)
+  phoneVerifiedAt    DateTime?
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+  passwordHash       String?
+  pinHash            String?
+  totpSecret         String?
+  totpEnabledAt      DateTime?
+  customerJobs       Job[]                       @relation("JobCustomer")
+  refreshTokens      RefreshToken[]
+  technicianProfile  TechnicianProfile?
+  bookingPayments    BookingPayment[]
+  phoneVerifications CustomerPhoneVerification[]
+  chatMemberships    ChatRoomMember[]
+  chatMessageReads   ChatMessageRead[]
+  resolvedDisputes   Dispute[]                   @relation("DisputeResolver")
+  notifications      Notification[]
+  createdAds         Ad[]                        @relation("AdCreatedBy")
+  createdBroadcasts  Broadcast[]                 @relation("BroadcastCreatedBy")
+  passkeyCredentials PasskeyCredential[]
 
   @@map("users")
 }
@@ -35,20 +46,49 @@ model RefreshToken {
   expiresAt DateTime
   createdAt DateTime @default(now())
   sessionId String   @unique @default(uuid())
+  deviceId  String?
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("refresh_tokens")
 }
 
+model PasskeyCredential {
+  id           String   @id @default(uuid())
+  credentialId String   @unique
+  publicKey    String
+  counter      BigInt   @default(0)
+  transports   String[] @default([])
+  userId       String
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("passkey_credentials")
+}
+
 model ServiceCategory {
-  id          String               @id @default(uuid())
-  name        String               @unique
-  slug        String               @unique
-  isActive    Boolean              @default(true)
-  createdAt   DateTime             @default(now())
-  jobs        Job[]                @relation("JobServiceCategory")
-  technicians TechnicianCategory[]
-  documents   TechnicianDocument[]
+  id                String               @id @default(uuid())
+  name              String               @unique
+  slug              String               @unique
+  description       String               @default("")
+  /// Service group shown in the admin dashboard: "Home Services" or "Car Services".
+  category          String               @default("Home Services")
+  /// Optional extra words customers can use to find this service.
+  keywords          String               @default("")
+  /// Booking (visit/diagnostic) fee charged for this service, in RWF.
+  visitFee          Int                  @default(0)
+  /// Booking fee used when the customer marks the request as an emergency, in RWF.
+  emergencyVisitFee Int                  @default(0)
+  /// Booking fee charged for an SOS request, in RWF.
+  sosBookingFee     Int?
+  icon              String?
+  isActive          Boolean              @default(true)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  jobs              Job[]                @relation("JobServiceCategory")
+  technicians       TechnicianCategory[]
+  documents         TechnicianDocument[]
+  bookingPayments   BookingPayment[]
 
   @@map("service_categories")
 }
@@ -56,15 +96,20 @@ model ServiceCategory {
 model TechnicianProfile {
   id                      String                    @id @default(uuid())
   userId                  String                    @unique
+  nationalIdEncrypted     String?
+  nationalIdHash          String?                   @unique
+  nationalIdLast4         String?
   baseAddress             String
-  baseLatitude            Float
-  baseLongitude           Float
+  baseLatitude            Float?
+  baseLongitude           Float?
   verificationStatus      VerificationStatus        @default(PENDING)
   createdAt               DateTime                  @default(now())
   updatedAt               DateTime                  @updatedAt
   gender                  TechnicianGender
   profilePictureMimeType  String?
   availabilityStatus      TechnicianAvailability    @default(OFFLINE)
+  rejectionCount          Int                       @default(0)
+  cancellationCount       Int                       @default(0)
   baseLocation            Unsupported("geography")?
   publicLocationLabel     String?
   profilePictureObjectKey String?
@@ -128,40 +173,67 @@ model TechnicianDocument {
 }
 
 model Job {
-  id                 String                    @id @default(uuid())
-  customerId         String
-  technicianId       String?
-  serviceCategoryId  String?
-  otherServiceName   String?
-  description        String
-  locationAddress    String
-  latitude           Float
-  longitude          Float
-  location           Unsupported("geography")?
-  offeredAmount      Int
-  currency           String                    @default("RWF")
-  priority           JobPriority               @default(NORMAL)
-  status             JobStatus                 @default(OPEN)
-  dispatchStatus     JobDispatchStatus         @default(PENDING)
-  dispatchRound      Int                       @default(1)
-  customerProgress   JobProgressStatus         @default(PENDING)
-  technicianProgress JobProgressStatus         @default(PENDING)
-  assignedAt         DateTime?
-  completedAt        DateTime?
-  createdAt          DateTime                  @default(now())
-  updatedAt          DateTime                  @updatedAt
-  assignmentHistory  JobAssignmentHistory[]
-  media              JobMedia[]
-  offers             JobOffer[]
-  conversation       Conversation?
-  customer           User                      @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
-  serviceCategory    ServiceCategory?          @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id])
-  technician         TechnicianProfile?        @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
+  id                          String                     @id @default(uuid())
+  customerId                  String
+  technicianId                String?
+  serviceCategoryId           String?
+  otherServiceName            String?
+  description                 String
+  locationAddress             String
+  latitude                    Float
+  longitude                   Float
+  location                    Unsupported("geography")?
+  offeredAmount               Int
+  currency                    String                     @default("RWF")
+  priority                    JobPriority                @default(NORMAL)
+  requestType                 JobRequestType             @default(NORMAL)
+  status                      JobStatus                  @default(OPEN)
+  cooperationStatus           JobCooperationStatus       @default(PENDING)
+  dispatchStatus              JobDispatchStatus          @default(PENDING)
+  dispatchRound               Int                        @default(1)
+  customerProgress            JobProgressStatus          @default(PENDING)
+  technicianProgress          JobProgressStatus          @default(PENDING)
+  customerConfirmedAt         DateTime?
+  technicianConfirmedAt       DateTime?
+  customerHiddenAt            DateTime?
+  technicianHiddenAt          DateTime?
+  customerPauseRequestedAt    DateTime?
+  technicianPauseRequestedAt  DateTime?
+  customerResumeRequestedAt   DateTime?
+  technicianResumeRequestedAt DateTime?
+  assignedAt                  DateTime?
+  completedAt                 DateTime?
+  ratingOverall               Int?
+  ratingQuality               Int?
+  ratingProfessionalism       Int?
+  ratingArrival               Int?
+  ratingCommunication         Int?
+  ratingValue                 Int?
+  ratingComment               String?
+  ratedAt                     DateTime?
+  createdAt                   DateTime                   @default(now())
+  updatedAt                   DateTime                   @updatedAt
+  assignmentHistory           JobAssignmentHistory[]
+  media                       JobMedia[]
+  offers                      JobOffer[]
+  conversation                Conversation?
+  bookingPayment              BookingPayment?
+  phoneVerificationId         String?                    @unique
+  phoneVerification           CustomerPhoneVerification? @relation(fields: [phoneVerificationId], references: [id], onDelete: SetNull)
+  cancellationRequests        JobCancellationRequest[]
+  cancellationReason          String?
+  customer                    User                       @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory             ServiceCategory?           @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id])
+  technician                  TechnicianProfile?         @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
+  dispute                     Dispute?
+  chatRooms                   ChatRoom[]
 
   @@index([customerId, createdAt])
   @@index([technicianId, status, updatedAt])
   @@index([status, dispatchStatus, priority, createdAt])
   @@index([serviceCategoryId])
+  @@index([customerId, customerHiddenAt, createdAt])
+  @@index([technicianId, technicianHiddenAt, updatedAt])
   @@map("jobs")
 }
 
@@ -187,6 +259,128 @@ model JobOffer {
   @@index([jobId, round, status, matchScore])
   @@index([technicianId, status, updatedAt])
   @@map("job_offers")
+}
+
+model BookingPayment {
+  id                       String               @id @default(uuid())
+  customerId               String
+  serviceCategoryId        String
+  jobId                    String?              @unique
+  externalPaymentId        String               @unique
+  paymentKeyId             String
+  signature                String
+  phoneNumber              String
+  amount                   Int
+  requestType              JobRequestType       @default(NORMAL)
+  status                   BookingPaymentStatus @default(VALID)
+  paidAt                   DateTime             @default(now())
+  validUntil               DateTime
+  remainingValiditySeconds Int?
+  extensionCount           Int                  @default(0)
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+  customer                 User                 @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory          ServiceCategory      @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
+  job                      Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, paidAt])
+  @@index([status, validUntil])
+  @@map("booking_payments")
+}
+
+/// A promotion card managed by administrators. Landing-page ads are public and
+/// anonymous; `placement` decides which surface renders them and `audience` narrows
+/// them to a role. `startsAt`/`endsAt` schedule visibility without an admin having to
+/// flip `isActive` by hand, and the impression/click counters feed the dashboard.
+model Ad {
+  id               String      @id @default(uuid())
+  productId        Int?
+  title            String
+  description      String
+  imageUrl         String?
+  imageKey         String?
+  imageContentType String?
+  imageAlt         String?
+  callToAction     String?
+  badge            AdBadge     @default(LIVE)
+  placement        AdPlacement @default(LANDING_PRODUCT)
+  audience         AdAudience  @default(ALL)
+  isActive         Boolean     @default(true)
+  startsAt         DateTime?
+  endsAt           DateTime?
+  priority         Int         @default(0)
+  impressions      Int         @default(0)
+  clicks           Int         @default(0)
+  createdById      String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  createdBy        User?       @relation("AdCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([placement, isActive, priority])
+  @@index([startsAt, endsAt])
+  @@map("ads")
+}
+
+/// One administrator-composed message sent to a group of active users. `roles` and
+/// `channels` are the audience and delivery decisions made in the dashboard; the
+/// counts are frozen when the broadcast is created so the history stays meaningful
+/// even after users join or leave.
+model Broadcast {
+  id                  String             @id @default(uuid())
+  title               String
+  message             String
+  roles               BroadcastRole[]    @default([])
+  channels            BroadcastChannel[] @default([])
+  status              BroadcastStatus    @default(SENDING)
+  mode                String             @default("queued")
+  userCount           Int                @default(0)
+  smsRecipientCount   Int                @default(0)
+  inAppRecipientCount Int                @default(0)
+  smsSentCount        Int                @default(0)
+  smsFailedCount      Int                @default(0)
+  inAppSentCount      Int                @default(0)
+  error               String?
+  sentAt              DateTime?
+  createdById         String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  createdBy           User?              @relation("BroadcastCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@map("broadcasts")
+}
+
+model CustomerPhoneVerification {
+  id          String    @id @default(uuid())
+  customerId  String
+  phoneNumber String
+  expiresAt   DateTime
+  verifiedAt  DateTime?
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  customer    User      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  job         Job?
+
+  @@index([customerId, createdAt])
+  @@map("customer_phone_verifications")
+}
+
+model JobCancellationRequest {
+  id           String                    @id @default(uuid())
+  jobId        String
+  actorId      String
+  requester    CancellationRequester
+  reason       String
+  status       CancellationRequestStatus @default(PENDING)
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+  createdAt    DateTime                  @default(now())
+  job          Job                       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, status])
+  @@index([status, createdAt])
+  @@map("job_cancellation_requests")
 }
 
 model JobMedia {
@@ -217,10 +411,129 @@ model JobAssignmentHistory {
   createdAt      DateTime           @default(now())
   job            Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
   technician     TechnicianProfile? @relation(fields: [technicianId], references: [id])
+  chatRoom       ChatRoom?
 
   @@index([jobId, acceptedAt])
   @@index([technicianId, acceptedAt])
   @@map("job_assignment_history")
+}
+
+model ChatRoom {
+  id                  String               @id @default(uuid())
+  jobId               String
+  assignmentHistoryId String               @unique
+  status              ChatRoomStatus       @default(ACTIVE)
+  disabledAt          DateTime?
+  disabledById        String?
+  disabledReason      String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  job                 Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  assignmentHistory   JobAssignmentHistory @relation(fields: [assignmentHistoryId], references: [id], onDelete: Cascade)
+  members             ChatRoomMember[]
+  messages            ChatMessage[]
+
+  @@index([jobId, createdAt])
+  @@index([status, updatedAt])
+  @@map("chat_rooms")
+}
+
+model ChatRoomMember {
+  id          String    @id @default(uuid())
+  roomId      String
+  userId      String
+  role        UserRole
+  blockedAt   DateTime?
+  blockReason String?
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  room        ChatRoom  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@index([userId, archivedAt, createdAt])
+  @@map("chat_room_members")
+}
+
+model ChatMessage {
+  id               String            @id @default(uuid())
+  roomId           String
+  senderId         String?
+  senderRole       ChatSenderRole
+  type             ChatMessageType
+  text             String?
+  objectKey        String?           @unique
+  mimeType         String?
+  originalFileName String?
+  sizeBytes        Int?
+  durationSeconds  Float?
+  editedAt         DateTime?
+  deletedAt        DateTime?
+  deletedById      String?
+  isTombstone      Boolean           @default(false)
+  blockedAt        DateTime?
+  blockedById      String?
+  blockReason      String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  room             ChatRoom          @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  reads            ChatMessageRead[]
+
+  @@index([roomId, createdAt, id])
+  @@index([senderId, createdAt])
+  @@map("chat_messages")
+}
+
+model ChatMessageRead {
+  id        String      @id @default(uuid())
+  messageId String
+  userId    String
+  readAt    DateTime    @default(now())
+  message   ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([userId, readAt])
+  @@map("chat_message_reads")
+}
+
+/// A disagreement between the customer and the technician on a job. The admin
+/// reviews the job and chat, then records a resolution; the record is kept after
+/// it is resolved so the decision stays auditable.
+model Dispute {
+  id           String          @id @default(uuid())
+  jobId        String          @unique
+  reason       String
+  openedBy     DisputeOpenedBy
+  openedAt     DateTime        @default(now())
+  outcome      DisputeOutcome?
+  amount       Int?
+  note         String?
+  resolvedAt   DateTime?
+  resolvedById String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  job          Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  resolvedBy   User?           @relation("DisputeResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([resolvedAt, openedAt])
+  @@map("disputes")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
 }
 
 model AuditLog {
@@ -244,18 +557,18 @@ model AuditLog {
 /// the two sides agree, decline, or the negotiation lapses. Chat is limited to
 /// agreeing a price.
 model Conversation {
-  id            String              @id @default(uuid())
-  jobId         String              @unique
-  status        ConversationStatus  @default(PENDING)
-  currency      String              @default("RWF")
+  id            String                @id @default(uuid())
+  jobId         String                @unique
+  status        ConversationStatus    @default(PENDING)
+  currency      String                @default("RWF")
   agreedAmount  Int?
-  offerCount    Int                 @default(0)
+  offerCount    Int                   @default(0)
   declinedById  String?
   declineReason String?
-  startedAt     DateTime            @default(now())
-  lastMessageAt DateTime            @default(now())
+  startedAt     DateTime              @default(now())
+  lastMessageAt DateTime              @default(now())
   closedAt      DateTime?
-  job           Job                 @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  job           Job                   @relation(fields: [jobId], references: [id], onDelete: Cascade)
   messages      ConversationMessage[]
   offers        PriceOffer[]
 
@@ -370,12 +683,42 @@ enum JobPriority {
   URGENT
 }
 
+enum JobRequestType {
+  NORMAL
+  SOS
+}
+
 enum JobStatus {
   OPEN
   ASSIGNED
+  PAUSED
   COMPLETED
   FAILED
   CANCELLED
+}
+
+enum JobCooperationStatus {
+  PENDING
+  CONFIRMED
+}
+
+enum BookingPaymentStatus {
+  VALID
+  EXPIRED
+  PAUSED
+  RESUMED
+  COMPLETED
+}
+
+enum CancellationRequester {
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum CancellationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum JobDispatchStatus {
@@ -431,6 +774,28 @@ enum ConversationSender {
   SYSTEM
 }
 
+enum ChatRoomStatus {
+  ACTIVE
+  DISABLED
+  COMPLETED
+}
+
+enum ChatSenderRole {
+  CUSTOMER
+  TECHNICIAN
+  ADMIN
+  SYSTEM
+}
+
+enum ChatMessageType {
+  TEXT
+  VOICE_NOTE
+  FILE
+  IMAGE
+  VIDEO
+  SYSTEM
+}
+
 enum ConversationMessageType {
   SERVICE_REQUEST
   TEXT
@@ -446,4 +811,68 @@ enum PriceOfferStatus {
   DECLINED
   SUPERSEDED
   EXPIRED
+}
+
+enum DisputeOpenedBy {
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum DisputeOutcome {
+  CUSTOMER
+  TECHNICIAN
+  PARTIAL
+}
+
+enum NotificationType {
+  JOB_OFFER
+  JOB_ASSIGNED
+  JOB_ACCEPTED
+  JOB_COMPLETED
+  JOB_CANCELLED
+  CONVERSATION_MESSAGE
+  OFFER_SENT
+  OFFER_ACCEPTED
+  OFFER_DECLINED
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+  DOCUMENT_APPROVED
+  DOCUMENT_REJECTED
+  BROADCAST
+  SYSTEM
+}
+
+enum AdBadge {
+  LIVE
+  COMING_SOON
+}
+
+enum AdPlacement {
+  LANDING_PRODUCT
+  LANDING_HERO
+  MOBILE_HOME
+  MOBILE_JOB_FEED
+}
+
+enum AdAudience {
+  ALL
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum BroadcastRole {
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum BroadcastChannel {
+  SMS
+  IN_APP
+}
+
+enum BroadcastStatus {
+  SENDING
+  SENT
+  PARTIAL
+  FAILED
 }

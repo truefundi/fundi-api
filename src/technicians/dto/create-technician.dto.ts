@@ -10,25 +10,35 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { UpdateTechnicianProfileDto } from './update-technician-profile.dto';
+import {
+  normalizeRwandaPhoneNumber,
+  RWANDA_PHONE_NUMBER_PATTERN,
+} from '../../common/validation/rwanda-phone-number';
+import { FULL_NAME_PATTERN } from '../../common/validation/full-name';
 
 // Validates the account identity an administrator supplies for a new technician.
 export class CreateTechnicianUserDto {
   @IsString()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().replace(/\s+/gu, ' ') : value,
+  )
   @MinLength(2)
   @MaxLength(120)
+  @Matches(FULL_NAME_PATTERN)
   fullName!: string;
 
   // Normalizes common display formatting before validating a phone number.
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.replace(/[\s()-]/g, '') : value,
-  )
+  @Transform(({ value }) => normalizeRwandaPhoneNumber(value))
   @IsString()
-  @MinLength(7)
-  @MaxLength(20)
-  @Matches(/^\+?[0-9]+$/)
+  @MinLength(13)
+  @MaxLength(13)
+  @Matches(RWANDA_PHONE_NUMBER_PATTERN)
   phoneNumber!: string;
 
   @IsOptional()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
   @IsEmail()
   @MaxLength(254)
   email?: string;

@@ -38,7 +38,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.bearerToken(client.handshake.headers.authorization);
     if (typeof token !== 'string' || !token) return;
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: string; sid: string }>(
+      const payload = await this.jwt.verifyAsync<{ sub: string; sid: string; typ?: string }>(
         token,
         {
           secret:
@@ -46,7 +46,8 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             'default_dev_access_secret_32chars',
         },
       );
-      if (!payload.sub || !payload.sid) return;
+      // Only access tokens are accepted here, never a refresh token presented as one.
+      if (!payload.sub || !payload.sid || payload.typ !== 'access') return;
       const session = await this.prisma.refreshToken.findUnique({
         where: { sessionId: payload.sid },
         select: { userId: true, expiresAt: true },
@@ -62,7 +63,11 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         where: { id: payload.sub },
         select: { id: true, role: true, status: true },
       });
-      if (user?.role === 'TECHNICIAN' && user.status === 'ACTIVE') {
+      if (!user || user.status !== 'ACTIVE') {
+        return;
+      }
+      await client.join(this.userRoom(user.id));
+      if (user.role === 'TECHNICIAN') {
         await client.join(this.technicianRoom(user.id));
       }
     } catch (error) {
@@ -97,8 +102,22 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.to(this.technicianRoom(userId)).emit(event, data);
   }
 
+  notifyUser(userId: string, event: string, data: unknown) {
+    if (!this.server) {
+      this.logger.warn(
+        `Cannot emit ${event}; Socket.IO server is not initialized.`,
+      );
+      return;
+    }
+    this.server.to(this.userRoom(userId)).emit(event, data);
+  }
+
   private technicianRoom(userId: string) {
     return `technician:${userId}`;
+  }
+
+  private userRoom(userId: string) {
+    return `user:${userId}`;
   }
 
   private bearerToken(authorization?: string) {

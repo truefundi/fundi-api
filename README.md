@@ -115,6 +115,7 @@ backend/
 │   └── main.ts               # Application entry point
 ├── docs/
 │   ├── admin-authentication.md # Admin email + password and 2FA endpoint guide
+│   ├── booking-payments.md    # Mock category booking payment and validity guide
 │   ├── authentication.md     # Phone OTP authentication endpoint guide
 │   ├── implementation-roadmap.md # Ordered daily feature delivery plan
 │   ├── jobs.md               # Customer jobs, technician offers, and admin API guide
@@ -162,6 +163,7 @@ Detailed request formats and expected responses are documented separately:
 - [Importable Postman collection](docs/fundi-api.postman_collection.json)
 - [Phone authentication and OTP endpoints](docs/authentication.md)
 - [Admin dashboard authentication and two-factor endpoints](docs/admin-authentication.md)
+- [Booking payments and validity](docs/booking-payments.md)
 - [Service categories endpoints](docs/service-categories.md)
 - [Technician management and discovery endpoints](docs/technician-onboarding.md)
 - [User management endpoints](docs/users.md)

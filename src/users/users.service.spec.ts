@@ -361,7 +361,7 @@ describe('UsersService', () => {
 
     // The three columns the select exists to keep out, stated explicitly so the
     // intent survives even if someone reshapes the select above.
-    it('never requests passwordHash, totpSecret, or totpEnabledAt', async () => {
+    it('never requests credential hashes or TOTP secrets', async () => {
       const { service, prisma } = createService();
 
       await service.create({ phoneNumber: '+250788000001', fullName: 'New User' });
@@ -383,6 +383,7 @@ describe('UsersService', () => {
       for (const [args] of allCalls) {
         const selected = Object.keys(args?.select ?? {});
         expect(selected).not.toContain('passwordHash');
+        expect(selected).not.toContain('pinHash');
         expect(selected).not.toContain('totpSecret');
         expect(selected).not.toContain('totpEnabledAt');
       }

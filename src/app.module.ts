@@ -14,6 +14,12 @@ import { CatalogModule } from './catalog/catalog.module';
 import { TechniciansModule } from './technicians/technicians.module';
 import { AdminModule } from './admin/admin.module';
 import { ConversationsModule } from './conversations/conversations.module';
+import { PaymentsModule } from './payments/payments.module';
+import { DisputesModule } from './disputes/disputes.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { ChatModule } from './chat/chat.module';
+import { AdsModule } from './ads/ads.module';
+import { BroadcastsModule } from './broadcasts/broadcasts.module';
 
 @Module({
   imports: [
@@ -32,6 +38,12 @@ import { ConversationsModule } from './conversations/conversations.module';
     TechniciansModule,
     AdminModule,
     ConversationsModule,
+    PaymentsModule,
+    DisputesModule,
+    NotificationsModule,
+    ChatModule,
+    AdsModule,
+    BroadcastsModule,
     HealthModule,
   ],
   controllers: [AppController],

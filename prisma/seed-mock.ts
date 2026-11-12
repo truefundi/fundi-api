@@ -1,35 +1,7 @@
 import { PrismaClient, UserRole, UserStatus, TechnicianGender, VerificationStatus, TechnicianAvailability, PaymentMethod, DocumentType, CertificateType, DocumentStatus, JobStatus, JobPriority, JobDispatchStatus, JobProgressStatus, JobOfferStatus } from '@prisma/client';
-import { randomUUID, createHash, randomBytes, createCipheriv, createHmac } from 'crypto';
-import { encryptionKeyFromHex } from '../src/common/crypto/aes-gcm';
+import { randomUUID } from 'crypto';
 
 const prisma = new PrismaClient();
-
-// National ID crypto helpers. The key is read from the environment only, so the
-// seeder can never write national IDs the API would be unable to decrypt.
-const NATIONAL_ID_KEY = encryptionKeyFromHex(
-  process.env.NATIONAL_ID_ENCRYPTION_KEY,
-  'NATIONAL_ID_ENCRYPTION_KEY',
-);
-
-function normalizeNid(value: string): string {
-  return value.normalize('NFKC').trim().replace(/[\s-]/g, '').toUpperCase();
-}
-
-function encryptNid(value: string): string {
-  const normalized = normalizeNid(value);
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', NATIONAL_ID_KEY, iv);
-  const encrypted = Buffer.concat([cipher.update(normalized, 'utf8'), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  return Buffer.concat([iv, authTag, encrypted]).toString('base64url');
-}
-
-function hashNid(value: string): string {
-  return createHmac('sha256', NATIONAL_ID_KEY)
-    .update('fundi:national-id:v1:')
-    .update(normalizeNid(value))
-    .digest('hex');
-}
 
 async function main() {
   console.log('Starting mock data seeding...');
@@ -58,7 +30,6 @@ async function main() {
   const technicians = [];
   for (let i = 0; i < 8; i++) {
     const cat = categories[i % categories.length];
-    const nid = `11990000${String(1000 + i).padStart(4, '0')}`;
     const techUser = await prisma.user.create({
       data: {
         id: randomUUID(),
@@ -76,8 +47,6 @@ async function main() {
         id: randomUUID(),
         userId: techUser.id,
         gender: i % 2 === 0 ? TechnicianGender.MALE : TechnicianGender.FEMALE,
-        nationalIdEncrypted: encryptNid(nid),
-        nationalIdHash: hashNid(nid),
         baseAddress: `Kigali, District ${i + 1}`,
         publicLocationLabel: `Area ${i + 1}, Kigali`,
         baseLatitude: -1.9536 + (i * 0.01),

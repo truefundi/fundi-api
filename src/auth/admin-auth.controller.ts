@@ -16,6 +16,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminLoginDto } from './dto/admin-login.dto';
+import { ChangeAdminPasswordDto } from './dto/change-admin-password.dto';
 import { VerifyAdminTwoFactorDto } from './dto/admin-2fa.dto';
 import {
   AdminDevOtpRequestDto,
@@ -245,7 +246,6 @@ export class AdminAuthController {
   // half-finished sign-in.
   @Get('me')
   @Auth(UserRole.ADMIN)
-  @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Get the authenticated administrator' })
   @ApiResponse({
     status: 200,
@@ -256,6 +256,37 @@ export class AdminAuthController {
   @ApiForbidden('The caller is not an administrator.')
   async me(@CurrentUser() user: AuthUser) {
     return this.adminAuthService.getAdminUser(user.id);
+  }
+
+  // Changes the signed-in administrator's password after proving the current one.
+  // Every refresh token is revoked, so other devices are signed out.
+  @Post('change-password')
+  @HttpCode(HttpStatus.OK)
+  @Auth(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Change the signed-in administrator password',
+    description:
+      'Requires the current password. The new one follows the same rules as the sign-in form: at least 8 characters, one uppercase letter, one number, and one non-alphanumeric character.\n\n' +
+      'Every stored refresh session is revoked, so other devices are signed out and the access cookie stops working on the next request. There is no password-reset flow: an administrator who has lost the current password must be re-provisioned with the seed script.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'The password was changed and all sessions were revoked',
+    schema: {
+      example: {
+        message: 'Password updated. Sign in again with the new password.',
+        sessionsRevoked: true,
+      },
+    },
+  })
+  @ApiValidationFailed()
+  @ApiUnauthorized('The current password is incorrect, or the session is invalid.')
+  @ApiForbidden('The caller is not an active administrator.')
+  async changePassword(
+    @CurrentUser() user: AuthUser,
+    @Body() body: ChangeAdminPasswordDto,
+  ) {
+    return this.adminAuthService.changePassword(user.id, body);
   }
 
   // Writes the access and refresh cookies. The refresh cookie's lifetime comes from

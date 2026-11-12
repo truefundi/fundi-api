@@ -10,6 +10,12 @@ describe('CatalogService', () => {
     name: 'Plumbing',
     slug: 'plumbing',
     isActive: true,
+    description: '',
+    category: 'Home Services',
+    keywords: 'leak repair, pipes',
+    visitFee: 1000,
+    emergencyVisitFee: 0,
+    sosBookingFee: 2500,
     createdAt: new Date('2026-10-01T10:00:00.000Z'),
   };
 
@@ -19,6 +25,7 @@ describe('CatalogService', () => {
       serviceCategory: {
         create: jest.fn().mockResolvedValue(category),
         update: jest.fn().mockResolvedValue(category),
+        findUnique: jest.fn().mockResolvedValue(category),
       },
     };
     const prisma = {
@@ -55,18 +62,31 @@ describe('CatalogService', () => {
     );
   });
 
-  // Returns all matching public categories for partial-name search.
-  it('searches active category names case-insensitively', async () => {
+  // Searches active categories by name and optional search keywords.
+  it('searches active category names and keywords case-insensitively', async () => {
     const { service, prisma } = createService();
     await service.searchActive('  PLUMB  ');
     expect(prisma.serviceCategory.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           isActive: true,
-          name: { contains: 'PLUMB', mode: 'insensitive' },
+          OR: [
+            { name: { contains: 'PLUMB', mode: 'insensitive' } },
+            { keywords: { contains: 'PLUMB', mode: 'insensitive' } },
+          ],
         },
       }),
     );
+  });
+
+  it('returns bookingFee and keywords in public category responses', async () => {
+    const { service } = createService();
+    const [result] = await service.listActive();
+    expect(result).toMatchObject({
+      bookingFee: 1000,
+      keywords: 'leak repair, pipes',
+    });
+    expect(result).not.toHaveProperty('visitFee');
   });
 
   // Fails clearly when a public lookup targets an inactive or missing category.
@@ -81,9 +101,27 @@ describe('CatalogService', () => {
   // Trims names, derives slugs, and writes the audit entry in the same transaction.
   it('creates a normalized category and audit row', async () => {
     const { service, transaction, audit } = createService();
-    await service.create({ name: '  Home Repair  ' }, 'admin-1');
+    await service.create(
+      {
+        name: '  Home Repair  ',
+        keywords: '  handyman, general repairs ',
+        bookingFee: 100,
+      },
+      'admin-1',
+    );
     expect(transaction.serviceCategory.create).toHaveBeenCalledWith({
-      data: { name: 'Home Repair', slug: 'home-repair' },
+      data: {
+        name: 'Home Repair',
+        slug: 'home-repair',
+        description: '',
+        category: 'Home Services',
+        keywords: 'handyman, general repairs',
+        visitFee: 100,
+        emergencyVisitFee: 0,
+        isActive: true,
+        sosBookingFee: null,
+        icon: null,
+      },
     });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -95,12 +133,90 @@ describe('CatalogService', () => {
     );
   });
 
+  // Persists the dashboard's editable booking fees and service metadata.
+  it('updates booking fees and records the change', async () => {
+    const { service, transaction, audit } = createService();
+    await service.update(
+      category.id,
+      {
+        description: ' Leaks and pipe repairs. ',
+        category: 'Home Services',
+        bookingFee: 75,
+        emergencyVisitFee: 110,
+        sosBookingFee: 2500,
+        keywords: 'pipe repair',
+      },
+      'admin-1',
+    );
+    expect(transaction.serviceCategory.update).toHaveBeenCalledWith({
+      where: { id: category.id },
+      data: {
+        name: undefined,
+        slug: undefined,
+        description: 'Leaks and pipe repairs.',
+        category: 'Home Services',
+        visitFee: 75,
+        keywords: 'pipe repair',
+        emergencyVisitFee: 110,
+        isActive: undefined,
+        sosBookingFee: 2500,
+        icon: undefined,
+      },
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'UPDATED',
+        metadata: {
+          description: 'Leaks and pipe repairs.',
+          category: 'Home Services',
+          bookingFee: 75,
+          emergencyVisitFee: 110,
+          sosBookingFee: 2500,
+          keywords: 'pipe repair',
+        },
+      }),
+      transaction,
+    );
+  });
+
+  it('clears a nullable category icon when explicitly set to null', async () => {
+    const { service, transaction } = createService();
+    await service.update(category.id, { icon: null }, 'admin-1');
+
+    expect(transaction.serviceCategory.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ icon: null }),
+      }),
+    );
+  });
+
   // Rejects updates that do not change any category field.
   it('rejects an empty category update', async () => {
     const { service } = createService();
     await expect(
       service.update(category.id, {}, 'admin-1'),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('requires an SOS booking fee higher than the normal fee', async () => {
+    const { service, transaction } = createService();
+
+    await expect(
+      service.create(
+        { name: 'Emergency Plumbing', bookingFee: 1000, sosBookingFee: 1000 },
+        'admin-1',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.serviceCategory.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an update that makes the SOS fee no longer higher than normal', async () => {
+    const { service, transaction } = createService();
+
+    await expect(
+      service.update(category.id, { bookingFee: 3000 }, 'admin-1'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.serviceCategory.update).not.toHaveBeenCalled();
   });
 
   // Soft-deactivates categories to preserve existing profile/job references.

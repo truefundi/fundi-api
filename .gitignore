@@ -60,3 +60,5 @@ uploads/
 
 # Local scripts that are not part of the product
 scripts/
+
+.github/agents

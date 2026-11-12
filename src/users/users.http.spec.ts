@@ -30,10 +30,17 @@ describe('Users endpoints (HTTP)', () => {
   // Stand-in for AuthGuard('jwt'): a request carries its role in a test header.
   const testAuthGuard = {
     canActivate: (context: ExecutionContext) => {
-      const req = context.switchToHttp().getRequest<{ headers: Record<string, string>; user?: unknown }>();
+      const req = context.switchToHttp().getRequest<{
+        headers: Record<string, string>;
+        user?: unknown;
+        authMethod?: 'bearer' | 'cookie';
+      }>();
       const role = req.headers['x-test-role'];
       if (!role) throw new UnauthorizedException();
       req.user = { userId: knownId, role };
+      // Mirrors JwtStrategy: the way the credential arrived is recorded so
+      // RolesGuard can refuse a bearer token carrying the ADMIN role.
+      req.authMethod = req.headers['x-test-auth-method'] === 'bearer' ? 'bearer' : 'cookie';
       return true;
     },
   };
@@ -89,6 +96,17 @@ describe('Users endpoints (HTTP)', () => {
       await request(app.getHttpServer())
         .get('/api/v1/users')
         .set('x-test-role', 'CUSTOMER')
+        .expect(403);
+      expect(usersService.findAll).not.toHaveBeenCalled();
+    });
+
+    // An ADMIN identity carried by a bearer token has not passed the password and
+    // authenticator checks, so the admin cookie is required.
+    it('rejects an ADMIN bearer token with 403 on GET /users', async () => {
+      await request(app.getHttpServer())
+        .get('/api/v1/users')
+        .set('x-test-role', 'ADMIN')
+        .set('x-test-auth-method', 'bearer')
         .expect(403);
       expect(usersService.findAll).not.toHaveBeenCalled();
     });

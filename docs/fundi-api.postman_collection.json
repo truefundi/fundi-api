@@ -59,6 +59,11 @@
       "type": "string"
     },
     {
+      "key": "catalogCategoryId",
+      "value": "",
+      "type": "string"
+    },
+    {
       "key": "technicianId",
       "value": "",
       "type": "string"
@@ -855,7 +860,7 @@
       "name": "Service Catalog",
       "item": [
         {
-          "name": "List active categories",
+          "name": "List active parent categories",
           "request": {
             "method": "GET",
             "header": [],
@@ -868,11 +873,11 @@
           "response": []
         },
         {
-          "name": "Search active categories",
+          "name": "Search active parent categories",
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/api/v1/catalog/categories/search?name=plumb",
+            "url": "{{baseUrl}}/api/v1/catalog/categories/search?name=home",
             "description": "",
             "auth": {
               "type": "noauth"
@@ -881,11 +886,11 @@
           "response": []
         },
         {
-          "name": "Get active category by ID",
+          "name": "Get active parent category by ID",
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/api/v1/catalog/categories/{{categoryId}}",
+            "url": "{{baseUrl}}/api/v1/catalog/categories/{{catalogCategoryId}}",
             "description": "",
             "auth": {
               "type": "noauth"
@@ -894,7 +899,7 @@
           "response": []
         },
         {
-          "name": "Create category (admin)",
+          "name": "Create parent category (admin)",
           "request": {
             "method": "POST",
             "header": [
@@ -911,7 +916,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Home Repair\",\n  \"category\": \"Home Services\",\n  \"description\": \"General household repairs.\",\n  \"visitFee\": 1000,\n  \"emergencyVisitFee\": 1500,\n  \"sosBookingFee\": 2500\n}",
+              "raw": "{\n  \"name\": \"Home Services\",\n  \"description\": \"Repairs and maintenance for homes.\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -922,7 +927,7 @@
           "response": []
         },
         {
-          "name": "List all categories (admin)",
+          "name": "List all parent categories (admin)",
           "request": {
             "method": "GET",
             "header": [],
@@ -935,11 +940,11 @@
           "response": []
         },
         {
-          "name": "Find category by exact name (admin)",
+          "name": "Find parent category by exact name (admin)",
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/api/v1/catalog/admin/categories/by-name?name=Home%20Repair",
+            "url": "{{baseUrl}}/api/v1/catalog/admin/categories/by-name?name=Home%20Services",
             "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
             "auth": {
               "type": "noauth"
@@ -948,11 +953,11 @@
           "response": []
         },
         {
-          "name": "Get any category by ID (admin)",
+          "name": "Get any parent category by ID (admin)",
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/api/v1/catalog/admin/categories/{{categoryId}}",
+            "url": "{{baseUrl}}/api/v1/catalog/admin/categories/{{catalogCategoryId}}",
             "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
             "auth": {
               "type": "noauth"
@@ -961,7 +966,7 @@
           "response": []
         },
         {
-          "name": "Update category (admin)",
+          "name": "Update parent category (admin)",
           "request": {
             "method": "PATCH",
             "header": [
@@ -971,14 +976,14 @@
                 "type": "text"
               }
             ],
-            "url": "{{baseUrl}}/api/v1/catalog/categories/{{categoryId}}",
+            "url": "{{baseUrl}}/api/v1/catalog/categories/{{catalogCategoryId}}",
             "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
             "auth": {
               "type": "noauth"
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Home Maintenance\",\n  \"description\": \"General maintenance and repairs.\",\n  \"isActive\": true,\n  \"visitFee\": 1500,\n  \"emergencyVisitFee\": 2000,\n  \"sosBookingFee\": 3500\n}",
+              "raw": "{\n  \"name\": \"Home Maintenance\",\n  \"description\": \"General maintenance and repairs.\",\n  \"isActive\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -989,12 +994,159 @@
           "response": []
         },
         {
-          "name": "Deactivate category (admin)",
+          "name": "Deactivate parent category (admin)",
           "request": {
             "method": "DELETE",
             "header": [],
-            "url": "{{baseUrl}}/api/v1/catalog/categories/{{categoryId}}",
+            "url": "{{baseUrl}}/api/v1/catalog/categories/{{catalogCategoryId}}",
             "description": "Soft-deactivates the category; it is not physically deleted.\n\nRequires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List active services",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/catalog/services",
+            "description": "Each service response contains its linked parent category details.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Search active services",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/catalog/services/search?name=leak",
+            "description": "Searches service names and optional keywords.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get active service by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/catalog/services/{{categoryId}}",
+            "description": "Uses categoryId as the service ID, matching existing job and technician fields.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Create service (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/catalog/services",
+            "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"categoryId\": \"{{catalogCategoryId}}\",\n  \"name\": \"Plumbing\",\n  \"description\": \"Leak repairs, pipe fitting, and drain unblocking.\",\n  \"keywords\": \"leak repair, pipes, blocked drain\",\n  \"icon\": \"wrench\",\n  \"bookingFee\": 1000,\n  \"emergencyVisitFee\": 1500,\n  \"sosBookingFee\": 2500\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List all services (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/catalog/admin/services",
+            "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Find service by exact name (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/catalog/admin/services/by-name?name=Plumbing",
+            "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get any service by ID (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/catalog/admin/services/{{categoryId}}",
+            "description": "Requires an admin session cookie retained by Postman, or set an admin bearer token in Authorization.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update service (admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/catalog/services/{{categoryId}}",
+            "description": "Optional keywords may be omitted. Set icon to null to clear it. Requires administrator authentication.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"keywords\": \"leak repair, pipes\",\n  \"bookingFee\": 1200\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Deactivate service (admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/catalog/services/{{categoryId}}",
+            "description": "Soft-deactivates the service without removing its existing references. Requires administrator authentication.",
             "auth": {
               "type": "noauth"
             }

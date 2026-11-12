@@ -18,79 +18,143 @@ import {
 } from '../common/decorators/auth.decorator';
 import { CatalogService } from './catalog.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
+import { CreateServiceDto, UpdateServiceDto } from './dto/service.dto';
 
 @Controller('api/v1/catalog')
 export class CatalogController {
   constructor(private readonly catalog: CatalogService) {}
 
-  /** Public: used by the onboarding wizard and the customer "request a technician" screen. */
   @Get('categories')
-  list() {
-    return this.catalog.listActive();
+  listCategories() {
+    return this.catalog.listCategories();
   }
 
-  // Public: returns active category matches for a customer or technician search.
   @Get('categories/search')
-  search(@Query('name') name: string) {
-    if (!name?.trim())
+  searchCategories(@Query('name') name: string) {
+    if (!name?.trim()) {
       throw new BadRequestException('The name query parameter is required.');
-    return this.catalog.searchActive(name);
+    }
+    return this.catalog.searchCategories(name);
   }
 
-  // Public: returns one category only when it is currently available.
   @Get('categories/:id')
-  getActiveById(@Param('id', ParseUUIDPipe) id: string) {
-    return this.catalog.getActiveById(id);
+  getActiveCategoryById(@Param('id', ParseUUIDPipe) id: string) {
+    return this.catalog.getActiveCategoryById(id);
   }
 
-  // Admin: lists active and inactive categories for management.
   @Get('admin/categories')
   @Auth(UserRole.ADMIN)
-  listAll() {
-    return this.catalog.listAll();
+  listAllCategories() {
+    return this.catalog.listAllCategories();
   }
 
-  // Admin: exact case-insensitive name lookup, including inactive categories.
   @Get('admin/categories/by-name')
   @Auth(UserRole.ADMIN)
-  getByName(@Query('name') name: string) {
-    if (!name?.trim())
+  getCategoryByName(@Query('name') name: string) {
+    if (!name?.trim()) {
       throw new BadRequestException('The name query parameter is required.');
-    return this.catalog.getByName(name);
+    }
+    return this.catalog.getCategoryByName(name);
   }
 
-  // Admin: retrieves a category by ID, including inactive records.
   @Get('admin/categories/:id')
   @Auth(UserRole.ADMIN)
-  getById(@Param('id', ParseUUIDPipe) id: string) {
-    return this.catalog.getById(id);
+  getCategoryById(@Param('id', ParseUUIDPipe) id: string) {
+    return this.catalog.getCategoryById(id);
   }
 
-  // Admin: creates a category and records the change in the audit log.
   @Post('categories')
   @Auth(UserRole.ADMIN)
-  create(@Body() dto: CreateCategoryDto, @CurrentUser() user: AuthUser) {
-    return this.catalog.create(dto, user.id);
+  createCategory(
+    @Body() dto: CreateCategoryDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.catalog.createCategory(dto, user.id);
   }
 
-  // Admin: edits a category's name or availability.
   @Patch('categories/:id')
   @Auth(UserRole.ADMIN)
-  update(
+  updateCategory(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateCategoryDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.catalog.update(id, dto, user.id);
+    return this.catalog.updateCategory(id, dto, user.id);
   }
 
-  // Admin: soft-deletes a category so existing technician assignments remain valid.
   @Delete('categories/:id')
   @Auth(UserRole.ADMIN)
-  deactivate(
+  deactivateCategory(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.catalog.deactivate(id, user.id);
+    return this.catalog.deactivateCategory(id, user.id);
+  }
+
+  @Get('services')
+  listActiveServices() {
+    return this.catalog.listActiveServices();
+  }
+
+  @Get('services/search')
+  searchActiveServices(@Query('name') name: string) {
+    if (!name?.trim()) {
+      throw new BadRequestException('The name query parameter is required.');
+    }
+    return this.catalog.searchActiveServices(name);
+  }
+
+  @Get('services/:id')
+  getActiveServiceById(@Param('id', ParseUUIDPipe) id: string) {
+    return this.catalog.getActiveServiceById(id);
+  }
+
+  @Get('admin/services')
+  @Auth(UserRole.ADMIN)
+  listAllServices() {
+    return this.catalog.listAllServices();
+  }
+
+  @Get('admin/services/by-name')
+  @Auth(UserRole.ADMIN)
+  getServiceByName(@Query('name') name: string) {
+    if (!name?.trim()) {
+      throw new BadRequestException('The name query parameter is required.');
+    }
+    return this.catalog.getServiceByName(name);
+  }
+
+  @Get('admin/services/:id')
+  @Auth(UserRole.ADMIN)
+  getServiceById(@Param('id', ParseUUIDPipe) id: string) {
+    return this.catalog.getServiceById(id);
+  }
+
+  @Post('services')
+  @Auth(UserRole.ADMIN)
+  createService(
+    @Body() dto: CreateServiceDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.catalog.createService(dto, user.id);
+  }
+
+  @Patch('services/:id')
+  @Auth(UserRole.ADMIN)
+  updateService(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateServiceDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.catalog.updateService(id, dto, user.id);
+  }
+
+  @Delete('services/:id')
+  @Auth(UserRole.ADMIN)
+  deactivateService(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.catalog.deactivateService(id, user.id);
   }
 }

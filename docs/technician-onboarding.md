@@ -58,7 +58,7 @@ across all of the technician's service entries, or `0` when there are none.
 A technician advertises their work through a list of **service experiences**.
 Each entry is either:
 
-- a real service category, referenced by `categoryId`, **or**
+- a real catalog service, referenced by `categoryId`, **or**
 - a custom service name (`customName`) for work that is not yet in the catalogue.
 
 Each entry also carries its own `yearsOfExperience`.
@@ -67,7 +67,9 @@ Rules enforced by the API:
 
 - At most **10** entries.
 - Each entry has **either** `categoryId` **or** `customName` — never both, never neither.
-- A real `categoryId` must reference an **active** category.
+- A real `categoryId` must reference an **active service** whose parent
+  category is active. The field retains its legacy name; it is not the ID of
+  the parent category.
 - No duplicate `categoryId` and no duplicate `customName` (case-insensitive) within one technician.
 - Sending `serviceExperiences` **replaces** the technician's whole list atomically.
 

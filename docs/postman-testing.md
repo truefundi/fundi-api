@@ -19,6 +19,7 @@ Create a Postman environment with:
 | `customerToken`     | Access token from phone OTP verification                                              |
 | `technicianToken`   | Access token for technician routes (or a customer token when converting that account) |
 | `jobId`             | A job UUID returned by the API                                                        |
+| `ratingItemId`      | A rating item UUID returned by the admin rating-item endpoints                        |
 | `offerId`           | An offer UUID returned by the API                                                     |
 | `mediaId`           | A media UUID returned by the API                                                      |
 | `userId`            | A user UUID returned by the API                                                       |
@@ -1109,6 +1110,26 @@ bearer token; no body.
 `{{baseUrl}}/api/v1/jobs/{{jobId}}/media/{{mediaId}}` — job owner, assigned
 technician, or admin authentication; no body. Returns file bytes.
 
+## Feedback and ratings
+
+Ratings are optional. Once a job is completed, its owner can fetch the active
+items and submit one 1-to-5 score for each item:
+
+1. **GET** `{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/rating-items`
+2. **POST** `{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/rating`
+
+The POST body contains a `responses` array of `{ "itemId": "...", "score": 5 }`
+objects and an optional `comment`. The owner cannot edit a submitted rating.
+An admin can manage rating items at `/api/v1/admin/rating-items`, view ratings
+at `/api/v1/admin/jobs/{{jobId}}/ratings` or
+`/api/v1/admin/technicians/{{technicianId}}/ratings`, and submit or correct
+dynamic ratings on a job. Technicians can view their own paginated results at
+`/api/v1/technicians/profile/ratings`.
+
+The importable collection has matching requests under **Feedback and Ratings**.
+See [Feedback and Ratings API](./ratings.md) for request examples and the full
+endpoint reference.
+
 ## Technician jobs
 
 All routes in this section require a technician bearer token.
@@ -1438,6 +1459,6 @@ audit snapshot of the payment data.
   authentication](./admin-authentication.md), [user management](./users.md),
   [technician onboarding](./technician-onboarding.md), [technician
   documents](./technician-documents.md), [service categories](./service-categories.md),
-  [jobs](./jobs.md), [booking payments](./booking-payments.md),
+  [jobs](./jobs.md), [feedback and ratings](./ratings.md), [booking payments](./booking-payments.md),
   [job chat](./chat.md), [ads](./ads.md), and [broadcasts](./broadcasts.md)
   guides.

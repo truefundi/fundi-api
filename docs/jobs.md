@@ -13,7 +13,8 @@ before their first job; later jobs use the saved verification and need no new
 OTP. Technicians continue to verify for each job. For an
 SOS request, the owner pays the higher SOS fee and creates the request through
 the SOS endpoint; the system automatically offers it to eligible technicians
-in match order, one at a time, with 30 seconds to respond to each offer.
+in match order, one at a time, with 30 seconds to respond to each offer. Normal
+job proposals remain open for two minutes.
 
 ## Booking flow
 
@@ -68,6 +69,9 @@ fields side by side.
 | `POST`   | `/api/v1/jobs/sos`                                   | Customer or technician: create an SOS job and automatically dispatch offers   |
 | `GET`    | `/api/v1/jobs/mine`                                  | List this user's visible jobs                                                 |
 | `GET`    | `/api/v1/jobs/mine/:jobId`                           | Read one owned job                                                            |
+| `GET`    | `/api/v1/jobs/mine/:jobId/rating-items`              | Get active rating items for a completed owned job                             |
+| `GET`    | `/api/v1/jobs/mine/:jobId/rating`                    | Read the owner's rating                                                       |
+| `POST`   | `/api/v1/jobs/mine/:jobId/rating`                    | Optionally rate the assigned technician                                       |
 | `POST`   | `/api/v1/jobs/mine/:jobId/requests`                  | Propose a matching technician                                                 |
 | `POST`   | `/api/v1/jobs/mine/:jobId/confirm-cooperation`       | Customer confirms agreement with the assigned technician                      |
 | `PATCH`  | `/api/v1/jobs/mine/:jobId`                           | Edit an open, unassigned job                                                  |
@@ -79,6 +83,10 @@ fields side by side.
 | `POST`   | `/api/v1/jobs/mine/:jobId/retry-dispatch`            | Retry a pending dispatch after a scheduling issue                             |
 | `POST`   | `/api/v1/jobs/mine/:jobId/media`                     | Add media to an editable job                                                  |
 | `DELETE` | `/api/v1/jobs/mine/:jobId/media/:mediaId`            | Remove media from an editable job                                             |
+
+Job owners can optionally submit one 1-to-5 score for every active rating item
+after a completed job. See [Feedback and Ratings API](ratings.md) for the item
+management, technician rating views, and administrator endpoints.
 
 ### Verify an account phone before creating a job
 
@@ -275,9 +283,10 @@ technician, provided the payment remains valid.
 ```
 
 Choose a technician returned by the matching preview. Only one proposal can be
-active at a time. A rejection or five-minute timeout leaves the job open so
-the customer can propose another matching technician, provided the payment is
-still valid.
+active at a time. A rejection or two-minute timeout leaves a normal job open
+and ends that technician's request; the job creator must propose another
+matching technician. The booking payment must still be valid. SOS offers use
+the automatic 30-second dispatch flow described above.
 
 ### Read, edit, and cancel a job
 
@@ -478,7 +487,7 @@ diagnosis, quote, or quote-approval records, those three stages return
 | -------- | ------------------------------------------------------------------------------------------------------------------------- |
 | Request  | `status: OPEN` and `dispatchStatus: PENDING`                                                                              |
 | Match    | `status: OPEN` and `dispatchStatus` is `OFFERED`, `EXHAUSTED`, or `STOPPED`                                               |
-| Accept   | `status` is `ASSIGNED`/`PAUSED`, a technician is assigned, and `cooperationStatus: PENDING`                              |
+| Accept   | `status` is `ASSIGNED`/`PAUSED`, a technician is assigned, and `cooperationStatus: PENDING`                               |
 | Visit    | `status` is `ASSIGNED`/`PAUSED`, `cooperationStatus: CONFIRMED`, and neither side's progress is `IN_PROGRESS`/`COMPLETED` |
 | Diagnose | Not tracked                                                                                                               |
 | Quote    | Not tracked                                                                                                               |

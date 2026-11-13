@@ -159,7 +159,7 @@ export class JobsController {
   @ApiOperation({
     summary: 'Create an SOS job and automatically dispatch it',
     description:
-      'Requires an SOS booking payment and verified phone number. Offers go one at a time to matching approved, online technicians, with a five-minute response window.',
+      'Requires an SOS booking payment and verified phone number. Offers go one at a time to matching approved, online technicians, with a 30-second response window.',
   })
   @ApiBody({
     schema: {

@@ -138,6 +138,9 @@ describe('JobsService customer job creation', () => {
   it('creates a later customer job without another phone verification', async () => {
     const jobCreate = jest.fn().mockResolvedValue(undefined);
     const executeRaw = jest.fn().mockResolvedValue(1);
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValue([{ monthKey: '1126', lastNumber: 2 }]);
     const paymentUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const auditLog = jest.fn().mockResolvedValue(undefined);
     const userFindUnique = jest.fn().mockResolvedValue({
@@ -163,6 +166,7 @@ describe('JobsService customer job creation', () => {
         updateMany: jest.fn(),
       },
       $executeRaw: executeRaw,
+      $queryRaw: queryRaw,
     };
     const prisma = {
       serviceCategory: {

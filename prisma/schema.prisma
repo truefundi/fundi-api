@@ -35,6 +35,8 @@ model User {
   createdAds         Ad[]                        @relation("AdCreatedBy")
   createdBroadcasts  Broadcast[]                 @relation("BroadcastCreatedBy")
   passkeyCredentials PasskeyCredential[]
+  submittedRatings   JobRating[]                 @relation("JobRatingSubmittedBy")
+  customerRatings    JobRating[]                 @relation("JobRatingCustomer")
 
   @@map("users")
 }
@@ -133,6 +135,7 @@ model TechnicianProfile {
   assignedJobs            Job[]                     @relation("CurrentJobTechnician")
   categories              TechnicianCategory[]
   documents               TechnicianDocument[]
+  ratings                 JobRating[]
   user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([verificationStatus])
@@ -241,6 +244,7 @@ model Job {
   technician                  TechnicianProfile?         @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
   dispute                     Dispute?
   chatRooms                   ChatRoom[]
+  customerRating              JobRating?
 
   @@index([customerId, createdAt])
   @@index([technicianId, status, updatedAt])
@@ -249,6 +253,55 @@ model Job {
   @@index([customerId, customerHiddenAt, createdAt])
   @@index([technicianId, technicianHiddenAt, updatedAt])
   @@map("jobs")
+}
+
+model RatingItem {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  sortOrder   Int              @default(0)
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  responses   RatingResponse[]
+
+  @@index([isActive, sortOrder, name])
+  @@map("rating_items")
+}
+
+model JobRating {
+  id            String            @id @default(uuid())
+  jobId         String?           @unique
+  customerId    String
+  technicianId  String
+  submittedById String
+  comment       String?
+  submittedAt   DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  job           Job?              @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  customer      User              @relation("JobRatingCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  technician    TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  submittedBy   User              @relation("JobRatingSubmittedBy", fields: [submittedById], references: [id], onDelete: Cascade)
+  responses     RatingResponse[]
+
+  @@index([technicianId, submittedAt])
+  @@index([customerId, submittedAt])
+  @@map("job_ratings")
+}
+
+model RatingResponse {
+  id               String     @id @default(uuid())
+  jobRatingId      String
+  ratingItemId     String
+  itemNameSnapshot String
+  score            Int
+  createdAt        DateTime   @default(now())
+  jobRating        JobRating  @relation(fields: [jobRatingId], references: [id], onDelete: Cascade)
+  ratingItem       RatingItem @relation(fields: [ratingItemId], references: [id], onDelete: Restrict)
+
+  @@unique([jobRatingId, ratingItemId])
+  @@index([ratingItemId])
+  @@map("rating_responses")
 }
 
 // Allocates the human-readable job reference (FD-MMYYNNN): one row per

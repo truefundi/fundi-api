@@ -1469,6 +1469,9 @@ export class JobsService {
         'Only an assigned or completed job can be rated.',
       );
     }
+    if (job.ratedAt) {
+      throw new ConflictException('This job has already been rated.');
+    }
     const comment = dto.comment?.trim() || null;
     const ratedAt = new Date();
     await this.prisma.$transaction(async (tx) => {

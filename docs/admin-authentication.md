@@ -2,11 +2,11 @@
 
 An administrator supplies an email address and a password, then a six-digit code from an authenticator app (Google Authenticator, Authy, 1Password, and anything else speaking the standard `otpauth://` format). The password step alone grants nothing: no access cookie exists until the second factor is verified, so every protected route answers `401` for a half-finished sign-in. There is no partial token that could be replayed.
 
-The second factor is a time-based one-time password computed on the administrator's own device. Nothing is sent anywhere: there is no SMS provider to configure, no code to intercept in transit, and no `2fa/resend` endpoint, because there is nothing to resend.
+The second factor is a time-based one-time password computed on the administrator's own device. Sign-in codes are not sent anywhere, so there is no `2fa/resend` endpoint. A separate SMS OTP is used only for the forgotten-password flow; it does not replace or reset the authenticator factor.
 
 This is a separate flow from [phone authentication](authentication.md), where customers and technicians receive bearer tokens they hold themselves. An administrator never handles a token at all: the session lives entirely in `httpOnly` cookies that no script on the page can read. The phone-OTP endpoints refuse `ADMIN` accounts outright, and every admin route accepts only the session cookie, so an administrator identity presented as a bearer token is rejected even if one were ever issued.
 
-The provisioning script sets an administrator's first password. After that, the signed-in administrator can change it through `POST /api/v1/auth/admin/change-password`, which requires the current password. There is no unauthenticated reset route, so an account that has no password still has to be provisioned with `npm run prisma:seed-admin`. An administrator row created through `POST /api/v1/users`, or promoted later through `PATCH /api/v1/users/:id`, has no password and cannot complete sign-in until the script has run for it.
+The provisioning script sets an administrator's first password. After that, the signed-in administrator can change it through `POST /api/v1/auth/admin/change-password`, which requires the current password. An administrator who has forgotten it can request an OTP at `POST /api/v1/auth/admin/password/reset/request` and complete the reset at `POST /api/v1/auth/admin/password/reset`. An account that has never been provisioned with a password still has to be initialized with `npm run prisma:seed-admin`. An administrator row created through `POST /api/v1/users`, or promoted later through `PATCH /api/v1/users/:id`, has no password and cannot complete sign-in until the script has run for it.
 
 The password step deliberately reveals nothing: a wrong password, an unknown address, a non-administrator, a disabled account, and an account with no password set all return `401` with the identical message `Invalid email or password.`. An unknown address is also compared against a dummy hash so the response takes about as long as a real one, which stops timing from disclosing whether an address exists.
 
@@ -20,7 +20,7 @@ This ordering is what keeps a half-finished setup recoverable. Because the secre
 
 The shared secret is held in Redis in the clear for the length of the enrolment window, and only ever written to the database encrypted. It cannot be hashed: the server has to read it back to compute the code it expects, so a one-way hash would make verification impossible.
 
-**No recovery path exists yet.** There are no backup codes and no reset route. If an administrator loses access to their authenticator, the way back is a direct `UPDATE "users" SET "totpSecret" = NULL, "totpEnabledAt" = NULL` against the database, after which their next sign-in starts a fresh enrolment. This is a known gap and must be closed before launch.
+There are no backup codes or self-service authenticator recovery. If an administrator loses access to their authenticator, an authorized operator must clear `totpSecret` and `totpEnabledAt` for that account in the database; its next sign-in then starts a fresh enrolment. Password reset does not clear or change the authenticator.
 
 Codes are accepted one step either side of the current one (`ADMIN_TOTP_WINDOW`, default 1), which absorbs ordinary clock skew between the server and the phone. Both sides need reasonable time: a host that has drifted by minutes, or a phone whose clock has drifted, will produce codes that are rejected.
 
@@ -63,13 +63,71 @@ Success response (`200`) on **every later** sign-in:
 
 Set `enrollmentRequired` to decide what the dashboard shows: a QR code plus a manual-entry field, or a single code input.
 
-Sets `fundi_admin_2fa_challenge` in both cases. `otpauthUri` is what the dashboard renders as a QR code — no image is generated here, so no QR library is needed on the backend. The `secret` is the same shared secret in plain base32, for anyone who cannot scan. Both are sent with `Cache-Control: no-store`, because the QR image *is* the secret in plaintext and a cached copy would hand it to anyone who could read the cache.
+Sets `fundi_admin_2fa_challenge` in both cases. `otpauthUri` is what the dashboard renders as a QR code — no image is generated here, so no QR library is needed on the backend. The `secret` is the same shared secret in plain base32, for anyone who cannot scan. Both are sent with `Cache-Control: no-store`, because the QR image _is_ the secret in plaintext and a cached copy would hand it to anyone who could read the cache.
 
 The `otpauth://` issuer has to match in both the label and the query parameter or authenticator apps reject the scan; `ADMIN_TOTP_ISSUER` is used for both, and the two are asserted in the tests.
 
 Any extra property in the body is rejected, so a challenge id cannot be supplied here to aim a later verification at somebody else's.
 
 There is no `POST /api/v1/auth/admin/2fa/resend`. An authenticator produces codes locally and continuously, so there is nothing to send again.
+
+## Forgotten admin password
+
+The unauthenticated reset flow verifies access to the phone number already registered to the administrator. The request response is identical for unknown, inactive, and active admin emails to avoid disclosing which addresses have accounts. The reset OTP is stored under a purpose-specific key, expires with the configured OTP lifetime, and cannot be used for phone login or the development-only OTP sign-in. Requests are limited to three per email per 15 minutes; reset-code verification has a five-guess per-account limit that persists across code resends.
+
+The current SMS transport writes OTPs to the API log in development (`sms.mode=console`) and does not provide a production SMS provider. Configure a real SMS delivery provider before enabling password recovery in production.
+
+### `POST /api/v1/auth/admin/password/reset/request`
+
+No authentication required. Requests a reset code for an active admin. The OTP is sent to the registered phone number; the response never includes the number or code.
+
+```json
+{ "email": "admin@fundi.rw" }
+```
+
+Success response (`200`), for both known and unknown emails:
+
+```json
+{
+  "message": "If an active administrator account matches that email, a verification code has been sent to its registered phone."
+}
+```
+
+### `POST /api/v1/auth/admin/password/reset/verify`
+
+No authentication required. Consumes the reset OTP and returns a short-lived, single-use reset authorization. No password is changed until the next step.
+
+```json
+{
+  "email": "admin@fundi.rw",
+  "otp": "123456"
+}
+```
+
+Success response (`200`):
+
+```json
+{
+  "resetToken": "6f80b469-f3dd-4126-9092-612e5c065fbc",
+  "expiresInSeconds": 300
+}
+```
+
+The reset authorization is stored server-side, bound to the admin account, and expires after five minutes. It cannot be used to sign in or change a different account's password.
+
+### `POST /api/v1/auth/admin/password/reset`
+
+No authentication required. Accepts the reset authorization from the OTP verification step, updates the password, and revokes all existing admin sessions. The authenticator enrollment remains unchanged.
+
+```json
+{
+  "email": "admin@fundi.rw",
+  "resetToken": "6f80b469-f3dd-4126-9092-612e5c065fbc",
+  "newPassword": "NewAdmin@456"
+}
+```
+
+The password must be 8–72 characters and contain an uppercase letter, a number, and a non-alphanumeric character. A successful response includes `sessionsRevoked: true`. Invalid, expired, or already-used reset authorizations are rejected.
 
 ## `POST /api/v1/auth/admin/2fa/verify`
 
@@ -163,9 +221,9 @@ Errors: `400` when the new password fails validation or equals the current one,
 or when the account has no password to change; `401` when the current password
 is wrong; `403` when the caller is no longer an active administrator.
 
-There is no self-service reset for a forgotten password. An administrator who no
-longer knows the current password must be re-provisioned with
-`npm run prisma:seed-admin`, which resets the hash.
+An administrator who has forgotten the password can use the unauthenticated SMS
+OTP reset flow described above. Re-running `npm run prisma:seed-admin` remains
+the provisioning path for accounts that have never had a password.
 
 ## Development-only OTP sign-in
 
@@ -195,14 +253,14 @@ Only an existing, active administrator can be signed in this way, so the route c
 
 Set the values below and run `npm run prisma:seed-admin`. Re-running it resets the password of an existing administrator rather than creating a duplicate. It refuses to promote an account that already exists with a different role, so an address reused by mistake cannot silently gain administrator rights.
 
-| Variable | Meaning |
-| --- | --- |
-| `ADMIN_EMAIL` | Login address. Trimmed and lowercased. |
-| `ADMIN_PASSWORD` | Must satisfy the same strength rules the login endpoint enforces. Read from the environment rather than a command-line argument so it stays out of shell history. Not trimmed: leading and trailing spaces are part of the password. |
-| `ADMIN_FULL_NAME` | Display name. |
-| `ADMIN_PHONE_NUMBER` | Contact number. Must be unique. Still required by the schema, but no longer used for the second factor — the authenticator is. |
+| Variable             | Meaning                                                                                                                                                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ADMIN_EMAIL`        | Login address. Trimmed and lowercased.                                                                                                                                                                                               |
+| `ADMIN_PASSWORD`     | Must satisfy the same strength rules the login endpoint enforces. Read from the environment rather than a command-line argument so it stays out of shell history. Not trimmed: leading and trailing spaces are part of the password. |
+| `ADMIN_FULL_NAME`    | Display name.                                                                                                                                                                                                                        |
+| `ADMIN_PHONE_NUMBER` | Contact number. Must be unique. Still required by the schema, but no longer used for the second factor — the authenticator is.                                                                                                       |
 
-The password is checked against the same rules the login endpoint enforces, so an administrator cannot be created with a password the API would later reject. Re-running the script also resets the password of an existing administrator, which is the recovery path for a forgotten current password; otherwise use `POST /api/v1/auth/admin/change-password`.
+The password is checked against the same rules the login endpoint enforces, so an administrator cannot be created with a password the API would later reject. Re-running the script resets the password of an existing administrator; forgotten passwords can also be reset through the SMS OTP flow.
 
 A row with the `ADMIN` role can also be produced through `POST /api/v1/users` or `PATCH /api/v1/users/:id`, both of which need an administrator session already. That yields an account with no password, which cannot sign in here: it fails with `Invalid email or password.` until the script has been run for it. This is deliberate, so a compromised admin session can create an administrator row but cannot make it usable without the provisioning environment.
 
@@ -210,11 +268,11 @@ A row with the `ADMIN` role can also be produced through `POST /api/v1/users` or
 
 Three cookies are set, all `httpOnly`, so injected script cannot read them and a cross-site scripting bug does not hand over the session:
 
-| Cookie | Purpose | Path |
-| --- | --- | --- |
+| Cookie                      | Purpose                                                       | Path                     |
+| --------------------------- | ------------------------------------------------------------- | ------------------------ |
 | `fundi_admin_2fa_challenge` | Opaque id of the pending challenge. Grants nothing by itself. | `/api/v1/auth/admin/2fa` |
-| `fundi_admin_access` | Short-lived access JWT. | `/` |
-| `fundi_admin_refresh` | Single-use refresh JWT. | `/` |
+| `fundi_admin_access`        | Short-lived access JWT.                                       | `/`                      |
+| `fundi_admin_refresh`       | Single-use refresh JWT.                                       | `/`                      |
 
 The session cookies are explicitly scoped to `/`. Left unset, a browser scopes a cookie to the directory of the request that created it, which here would hide it from `/api/v1/users` and break the dashboard without any visible error.
 
@@ -228,21 +286,21 @@ Two further restrictions exist because cookies travel automatically. `PATCH` and
 
 ## Settings
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `ADMIN_BCRYPT_ROUNDS` | `12` | Password hashing work factor. |
-| `ADMIN_MAX_LOGIN_ATTEMPTS` | `5` | Wrong passwords before lockout. |
-| `ADMIN_LOGIN_LOCKOUT_SECONDS` | `900` | Lockout window. A correct password is refused during it. |
-| `ADMIN_2FA_PENDING_SECONDS` | `300` | How long a password-verified sign-in stays open waiting for a code. Not a code lifetime — it only bounds an abandoned sign-in. |
-| `ADMIN_2FA_MAX_TRIES` | `5` | Incorrect codes allowed per account, on a sliding 15-minute window. |
-| `ADMIN_TOTP_ISSUER` | `Fundi` | Label shown in the app. Must match in both the `otpauth://` label and its query parameter. |
-| `ADMIN_TOTP_WINDOW` | `1` | Clock-drift tolerance in 30-second steps either side. |
-| `ADMIN_TOTP_ENCRYPTION_KEY` | none | 64 hex characters. Encrypts the authenticator secret at rest. Sign-in fails with `503` until set. |
-| `ADMIN_ACCESS_EXPIRES_IN` | `1d` | Access token lifetime. |
-| `ADMIN_REFRESH_EXPIRES_IN` | `5d` | Refresh token and matching database row. |
-| `ADMIN_COOKIE_SAME_SITE` | `lax` | Cookie `SameSite` flag. |
-| `ADMIN_COOKIE_SECURE` | `true` in production | Cookie `Secure` flag. |
-| `ADMIN_COOKIE_DOMAIN` | unset | Cookie domain. Leave unset to keep cookies host-only. |
+| Variable                      | Default              | Meaning                                                                                                                        |
+| ----------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `ADMIN_BCRYPT_ROUNDS`         | `12`                 | Password hashing work factor.                                                                                                  |
+| `ADMIN_MAX_LOGIN_ATTEMPTS`    | `5`                  | Wrong passwords before lockout.                                                                                                |
+| `ADMIN_LOGIN_LOCKOUT_SECONDS` | `900`                | Lockout window. A correct password is refused during it.                                                                       |
+| `ADMIN_2FA_PENDING_SECONDS`   | `300`                | How long a password-verified sign-in stays open waiting for a code. Not a code lifetime — it only bounds an abandoned sign-in. |
+| `ADMIN_2FA_MAX_TRIES`         | `5`                  | Incorrect codes allowed per account, on a sliding 15-minute window.                                                            |
+| `ADMIN_TOTP_ISSUER`           | `Fundi`              | Label shown in the app. Must match in both the `otpauth://` label and its query parameter.                                     |
+| `ADMIN_TOTP_WINDOW`           | `1`                  | Clock-drift tolerance in 30-second steps either side.                                                                          |
+| `ADMIN_TOTP_ENCRYPTION_KEY`   | none                 | 64 hex characters. Encrypts the authenticator secret at rest. Sign-in fails with `503` until set.                              |
+| `ADMIN_ACCESS_EXPIRES_IN`     | `1d`                 | Access token lifetime.                                                                                                         |
+| `ADMIN_REFRESH_EXPIRES_IN`    | `5d`                 | Refresh token and matching database row.                                                                                       |
+| `ADMIN_COOKIE_SAME_SITE`      | `lax`                | Cookie `SameSite` flag.                                                                                                        |
+| `ADMIN_COOKIE_SECURE`         | `true` in production | Cookie `Secure` flag.                                                                                                          |
+| `ADMIN_COOKIE_DOMAIN`         | unset                | Cookie domain. Leave unset to keep cookies host-only.                                                                          |
 
 These lifetimes are deliberately shorter than the phone defaults in [authentication.md](authentication.md) (`7d` access, `30d` refresh), because a dashboard session is worth more if stolen and is easier to end.
 

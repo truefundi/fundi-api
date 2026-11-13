@@ -20,6 +20,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { ChatModule } from './chat/chat.module';
 import { AdsModule } from './ads/ads.module';
 import { BroadcastsModule } from './broadcasts/broadcasts.module';
+import { RatingsModule } from './ratings/ratings.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { BroadcastsModule } from './broadcasts/broadcasts.module';
     ChatModule,
     AdsModule,
     BroadcastsModule,
+    RatingsModule,
     HealthModule,
   ],
   controllers: [AppController],

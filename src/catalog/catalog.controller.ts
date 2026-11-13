@@ -10,6 +10,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { ApiBody, ApiCreatedResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import {
   Auth,
@@ -20,6 +21,7 @@ import { CatalogService } from './catalog.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 import { CreateServiceDto, UpdateServiceDto } from './dto/service.dto';
 
+@ApiTags('Catalog')
 @Controller('api/v1/catalog')
 export class CatalogController {
   constructor(private readonly catalog: CatalogService) {}
@@ -65,6 +67,32 @@ export class CatalogController {
 
   @Post('categories')
   @Auth(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Create a parent category (admin only)' })
+  @ApiBody({
+    type: CreateCategoryDto,
+    examples: {
+      default: {
+        summary: 'Create category',
+        value: {
+          name: 'Home Services',
+          description: 'Repairs and maintenance for homes.',
+        },
+      },
+    },
+  })
+  @ApiCreatedResponse({
+    description: 'The created parent category',
+    schema: {
+      example: {
+        id: '84cfa9af-05d4-40c1-ad36-123e412ec509',
+        name: 'Home Services',
+        description: 'Repairs and maintenance for homes.',
+        isActive: true,
+        createdAt: '2026-11-13T09:00:00.000Z',
+        updatedAt: '2026-11-13T09:00:00.000Z',
+      },
+    },
+  })
   createCategory(
     @Body() dto: CreateCategoryDto,
     @CurrentUser() user: AuthUser,
@@ -132,6 +160,54 @@ export class CatalogController {
 
   @Post('services')
   @Auth(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Create a service under a parent category (admin only)' })
+  @ApiBody({
+    type: CreateServiceDto,
+    examples: {
+      default: {
+        summary: 'Create service',
+        value: {
+          categoryId: '84cfa9af-05d4-40c1-ad36-123e412ec509',
+          name: 'Plumbing',
+          description: 'Leak repairs, pipe fitting, and drain unblocking.',
+          keywords: 'leak repair, pipes, blocked drain',
+          icon: 'wrench',
+          bookingFee: 1000,
+          emergencyVisitFee: 1500,
+          sosBookingFee: 2500,
+          isActive: true,
+        },
+      },
+    },
+  })
+  @ApiCreatedResponse({
+    description: 'The created service, including its parent category details',
+    schema: {
+      example: {
+        id: 'e5a4f4d7-0b21-46d8-9a4b-98765d332100',
+        categoryId: '84cfa9af-05d4-40c1-ad36-123e412ec509',
+        name: 'Plumbing',
+        slug: 'plumbing',
+        description: 'Leak repairs, pipe fitting, and drain unblocking.',
+        keywords: 'leak repair, pipes, blocked drain',
+        bookingFee: 1000,
+        emergencyVisitFee: 1500,
+        sosBookingFee: 2500,
+        icon: 'wrench',
+        isActive: true,
+        createdAt: '2026-11-13T09:05:00.000Z',
+        updatedAt: '2026-11-13T09:05:00.000Z',
+        category: {
+          id: '84cfa9af-05d4-40c1-ad36-123e412ec509',
+          name: 'Home Services',
+          description: 'Repairs and maintenance for homes.',
+          isActive: true,
+          createdAt: '2026-11-13T09:00:00.000Z',
+          updatedAt: '2026-11-13T09:00:00.000Z',
+        },
+      },
+    },
+  })
   createService(
     @Body() dto: CreateServiceDto,
     @CurrentUser() user: AuthUser,

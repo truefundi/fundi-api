@@ -3703,9 +3703,33 @@ paths:
                   enum:
                     - NATIONAL_ID
                     - CERTIFICATE
+                  description: NATIONAL_ID or CERTIFICATE.
                 title:
                   type: string
                   example: National ID (front and back)
+                certificateType:
+                  type: string
+                  enum:
+                    - TVET_CERTIFICATE
+                    - DIPLOMA
+                    - ADVANCED_DIPLOMA
+                    - DEGREE
+                    - SHORT_COURSE
+                    - OTHER
+                  description: Required when type is CERTIFICATE.
+                categoryId:
+                  type: string
+                  format: uuid
+                  description: >-
+                    Required when type is CERTIFICATE: UUID of an active
+                    service category. Mutually exclusive with
+                    customCategoryName.
+                customCategoryName:
+                  type: string
+                  example: Solar Panel Install
+                  description: >-
+                    Required when type is CERTIFICATE and the service is not
+                    in the catalogue. Mutually exclusive with categoryId.
       responses:
         '201':
           description: Created document.
@@ -6046,6 +6070,7 @@ components:
       type: object
       required:
         - id
+        - reference
         - status
         - createdAt
         - updatedAt
@@ -6054,8 +6079,12 @@ components:
           type: string
         reference:
           type: string
+          description: >-
+            Human-readable job number for display, e.g. FD-1126003 (creation
+            month MMYY plus a per-month sequence). The UUID `id` stays the
+            API identifier.
           examples:
-            - FND-4821
+            - FD-1126001
         service:
           type: string
           description: Display name; mirrors serviceCategory/custom.

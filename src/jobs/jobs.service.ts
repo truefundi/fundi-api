@@ -499,9 +499,11 @@ export class JobsService {
             );
           }
         }
+        const reference = await this.nextJobReference(tx);
         await tx.job.create({
           data: {
             id: jobId,
+            reference,
             customerId,
             ...selection,
             phoneVerificationId: dto.phoneVerificationId ?? null,
@@ -565,6 +567,7 @@ export class JobsService {
             actorId,
             toStatus: JobStatus.OPEN,
             metadata: {
+              reference,
               priority: dto.priority ?? JobPriority.NORMAL,
               matchCount: candidates.length,
               paymentId: payment.id,
@@ -1897,6 +1900,7 @@ export class JobsService {
         job: {
           select: {
             id: true,
+            reference: true,
             status: true,
             description: true,
             customer: {
@@ -2347,6 +2351,7 @@ export class JobsService {
         dropReason: offer.dropReason,
         job: {
           id: offer.job.id,
+          reference: offer.job.reference,
           service: this.serviceName(offer.job),
           description: offer.job.description,
           locationAddress: offer.job.locationAddress,
@@ -3666,6 +3671,25 @@ export class JobsService {
     };
   }
 
+  // Builds the next human-readable job reference, e.g. FD-1126003: the
+  // creation month (MMYY, Kigali time) plus a per-month sequence. The counter
+  // row is allocated inside the creation transaction, so concurrent requests
+  // never share a number and a rolled-back job does not consume one.
+  private async nextJobReference(
+    tx: Prisma.TransactionClient,
+  ): Promise<string> {
+    const rows = await tx.$queryRaw<
+      Array<{ monthKey: string; lastNumber: number }>
+    >`
+      INSERT INTO "job_number_counters" ("monthKey", "lastNumber")
+      VALUES (to_char(now() AT TIME ZONE 'Africa/Kigali', 'MMYY'), 1)
+      ON CONFLICT ("monthKey")
+      DO UPDATE SET "lastNumber" = "job_number_counters"."lastNumber" + 1
+      RETURNING "monthKey", "lastNumber"`;
+    const { monthKey, lastNumber } = rows[0];
+    return `FD-${monthKey}${String(lastNumber).padStart(3, '0')}`;
+  }
+
   private async deleteStoredFiles(keys: string[]) {
     for (const key of keys) {
       try {
@@ -3736,6 +3760,8 @@ export class JobsService {
       : null;
     const response = {
       id: job.id,
+      // Human-readable job number (FD-1126003) for display; the UUID stays the id.
+      reference: job.reference,
       service: this.serviceName(job),
       serviceCategory: job.serviceCategory,
       otherServiceName: job.otherServiceName,

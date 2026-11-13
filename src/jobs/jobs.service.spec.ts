@@ -10,6 +10,37 @@ import { PrismaService } from '../database/prisma.service';
 import { JOB_PIPELINE_STAGE_MAP, JobPipelineStage } from './job-pipeline';
 import { JobsService } from './jobs.service';
 
+describe('JobsService job reference', () => {
+  it('formats the FD-MMYYNNN reference from the monthly counter', async () => {
+    const tx = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ monthKey: '1126', lastNumber: 1 }])
+        .mockResolvedValueOnce([{ monthKey: '1126', lastNumber: 42 }]),
+    };
+    const service = new JobsService(
+      undefined as unknown as PrismaService,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+
+    // The private helper is exercised directly: the SQL shape and formatting
+    // are the contract, and the real allocation was verified against the DB.
+    const nextJobReference = (
+      service as unknown as {
+        nextJobReference: (tx: unknown) => Promise<string>;
+      }
+    ).nextJobReference.bind(service);
+
+    await expect(nextJobReference(tx)).resolves.toBe('FD-1126001');
+    await expect(nextJobReference(tx)).resolves.toBe('FD-1126042');
+  });
+});
+
 describe('JobsService location matching', () => {
   const categoryId = 'c5a4f4d7-0b21-46d8-9a4b-98765d332100';
   const profile = (id: string) => ({

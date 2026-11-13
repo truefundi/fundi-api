@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
-import { DocumentType, UserRole } from '@prisma/client';
+import { CertificateType, DocumentType, UserRole } from '@prisma/client';
 import {
   Auth,
   AuthUser,
@@ -87,8 +87,29 @@ export class TechnicianDocumentsController {
       required: ['file', 'type', 'title'],
       properties: {
         file: { type: 'string', format: 'binary' },
-        type: { type: 'string', enum: Object.values(DocumentType) },
+        type: {
+          type: 'string',
+          enum: Object.values(DocumentType),
+          description: 'NATIONAL_ID or CERTIFICATE.',
+        },
         title: { type: 'string', example: 'National ID (front and back)' },
+        certificateType: {
+          type: 'string',
+          enum: Object.values(CertificateType),
+          description: 'Required when type is CERTIFICATE.',
+        },
+        categoryId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Required when type is CERTIFICATE: UUID of an active service category. Mutually exclusive with customCategoryName.',
+        },
+        customCategoryName: {
+          type: 'string',
+          example: 'Solar Panel Install',
+          description:
+            'Required when type is CERTIFICATE and the service is not in the catalogue. Mutually exclusive with categoryId.',
+        },
       },
     },
   })

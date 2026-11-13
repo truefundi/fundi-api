@@ -41,6 +41,21 @@ job proposals remain open for two minutes.
 See [Booking Payments API](booking-payments.md) for payment records, validity,
 and administrator extensions.
 
+## Job reference numbers
+
+Every job carries two identifiers:
+
+- `id` — the immutable UUID used in URLs and API calls.
+- `reference` — a human-readable number such as `FD-1126003`, meant for
+  display and support conversations. It is built from the job's creation
+  month (`MMYY`, Kigali time) plus a per-month sequence: `FD-` + `1126` +
+  `003` is the third job created in November 2026. The counter restarts at
+  `001` each month and is allocated inside the creation transaction, so two
+  jobs never share a reference.
+
+Every job response (customer, technician, and admin views) returns both
+fields side by side.
+
 ## Customer and technician job-owner endpoints
 
 | Method   | URL                                                  | Purpose                                                                       |

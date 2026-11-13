@@ -42,4 +42,3 @@ INSERT INTO "job_number_counters" ("monthKey", "lastNumber")
 SELECT "monthKey", MAX("n")
 FROM numbered
 GROUP BY "monthKey";
-

@@ -22,6 +22,7 @@ import { TotpCryptoService } from './totp-crypto.service';
 import { AuthService } from './auth.service';
 import { AdminLoginDto } from './dto/admin-login.dto';
 import { ChangeAdminPasswordDto } from './dto/change-admin-password.dto';
+import { SmsService } from '../sms/sms.service';
 
 // One message for every credential failure, so the endpoint cannot be used to
 // discover which addresses belong to an administrator.
@@ -29,12 +30,14 @@ const INVALID_CREDENTIALS = 'Invalid email or password.';
 
 // One message for every missing or spent challenge, so it cannot be used to tell a
 // stale sign-in from one that never existed.
-const NO_PENDING_VERIFICATION = 'There is no pending verification. Sign in again.';
+const NO_PENDING_VERIFICATION =
+  'There is no pending verification. Sign in again.';
 
 // A real 12-round bcrypt hash of a random string nobody holds. Comparing against it
 // costs the same as a genuine check, so an unknown address takes the same time to
 // reject as a known one and cannot be detected by measuring the response.
-const DECOY_PASSWORD_HASH = '$2b$12$2qJN/rJMpSD/MkUIPPmd7.zj8d0bd4WAYS9je88k20fe2lSyTvZ4O';
+const DECOY_PASSWORD_HASH =
+  '$2b$12$2qJN/rJMpSD/MkUIPPmd7.zj8d0bd4WAYS9je88k20fe2lSyTvZ4O';
 
 // Nest ships no 429 exception class, so throttled answers are raised directly.
 // 429 rather than 403 because the caller is being slowed down, not refused.
@@ -49,6 +52,21 @@ const COUNT_LOGIN_FAILURE_SCRIPT = `
 local count = redis.call('INCR', KEYS[1])
 redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
 return count
+`;
+
+const CLAIM_PASSWORD_RESET_REQUEST_SCRIPT = `
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+if count >= tonumber(ARGV[1]) then return -1 end
+count = redis.call('INCR', KEYS[1])
+if count == 1 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2])) end
+return count
+`;
+
+const CONSUME_PASSWORD_RESET_GRANT_SCRIPT = `
+local userId = redis.call('GET', KEYS[1])
+if not userId or userId ~= ARGV[1] then return 0 end
+redis.call('DEL', KEYS[1])
+return 1
 `;
 
 // Creates a challenge and supersedes any earlier one, so a second sign-in makes the
@@ -124,17 +142,33 @@ export class AdminAuthService {
     private totpCrypto: TotpCryptoService,
     private authService: AuthService,
     private audit: AuditService,
+    private smsService: SmsService,
   ) {
-    this.maxLoginAttempts = this.configService.get<number>('adminAuth.maxLoginAttempts', 5);
-    this.loginLockoutSeconds = this.configService.get<number>('adminAuth.loginLockoutSeconds', 900);
+    this.maxLoginAttempts = this.configService.get<number>(
+      'adminAuth.maxLoginAttempts',
+      5,
+    );
+    this.loginLockoutSeconds = this.configService.get<number>(
+      'adminAuth.loginLockoutSeconds',
+      900,
+    );
     this.twoFactorPendingSeconds = this.configService.get<number>(
       'adminAuth.twoFactorPendingSeconds',
       300,
     );
-    this.twoFactorMaxTries = this.configService.get<number>('adminAuth.twoFactorMaxTries', 5);
-    this.totpIssuer = this.configService.get<string>('adminAuth.totpIssuer', 'Fundi');
+    this.twoFactorMaxTries = this.configService.get<number>(
+      'adminAuth.twoFactorMaxTries',
+      5,
+    );
+    this.totpIssuer = this.configService.get<string>(
+      'adminAuth.totpIssuer',
+      'Fundi',
+    );
     this.totpWindow = this.configService.get<number>('adminAuth.totpWindow', 1);
-    this.bcryptRounds = this.configService.get<number>('adminAuth.bcryptRounds', 12);
+    this.bcryptRounds = this.configService.get<number>(
+      'adminAuth.bcryptRounds',
+      12,
+    );
   }
 
   // Step one: verifies the password, then either asks for a code or starts a first
@@ -161,7 +195,9 @@ export class AdminAuthService {
     // account and a wrong password all take the same comparison and raise the same
     // error. `usable` is false for the first four, so the real hash is never touched.
     const usable =
-      !!user?.passwordHash && user.role === UserRole.ADMIN && user.status === 'ACTIVE';
+      !!user?.passwordHash &&
+      user.role === UserRole.ADMIN &&
+      user.status === 'ACTIVE';
     const matches = await compare(
       input.password,
       usable ? (user!.passwordHash as string) : DECOY_PASSWORD_HASH,
@@ -196,7 +232,11 @@ export class AdminAuthService {
         'If you cannot scan, enter the secret by hand.',
       enrollmentRequired: true,
       expiresInSeconds: this.twoFactorChallengeSeconds(),
-      otpauthUri: authenticator.keyuri(user!.email ?? user!.id, this.totpIssuer, secret),
+      otpauthUri: authenticator.keyuri(
+        user!.email ?? user!.id,
+        this.totpIssuer,
+        secret,
+      ),
       // Also returned so the dashboard can offer manual entry. Shown only while the
       // challenge is open, and never stored in the clear.
       secret,
@@ -215,7 +255,10 @@ export class AdminAuthService {
 
     const claim = await this.runScript(
       CLAIM_ATTEMPT_SCRIPT,
-      [this.challengeKey(challengeId), this.twoFactorTriesKey(challenge.userId)],
+      [
+        this.challengeKey(challengeId),
+        this.twoFactorTriesKey(challenge.userId),
+      ],
       String(this.twoFactorMaxTries),
       String(Date.now()),
       String(this.twoFactorMaxTries),
@@ -225,7 +268,9 @@ export class AdminAuthService {
       throw new BadRequestException(NO_PENDING_VERIFICATION);
     }
     if (claim === -3) {
-      throw new UnauthorizedException('The sign-in window has expired. Sign in again.');
+      throw new UnauthorizedException(
+        'The sign-in window has expired. Sign in again.',
+      );
     }
     if (claim === -2) {
       throw tooManyRequests(
@@ -234,7 +279,9 @@ export class AdminAuthService {
     }
 
     const secret =
-      challenge.mode === 'enroll' ? challenge.secret : await this.readStoredSecret(challenge.userId);
+      challenge.mode === 'enroll'
+        ? challenge.secret
+        : await this.readStoredSecret(challenge.userId);
     if (!this.codeMatches(code, secret)) {
       throw new UnauthorizedException('The verification code is incorrect.');
     }
@@ -243,14 +290,11 @@ export class AdminAuthService {
       await this.commitSecret(challenge.userId, secret);
     }
 
-    const consumed = await this.runScript(
-      CONSUME_CHALLENGE_SCRIPT,
-      [
-        this.challengeKey(challengeId),
-        this.currentChallengeKey(challenge.userId),
-        this.twoFactorTriesKey(challenge.userId),
-      ],
-    );
+    const consumed = await this.runScript(CONSUME_CHALLENGE_SCRIPT, [
+      this.challengeKey(challengeId),
+      this.currentChallengeKey(challenge.userId),
+      this.twoFactorTriesKey(challenge.userId),
+    ]);
     // Lost the race to a concurrent request holding the same code. Refused rather
     // than issued twice, so one code is worth at most one session.
     if (consumed === 0) {
@@ -270,9 +314,12 @@ export class AdminAuthService {
     const otp = await this.authService.issueOtpCode(user.id);
     // Logged as well as returned, so a code that is not read from the response can
     // still be found in the backend terminal during local development.
-    this.logger.warn(`DEV admin OTP sign-in requested for ${user.email}: ${otp}`);
+    this.logger.warn(
+      `DEV admin OTP sign-in requested for ${user.email}: ${otp}`,
+    );
     return {
-      message: 'Development sign-in. Submit this code to /api/v1/auth/admin/dev/verify.',
+      message:
+        'Development sign-in. Submit this code to /api/v1/auth/admin/dev/verify.',
       expiresInSeconds: this.authService.otpLifetimeSeconds(),
       otp,
     };
@@ -294,7 +341,9 @@ export class AdminAuthService {
       select: { id: true, email: true, role: true, status: true },
     });
     if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
-      throw new NotFoundException('No active administrator was found for this email.');
+      throw new NotFoundException(
+        'No active administrator was found for this email.',
+      );
     }
     return user;
   }
@@ -306,21 +355,32 @@ export class AdminAuthService {
       where: { token: this.hashSecret(refreshToken) },
     });
     if (!session) {
-      throw new UnauthorizedException('The session is invalid or has ended. Sign in again.');
+      throw new UnauthorizedException(
+        'The session is invalid or has ended. Sign in again.',
+      );
     }
     if (session.expiresAt.getTime() <= Date.now()) {
-      throw new UnauthorizedException('The session has expired. Sign in again.');
+      throw new UnauthorizedException(
+        'The session has expired. Sign in again.',
+      );
     }
-    const user = await this.prisma.user.findUnique({ where: { id: session.userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: session.userId },
+    });
     if (!user) {
-      throw new UnauthorizedException('The account associated with this session no longer exists.');
+      throw new UnauthorizedException(
+        'The account associated with this session no longer exists.',
+      );
     }
     this.ensureActive(user.status);
     if (user.role !== UserRole.ADMIN) {
       throw new ForbiddenException('This account is not an administrator.');
     }
 
-    const { sessionId, ...tokens } = await this.generateTokens(user.id, user.role);
+    const { sessionId, ...tokens } = await this.generateTokens(
+      user.id,
+      user.role,
+    );
     const rotatedHash = this.hashSecret(tokens.refreshToken);
     // Deleting and reinserting in one transaction keeps the old token single-use:
     // two concurrent refreshes race on the same row and only one delete can match.
@@ -329,7 +389,9 @@ export class AdminAuthService {
         where: { id: session.id, userId: user.id },
       });
       if (revoked.count === 0) {
-        throw new UnauthorizedException('The session is invalid or has ended. Sign in again.');
+        throw new UnauthorizedException(
+          'The session is invalid or has ended. Sign in again.',
+        );
       }
       await tx.refreshToken.create({
         data: {
@@ -357,6 +419,138 @@ export class AdminAuthService {
     return { message: 'Signed out successfully.' };
   }
 
+  // Responds identically for every email and sends a reset OTP only to an active
+  // administrator's registered phone. Requests are capped by email digest.
+  async requestPasswordReset(email: string) {
+    this.smsService.ensureOtpDeliveryAvailable();
+    const requestCount = await this.runScript(
+      CLAIM_PASSWORD_RESET_REQUEST_SCRIPT,
+      [this.passwordResetRequestsKey(email)],
+      '3',
+      '900',
+    );
+    if (requestCount === -1) {
+      throw tooManyRequests(
+        'Too many password reset requests. Try again in 15 minutes.',
+      );
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        phoneNumber: true,
+        role: true,
+        status: true,
+      },
+    });
+    if (user?.role === UserRole.ADMIN && user.status === 'ACTIVE') {
+      const otp = await this.authService.issueOtpCode(
+        user.id,
+        'admin-password-reset',
+      );
+      await this.smsService.sendOtp(user.phoneNumber, otp);
+    }
+
+    return {
+      message:
+        'If an active administrator account matches that email, a verification code has been sent to its registered phone.',
+    };
+  }
+
+  // Consumes the reset-only OTP and creates a short-lived, single-use grant. The
+  // grant is the only credential accepted by the password update step.
+  async verifyPasswordResetCode(email: string, otp: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        role: true,
+        status: true,
+      },
+    });
+    if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
+      throw new UnauthorizedException(
+        'The email or verification code is incorrect.',
+      );
+    }
+
+    await this.authService.verifyOtpCode(user.id, otp, 'admin-password-reset');
+    const resetToken = randomUUID();
+    const stored = await this.readRedis(
+      'Storing an admin password reset grant',
+      () =>
+        this.redisService
+          .getClient()
+          .set(
+            this.passwordResetGrantKey(resetToken),
+            user.id,
+            'EX',
+            this.passwordResetGrantTtlSeconds(),
+            'NX',
+          ),
+    );
+    if (stored !== 'OK') {
+      throw new ServiceUnavailableException(
+        'The verification service is unavailable. Try again shortly.',
+      );
+    }
+
+    return {
+      resetToken,
+      expiresInSeconds: this.passwordResetGrantTtlSeconds(),
+    };
+  }
+
+  // A verified, time-limited grant updates only the matching admin password.
+  // Existing sessions are revoked when the password changes.
+  async resetPassword(email: string, resetToken: string, newPassword: string) {
+    this.assertAdminPassword(newPassword);
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, role: true, status: true },
+    });
+    if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
+      throw new UnauthorizedException(
+        'The email or password reset authorization is invalid or expired.',
+      );
+    }
+
+    const consumed = await this.runScript(
+      CONSUME_PASSWORD_RESET_GRANT_SCRIPT,
+      [this.passwordResetGrantKey(resetToken)],
+      user.id,
+    );
+    if (consumed !== 1) {
+      throw new UnauthorizedException(
+        'The email or password reset authorization is invalid or expired.',
+      );
+    }
+
+    const passwordHash = await hash(newPassword, this.bcryptRounds);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: { passwordHash },
+      });
+      await tx.refreshToken.deleteMany({ where: { userId: user.id } });
+      await this.audit.log(
+        {
+          entityType: 'User',
+          entityId: user.id,
+          action: 'ADMIN_PASSWORD_RESET',
+          actorId: user.id,
+          metadata: { sessionsRevoked: true },
+        },
+        tx,
+      );
+    });
+    return {
+      message: 'Password reset successfully. Sign in with your new password.',
+      sessionsRevoked: true,
+    };
+  }
+
   // Changes the password behind the current session. Every refresh token is revoked,
   // so a password change ends sessions on other devices; the access cookie stops
   // working on the next request because JwtStrategy validates its session row.
@@ -366,7 +560,9 @@ export class AdminAuthService {
       select: { id: true, role: true, status: true, passwordHash: true },
     });
     if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
-      throw new ForbiddenException('Only an active administrator can change this password.');
+      throw new ForbiddenException(
+        'Only an active administrator can change this password.',
+      );
     }
     if (!user.passwordHash) {
       throw new BadRequestException(
@@ -415,11 +611,18 @@ export class AdminAuthService {
       select: { id: true, fullName: true, email: true, role: true },
     });
     if (!user) {
-      throw new UnauthorizedException('The account associated with this session no longer exists.');
+      throw new UnauthorizedException(
+        'The account associated with this session no longer exists.',
+      );
     }
     // Picked one field at a time rather than spread, so that loosening the select
     // above can never start handing the password hash or the TOTP secret to a caller.
-    return { id: user.id, fullName: user.fullName, email: user.email ?? '', role: user.role };
+    return {
+      id: user.id,
+      fullName: user.fullName,
+      email: user.email ?? '',
+      role: user.role,
+    };
   }
 
   // Seconds the access token stays valid, so the client knows when to refresh.
@@ -445,7 +648,11 @@ export class AdminAuthService {
 
   // Writes the challenge state and returns its id so the caller can bind it to the
   // cookie. In 'enroll' mode the secret rides along and is not yet on the account.
-  private async startChallenge(userId: string, mode: string, secret: string): Promise<string> {
+  private async startChallenge(
+    userId: string,
+    mode: string,
+    secret: string,
+  ): Promise<string> {
     const challengeId = randomUUID();
     await this.runScript(
       CREATE_CHALLENGE_SCRIPT,
@@ -481,7 +688,10 @@ export class AdminAuthService {
   private async commitSecret(userId: string, secret: string) {
     await this.prisma.user.update({
       where: { id: userId },
-      data: { totpSecret: this.totpCrypto.encrypt(secret), totpEnabledAt: new Date() },
+      data: {
+        totpSecret: this.totpCrypto.encrypt(secret),
+        totpEnabledAt: new Date(),
+      },
     });
   }
 
@@ -504,11 +714,17 @@ export class AdminAuthService {
     for (let step = -this.totpWindow; step <= this.totpWindow; step++) {
       const expected = Buffer.from(
         authenticator
-          .create({ ...options, epoch: now + step * this.totpStepSeconds * 1000 })
+          .create({
+            ...options,
+            epoch: now + step * this.totpStepSeconds * 1000,
+          })
           .generate(secret),
         'utf8',
       );
-      if (expected.length === submitted.length && timingSafeEqual(submitted, expected)) {
+      if (
+        expected.length === submitted.length &&
+        timingSafeEqual(submitted, expected)
+      ) {
         matched = 1;
       }
     }
@@ -520,13 +736,18 @@ export class AdminAuthService {
   private async startSession(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
-      throw new UnauthorizedException('The account associated with this verification no longer exists.');
+      throw new UnauthorizedException(
+        'The account associated with this verification no longer exists.',
+      );
     }
     this.ensureActive(user.status);
     if (user.role !== UserRole.ADMIN) {
       throw new ForbiddenException('This account is not an administrator.');
     }
-    const { sessionId, ...tokens } = await this.generateTokens(user.id, user.role);
+    const { sessionId, ...tokens } = await this.generateTokens(
+      user.id,
+      user.role,
+    );
     await this.prisma.refreshToken.create({
       data: {
         token: this.hashSecret(tokens.refreshToken),
@@ -542,11 +763,21 @@ export class AdminAuthService {
   // under `tokens` for the controller to write and deliberately excluded from the
   // body it returns.
   private sessionPayload(
-    user: { id: string; fullName: string; email: string | null; role: UserRole },
+    user: {
+      id: string;
+      fullName: string;
+      email: string | null;
+      role: UserRole;
+    },
     tokens: { accessToken: string; refreshToken: string },
   ) {
     return {
-      user: { id: user.id, fullName: user.fullName, email: user.email ?? '', role: user.role },
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        email: user.email ?? '',
+        role: user.role,
+      },
       expiresInSeconds: this.accessTokenSeconds(),
       tokens,
     };
@@ -558,22 +789,30 @@ export class AdminAuthService {
     const sessionId = randomUUID();
     const payload = { sub: userId, role, sid: sessionId };
     const accessSecret =
-      this.configService.get<string>('jwt.accessSecret') || 'default_dev_access_secret_32chars';
+      this.configService.get<string>('jwt.accessSecret') ||
+      'default_dev_access_secret_32chars';
     const refreshSecret =
-      this.configService.get<string>('jwt.refreshSecret') || 'default_dev_refresh_secret_32chars';
+      this.configService.get<string>('jwt.refreshSecret') ||
+      'default_dev_refresh_secret_32chars';
 
     const accessToken = await this.jwtService.signAsync(
       { ...payload, typ: 'access' },
       {
         secret: accessSecret,
-        expiresIn: this.configService.get<string>('adminAuth.accessExpiresIn', '1d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+        expiresIn: this.configService.get<string>(
+          'adminAuth.accessExpiresIn',
+          '1d',
+        ) as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
       },
     );
     const refreshToken = await this.jwtService.signAsync(
       { ...payload, typ: 'refresh' },
       {
         secret: refreshSecret,
-        expiresIn: this.configService.get<string>('adminAuth.refreshExpiresIn', '5d') as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
+        expiresIn: this.configService.get<string>(
+          'adminAuth.refreshExpiresIn',
+          '5d',
+        ) as `${number}${'s' | 'm' | 'h' | 'd' | 'w' | 'y'}`,
       },
     );
 
@@ -590,7 +829,11 @@ export class AdminAuthService {
       client.hgetall(this.challengeKey(challengeId)),
     );
     if (!stored?.userId) return null;
-    return { userId: stored.userId, mode: stored.mode, secret: stored.secret ?? '' };
+    return {
+      userId: stored.userId,
+      mode: stored.mode,
+      secret: stored.secret ?? '',
+    };
   }
 
   // Refuses a locked address before spending any bcrypt time on it.
@@ -602,7 +845,9 @@ export class AdminAuthService {
       )) ?? 0,
     );
     if (attempts < this.maxLoginAttempts) return;
-    const ttl = await this.readRedis('Reading the lockout window', () => client.ttl(failuresKey));
+    const ttl = await this.readRedis('Reading the lockout window', () =>
+      client.ttl(failuresKey),
+    );
     throw tooManyRequests(
       `Too many failed sign-in attempts. Try again in ${Math.max(1, Math.ceil(ttl / 60))} minute(s).`,
     );
@@ -642,6 +887,32 @@ export class AdminAuthService {
     return `auth:admin:login:tries:${this.hashSecret(email)}`;
   }
 
+  private passwordResetRequestsKey(email: string) {
+    return `auth:admin:password-reset:requests:${this.hashSecret(email)}`;
+  }
+
+  private passwordResetGrantKey(resetToken: string) {
+    return `auth:admin:password-reset:grant:${this.hashSecret(resetToken)}`;
+  }
+
+  private passwordResetGrantTtlSeconds() {
+    return 300;
+  }
+
+  private assertAdminPassword(password: string) {
+    if (
+      Buffer.byteLength(password, 'utf8') < 8 ||
+      Buffer.byteLength(password, 'utf8') > 72 ||
+      !/[A-Z]/.test(password) ||
+      !/\d/.test(password) ||
+      !/[^A-Za-z0-9]/.test(password)
+    ) {
+      throw new BadRequestException(
+        'The new password must be 8–72 bytes and contain an uppercase letter, a number, and a non-alphanumeric character.',
+      );
+    }
+  }
+
   // The challenge key outlives its window slightly, so an expired sign-in is still
   // reported as expired rather than looking like one that never happened.
   private twoFactorKeyTtlSeconds(): number {
@@ -657,7 +928,14 @@ export class AdminAuthService {
   private durationToSeconds(value: string): number {
     const match = /^(\d+)\s*(s|m|h|d|w|y)?$/i.exec(String(value).trim());
     if (!match) return 900;
-    const units: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 604800, y: 31536000 };
+    const units: Record<string, number> = {
+      s: 1,
+      m: 60,
+      h: 3600,
+      d: 86400,
+      w: 604800,
+      y: 31536000,
+    };
     return Number(match[1]) * units[(match[2] || 's').toLowerCase()];
   }
 
@@ -673,7 +951,10 @@ export class AdminAuthService {
   // Runs one Redis read and translates an outage into a service error, so a Redis
   // failure is never mistaken for a rejected credential or a missing challenge. The
   // 429 and 400 answers are raised outside this helper so they are not swallowed.
-  private async readRedis<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  private async readRedis<T>(
+    operation: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
     try {
       return await run();
     } catch (error) {
@@ -685,12 +966,20 @@ export class AdminAuthService {
   }
 
   // Runs an atomic Redis operation and translates outages to a service error.
-  private async runScript(script: string, keys: string[], ...args: string[]): Promise<number> {
+  private async runScript(
+    script: string,
+    keys: string[],
+    ...args: string[]
+  ): Promise<number> {
     try {
-      const result = await this.redisService.getClient().eval(script, keys.length, ...keys, ...args);
+      const result = await this.redisService
+        .getClient()
+        .eval(script, keys.length, ...keys, ...args);
       return Number(result);
     } catch (error) {
-      this.logger.error(`Admin auth Redis operation failed: ${this.errorMessage(error)}`);
+      this.logger.error(
+        `Admin auth Redis operation failed: ${this.errorMessage(error)}`,
+      );
       throw new ServiceUnavailableException(
         'The verification service is unavailable. Try again shortly.',
       );
@@ -701,7 +990,9 @@ export class AdminAuthService {
     try {
       await this.redisService.getClient().del(...keys);
     } catch (error) {
-      this.logger.error(`Could not clear admin auth keys: ${this.errorMessage(error)}`);
+      this.logger.error(
+        `Could not clear admin auth keys: ${this.errorMessage(error)}`,
+      );
     }
   }
 

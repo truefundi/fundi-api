@@ -92,6 +92,8 @@ redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
 return 0
 `;
 
+type OtpPurpose = 'login' | 'admin-password-reset';
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -740,11 +742,14 @@ export class AuthService {
     await this.deliverOtp(userId, phoneNumber, code);
   }
 
-  // Creates and stores a fresh code without delivering it, so a caller that has its
-  // own channel can hand the code over itself. Reused by the development-only admin
-  // sign-in, which returns the code in the response instead of texting it.
-  async issueOtpCode(userId: string): Promise<string> {
-    return this.issueOtpForKeys(this.otpKey(userId));
+  // Creates and stores a fresh code without delivering it, so a caller with its own
+  // delivery channel can send it. Purpose namespaces keep reset codes isolated from
+  // login codes.
+  async issueOtpCode(
+    userId: string,
+    purpose: OtpPurpose = 'login',
+  ): Promise<string> {
+    return this.issueOtpForKeys(this.otpKey(userId, purpose));
   }
 
   private async issueOtpForKeys(otpKey: string): Promise<string> {
@@ -761,11 +766,18 @@ export class AuthService {
     return code;
   }
 
-  // Checks a code against the pending one and consumes it on a match, raising the
-  // same errors the phone flow does on every kind of failure. Split out so the
-  // development-only admin sign-in reuses this exact logic rather than a copy.
-  async verifyOtpCode(userId: string, otp: string): Promise<void> {
-    return this.verifyCode(this.otpKey(userId), this.otpTriesKey(userId), otp);
+  // Checks a purpose-specific code and consumes it on a match, raising the same
+  // errors as the phone flow.
+  async verifyOtpCode(
+    userId: string,
+    otp: string,
+    purpose: OtpPurpose = 'login',
+  ): Promise<void> {
+    return this.verifyCode(
+      this.otpKey(userId, purpose),
+      this.otpTriesKey(userId, purpose),
+      otp,
+    );
   }
 
   async requestCustomerJobOtp(
@@ -1009,14 +1021,18 @@ export class AuthService {
   }
 
   // Keeps pending OTP records in a namespaced key per account.
-  private otpKey(userId: string) {
-    return `auth:otp:${userId}`;
+  private otpKey(userId: string, purpose: OtpPurpose = 'login') {
+    return purpose === 'login'
+      ? `auth:otp:${userId}`
+      : `auth:otp:${purpose}:${userId}`;
   }
 
   // Holds the account-wide wrong-guess tally, deliberately separate from the OTP
   // hash so that issuing a new code cannot reset it.
-  private otpTriesKey(userId: string) {
-    return `auth:otp:tries:${userId}`;
+  private otpTriesKey(userId: string, purpose: OtpPurpose = 'login') {
+    return purpose === 'login'
+      ? `auth:otp:tries:${userId}`
+      : `auth:otp:tries:${purpose}:${userId}`;
   }
 
   private jobVerificationOtpKey(verificationId: string) {

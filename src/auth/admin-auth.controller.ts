@@ -10,13 +10,25 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
-import { ApiCookieAuth, ApiExtraModels, ApiOperation, ApiResponse, ApiTags, getSchemaPath } from '@nestjs/swagger';
+import {
+  ApiCookieAuth,
+  ApiExtraModels,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminLoginDto } from './dto/admin-login.dto';
 import { ChangeAdminPasswordDto } from './dto/change-admin-password.dto';
+import {
+  RequestAdminPasswordResetDto,
+  ResetAdminPasswordDto,
+  VerifyAdminPasswordResetDto,
+} from './dto/admin-password-reset.dto';
 import { VerifyAdminTwoFactorDto } from './dto/admin-2fa.dto';
 import {
   AdminDevOtpRequestDto,
@@ -38,7 +50,11 @@ import {
   adminCookieBase,
   clearAdminCookie,
 } from './admin-cookies';
-import { Auth, CurrentUser, type AuthUser } from '../common/decorators/auth.decorator';
+import {
+  Auth,
+  CurrentUser,
+  type AuthUser,
+} from '../common/decorators/auth.decorator';
 import {
   ApiBadRequest,
   ApiForbidden,
@@ -97,14 +113,103 @@ export class AdminAuthController {
     'The email or password is incorrect, or the account is not an active administrator.',
   )
   @ApiTooManyRequests('Too many failed sign-in attempts for this address.')
-  @ApiServiceUnavailable('The rate-limit store or the secret store is unavailable.')
-  async login(@Body() body: AdminLoginDto, @Res({ passthrough: true }) response: Response) {
+  @ApiServiceUnavailable(
+    'The rate-limit store or the secret store is unavailable.',
+  )
+  async login(
+    @Body() body: AdminLoginDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
     const { challengeId, ...result } = await this.adminAuthService.login(body);
     // The body carries the shared secret on a first sign-in, so it must not be cached
     // by the browser or by any proxy in between.
     response.setHeader('Cache-Control', 'no-store');
-    response.cookie(ADMIN_2FA_CHALLENGE_COOKIE, challengeId, this.challengeCookieOptions());
+    response.cookie(
+      ADMIN_2FA_CHALLENGE_COOKIE,
+      challengeId,
+      this.challengeCookieOptions(),
+    );
     return result;
+  }
+
+  @Post('password/reset/request')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Request an admin password reset code',
+    description:
+      'Sends a short-lived OTP to the registered phone of an active administrator. The response is identical whether the email belongs to an active administrator or not.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'A generic response that does not disclose account existence.',
+  })
+  @ApiValidationFailed()
+  @ApiTooManyRequests('Too many password reset requests for this email.')
+  @ApiServiceUnavailable(
+    'The SMS delivery service or verification store is unavailable.',
+  )
+  async requestPasswordReset(
+    @Body() body: RequestAdminPasswordResetDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    return this.adminAuthService.requestPasswordReset(body.email);
+  }
+
+  @Post('password/reset/verify')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Verify an admin password reset OTP',
+    description:
+      'Consumes the reset-only OTP sent to the administrator phone and returns a short-lived, single-use reset authorization. This does not sign in the administrator.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'The OTP is valid and a short-lived reset authorization was issued.',
+    schema: {
+      example: { resetToken: 'opaque-single-use-token', expiresInSeconds: 300 },
+    },
+  })
+  @ApiValidationFailed()
+  @ApiUnauthorized('The email or verification code is incorrect or expired.')
+  @ApiBadRequest('No password reset code is pending.')
+  @ApiForbidden('Too many incorrect verification codes were submitted.')
+  @ApiServiceUnavailable()
+  async verifyPasswordResetCode(
+    @Body() body: VerifyAdminPasswordResetDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    return this.adminAuthService.verifyPasswordResetCode(body.email, body.otp);
+  }
+
+  @Post('password/reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Set a new admin password after OTP verification',
+    description:
+      'Accepts the short-lived, single-use reset authorization returned by `/password/reset/verify`, updates the password, and revokes all existing sessions. Authenticator-app two-factor enrollment is unchanged.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Password reset and all existing sessions revoked.',
+  })
+  @ApiValidationFailed()
+  @ApiUnauthorized(
+    'The email or password reset authorization is invalid or expired.',
+  )
+  @ApiServiceUnavailable()
+  async resetPassword(
+    @Body() body: ResetAdminPasswordDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    response.setHeader('Cache-Control', 'no-store');
+    return this.adminAuthService.resetPassword(
+      body.email,
+      body.resetToken,
+      body.newPassword,
+    );
   }
 
   // Step two: checks the code and issues the session cookies.
@@ -122,7 +227,9 @@ export class AdminAuthController {
     description: 'An authenticated admin session',
     type: AdminSessionDto,
   })
-  @ApiBadRequest('There is no pending verification, or the challenge was already used.')
+  @ApiBadRequest(
+    'There is no pending verification, or the challenge was already used.',
+  )
   @ApiUnauthorized('The code is incorrect, or the sign-in window has closed.')
   @ApiTooManyRequests(
     'Too many incorrect codes were submitted for this account. Wait a few minutes.',
@@ -156,10 +263,16 @@ export class AdminAuthController {
     description:
       'Returns the code in the response instead of sending it, so no phone is needed. Only the development build serves this route; every other environment answers `404`, as if it did not exist.',
   })
-  @ApiResponse({ status: 200, description: 'The code to submit to `/dev/verify`' })
+  @ApiResponse({
+    status: 200,
+    description: 'The code to submit to `/dev/verify`',
+  })
   @ApiValidationFailed()
   @ApiNotFound('The dev-only sign-in is disabled outside development.')
-  async devOtp(@Body() body: AdminDevOtpRequestDto, @Res({ passthrough: true }) response: Response) {
+  async devOtp(
+    @Body() body: AdminDevOtpRequestDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
     // The body carries the code, so it must not be cached by the browser or a proxy.
     response.setHeader('Cache-Control', 'no-store');
     return this.adminAuthService.startDevOtpLogin(body.email);
@@ -175,7 +288,11 @@ export class AdminAuthController {
     description:
       'Issues the `fundi_admin_access` and `fundi_admin_refresh` cookies, exactly as `/2fa/verify` does. Answers `404` outside the development build.',
   })
-  @ApiResponse({ status: 200, description: 'An authenticated admin session', type: AdminSessionDto })
+  @ApiResponse({
+    status: 200,
+    description: 'An authenticated admin session',
+    type: AdminSessionDto,
+  })
   @ApiValidationFailed()
   @ApiNotFound('The dev-only sign-in is disabled outside development.')
   @ApiUnauthorized('The code is incorrect or has expired.')
@@ -185,7 +302,10 @@ export class AdminAuthController {
     @Body() body: AdminDevOtpVerifyDto,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const result = await this.adminAuthService.verifyDevOtpLogin(body.email, body.otp);
+    const result = await this.adminAuthService.verifyDevOtpLogin(
+      body.email,
+      body.otp,
+    );
     response.setHeader('Cache-Control', 'no-store');
     this.setSessionCookies(response, result.tokens);
     return this.sessionBody(result);
@@ -200,7 +320,11 @@ export class AdminAuthController {
     description:
       'Takes no body and no access token, because it is normally called after the short-lived access token has expired. The presented token is single use and is revoked as the new pair is issued.',
   })
-  @ApiResponse({ status: 200, description: 'A renewed admin session', type: AdminSessionDto })
+  @ApiResponse({
+    status: 200,
+    description: 'A renewed admin session',
+    type: AdminSessionDto,
+  })
   @ApiBadRequest('There is no session cookie to refresh.')
   @ApiUnauthorized(
     'The session is invalid, expired, or belongs to an account that is no longer an active administrator.',
@@ -229,7 +353,10 @@ export class AdminAuthController {
     description:
       'Revokes the stored session when the refresh cookie is present, and always clears all three cookies. Succeeds even when the refresh token is unknown, so the dashboard can never be left holding a session it cannot drop.',
   })
-  @ApiResponse({ status: 200, description: 'The session was ended and the cookies cleared' })
+  @ApiResponse({
+    status: 200,
+    description: 'The session was ended and the cookies cleared',
+  })
   async logout(
     @Req() request: AuthenticatedRequest,
     @Res({ passthrough: true }) response: Response,
@@ -280,7 +407,9 @@ export class AdminAuthController {
     },
   })
   @ApiValidationFailed()
-  @ApiUnauthorized('The current password is incorrect, or the session is invalid.')
+  @ApiUnauthorized(
+    'The current password is incorrect, or the session is invalid.',
+  )
   @ApiForbidden('The caller is not an active administrator.')
   async changePassword(
     @CurrentUser() user: AuthUser,
@@ -295,7 +424,10 @@ export class AdminAuthController {
     response: Response,
     tokens: { accessToken: string; refreshToken: string },
   ) {
-    const base = { ...adminCookieBase(this.configService), path: ADMIN_SESSION_COOKIE_PATH };
+    const base = {
+      ...adminCookieBase(this.configService),
+      path: ADMIN_SESSION_COOKIE_PATH,
+    };
     response.cookie(ADMIN_ACCESS_COOKIE, tokens.accessToken, {
       ...base,
       maxAge: this.adminAuthService.accessTokenSeconds() * 1000,
@@ -308,7 +440,10 @@ export class AdminAuthController {
 
   // Repeats the flags and path each cookie was set with, or the browser keeps it.
   private clearSessionCookies(response: Response) {
-    const base = { ...adminCookieBase(this.configService), path: ADMIN_SESSION_COOKIE_PATH };
+    const base = {
+      ...adminCookieBase(this.configService),
+      path: ADMIN_SESSION_COOKIE_PATH,
+    };
     clearAdminCookie(response, ADMIN_ACCESS_COOKIE, base);
     clearAdminCookie(response, ADMIN_REFRESH_COOKIE, base);
     this.clearChallengeCookie(response);

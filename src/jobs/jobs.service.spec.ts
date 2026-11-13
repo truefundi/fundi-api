@@ -2,6 +2,7 @@ import {
   BookingPaymentStatus,
   JobDispatchStatus,
   JobCooperationStatus,
+  JobOfferStatus,
   JobRequestType,
   JobStatus,
 } from '@prisma/client';
@@ -177,6 +178,303 @@ describe('JobsService location matching', () => {
       },
     ]);
     expect(prisma.$queryRaw).toHaveBeenCalled();
+  });
+
+  it('returns similar-service technicians ranked by match accuracy for a job scenario', async () => {
+    const job = {
+      id: 'job-kigali-plumbing',
+      serviceCategoryId: categoryId,
+      serviceCategory: 'Plumbing',
+      description: 'Repair a leaking kitchen sink and replace its tap.',
+      locationAddress: 'Nyarutarama, Kigali',
+      latitude: -1.9536,
+      longitude: 30.0606,
+    };
+    const candidates = [
+      {
+        technicianId: 'tech-emmanuel',
+        distanceMeters: 400,
+        rejectionCount: 0,
+        cancellationCount: 0,
+      },
+      {
+        technicianId: 'tech-alice',
+        distanceMeters: 5_000,
+        rejectionCount: 0,
+        cancellationCount: 0,
+      },
+      {
+        technicianId: 'tech-patrick',
+        distanceMeters: 10_000,
+        rejectionCount: 1,
+        cancellationCount: 0,
+      },
+    ];
+    const profiles = [
+      {
+        id: 'tech-emmanuel',
+        gender: 'MALE',
+        publicLocationLabel: 'Nyarutarama',
+        user: { fullName: 'Emmanuel Shyaka' },
+        categories: [
+          {
+            categoryId,
+            category: { id: categoryId, name: 'Plumbing', slug: 'plumbing' },
+            customName: null,
+            yearsOfExperience: 8,
+          },
+        ],
+      },
+      {
+        id: 'tech-alice',
+        gender: 'FEMALE',
+        publicLocationLabel: 'Kimironko',
+        user: { fullName: 'Alice Uwimana' },
+        categories: [
+          {
+            categoryId,
+            category: { id: categoryId, name: 'Plumbing', slug: 'plumbing' },
+            customName: null,
+            yearsOfExperience: 5,
+          },
+        ],
+      },
+      {
+        id: 'tech-patrick',
+        gender: 'MALE',
+        publicLocationLabel: 'Kicukiro',
+        user: { fullName: 'Patrick Niyonzima' },
+        categories: [
+          {
+            categoryId,
+            category: { id: categoryId, name: 'Plumbing', slug: 'plumbing' },
+            customName: null,
+            yearsOfExperience: 3,
+          },
+        ],
+      },
+      {
+        id: 'tech-electrician',
+        gender: 'MALE',
+        publicLocationLabel: 'Kigali',
+        user: { fullName: 'Jean de Dieu' },
+        categories: [
+          {
+            categoryId: 'different-category',
+            category: {
+              id: 'different-category',
+              name: 'Electrical',
+              slug: 'electrical',
+            },
+            customName: null,
+            yearsOfExperience: 7,
+          },
+        ],
+      },
+    ];
+    const prisma = {
+      serviceCategory: {
+        findFirst: jest.fn().mockResolvedValue({ id: categoryId }),
+      },
+      $queryRaw: jest.fn().mockResolvedValue(candidates),
+      technicianProfile: {
+        findMany: jest.fn().mockResolvedValue(profiles),
+      },
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+
+    const matches = await service.previewMatchingTechnicians({
+      serviceCategoryId: job.serviceCategoryId,
+      latitude: job.latitude,
+      longitude: job.longitude,
+    });
+
+    expect(matches).toEqual([
+      expect.objectContaining({
+        technicianId: 'tech-emmanuel',
+        fullName: 'Emmanuel Shyaka',
+        matchAccuracy: 100,
+        distanceMeters: 400,
+        serviceExperiences: [
+          expect.objectContaining({
+            category: { id: categoryId, name: 'Plumbing', slug: 'plumbing' },
+            yearsOfExperience: 8,
+          }),
+        ],
+      }),
+      expect.objectContaining({
+        technicianId: 'tech-alice',
+        fullName: 'Alice Uwimana',
+        matchAccuracy: 96,
+        distanceMeters: 5_000,
+      }),
+      expect.objectContaining({
+        technicianId: 'tech-patrick',
+        fullName: 'Patrick Niyonzima',
+        matchAccuracy: 87,
+        distanceMeters: 10_000,
+      }),
+    ]);
+    expect(matches.map((match) => match.technicianId)).not.toContain(
+      'tech-electrician',
+    );
+    expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: {
+            in: ['tech-emmanuel', 'tech-alice', 'tech-patrick'],
+          },
+        },
+      }),
+    );
+  });
+
+  it('ranks candidates using distance and incident counters, not job outcomes or ratings', async () => {
+    const jobForMatching = {
+      id: 'job-kigali-plumbing-follow-up',
+      serviceCategoryId: categoryId,
+      serviceName: 'Plumbing',
+      description: 'Repair a leaking bathroom pipe.',
+      locationAddress: 'Nyarutarama, Kigali',
+      latitude: -1.9536,
+      longitude: 30.0606,
+    };
+    const technicianScenarios: Array<{
+      id: string;
+      fullName: string;
+      distanceMeters: number;
+      jobs: Array<{
+        status: string;
+        ratingScores: number[] | null;
+        cancellationRequestedBy?: string;
+      }>;
+      offers: Array<{ status: string }>;
+      technicianCancellations: number;
+    }> = [
+      {
+        id: 'tech-a-rated',
+        fullName: 'Aline Uwase',
+        distanceMeters: 1_000,
+        jobs: [
+          { status: 'COMPLETED', ratingScores: [5, 5, 5] },
+          { status: 'COMPLETED', ratingScores: [5, 4, 5] },
+        ],
+        offers: [],
+        technicianCancellations: 0,
+      },
+      {
+        id: 'tech-b-unrated',
+        fullName: 'Benoit Nkurunziza',
+        distanceMeters: 5_000,
+        jobs: [{ status: 'COMPLETED', ratingScores: null }],
+        offers: [],
+        technicianCancellations: 0,
+      },
+      {
+        id: 'tech-c-rejected',
+        fullName: 'Chantal Mukamana',
+        distanceMeters: 1_000,
+        jobs: [{ status: 'COMPLETED', ratingScores: [4, 4, 4] }],
+        offers: [{ status: 'REJECTED' }],
+        technicianCancellations: 0,
+      },
+      {
+        id: 'tech-d-cancelled',
+        fullName: 'Didier Habimana',
+        distanceMeters: 1_000,
+        jobs: [
+          {
+            status: 'CANCELLED',
+            cancellationRequestedBy: 'TECHNICIAN',
+            ratingScores: null,
+          },
+        ],
+        offers: [],
+        technicianCancellations: 1,
+      },
+      {
+        id: 'tech-e-low-rated',
+        fullName: 'Eric Rukundo',
+        distanceMeters: 1_000,
+        jobs: [
+          { status: 'COMPLETED', ratingScores: [1, 1, 1] },
+          { status: 'COMPLETED', ratingScores: [1, 2, 1] },
+        ],
+        offers: [],
+        technicianCancellations: 0,
+      },
+    ];
+    const queryRows = technicianScenarios.map((scenario) => ({
+      technicianId: scenario.id,
+      distanceMeters: scenario.distanceMeters,
+      rejectionCount: scenario.offers.filter(
+        (offer) => offer.status === 'REJECTED',
+      ).length,
+      cancellationCount: scenario.technicianCancellations,
+    }));
+    const profiles = technicianScenarios.map((scenario) => ({
+      id: scenario.id,
+      gender: 'MALE',
+      publicLocationLabel: 'Kigali',
+      user: { fullName: scenario.fullName },
+      categories: [
+        {
+          categoryId,
+          category: { id: categoryId, name: 'Plumbing', slug: 'plumbing' },
+          customName: null,
+          yearsOfExperience: 5,
+        },
+      ],
+    }));
+    const prisma = {
+      serviceCategory: {
+        findFirst: jest.fn().mockResolvedValue({ id: categoryId }),
+      },
+      $queryRaw: jest.fn().mockResolvedValue(queryRows),
+      technicianProfile: {
+        findMany: jest.fn().mockResolvedValue(profiles),
+      },
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+
+    const matches = await service.previewMatchingTechnicians({
+      serviceCategoryId: jobForMatching.serviceCategoryId,
+      latitude: jobForMatching.latitude,
+      longitude: jobForMatching.longitude,
+    });
+
+    expect(
+      matches.map(({ technicianId, matchAccuracy }) => [
+        technicianId,
+        matchAccuracy,
+      ]),
+    ).toEqual([
+      ['tech-a-rated', 99],
+      ['tech-e-low-rated', 99],
+      ['tech-b-unrated', 96],
+      ['tech-c-rejected', 94],
+      ['tech-d-cancelled', 94],
+    ]);
+    expect(matches[0].serviceExperiences[0]).toMatchObject({
+      category: { name: jobForMatching.serviceName },
+    });
+    expect(matches).toHaveLength(technicianScenarios.length);
   });
 
   it('rejects a partial coordinate pair', async () => {
@@ -434,6 +732,170 @@ describe('JobsService SOS technician dispatch', () => {
   });
 });
 
+describe('JobsService normal technician requests', () => {
+  const jobId = 'normal-job-1';
+  const customerId = 'customer-1';
+  const technicianId = 'technician-1';
+
+  it('schedules a normal technician request to expire after two minutes', async () => {
+    const now = new Date();
+    const job = {
+      id: jobId,
+      customerId,
+      customerHiddenAt: null,
+      status: JobStatus.OPEN,
+      technicianId: null,
+      serviceCategoryId: 'category-1',
+      otherServiceName: null,
+      latitude: -1.95,
+      longitude: 30.06,
+      dispatchRound: 0,
+      requestType: JobRequestType.NORMAL,
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      bookingPayment: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'payment-1',
+          validUntil: new Date(now.getTime() + 60 * 60 * 1000),
+        }),
+        update: jest.fn(),
+      },
+      technicianProfile: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: technicianId,
+          userId: 'technician-user-1',
+        }),
+      },
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      jobOffer: {
+        create: jest.fn().mockImplementation(({ data }) =>
+          Promise.resolve({
+            id: 'offer-1',
+            jobId,
+            ...data,
+            technician: { userId: 'technician-user-1' },
+            job: {
+              priority: 'NORMAL',
+              description: 'Repair a leaking pipe.',
+              locationAddress: 'Kigali',
+              offeredAmount: 20_000,
+              currency: 'RWF',
+              otherServiceName: null,
+              serviceCategory: { name: 'Plumbing' },
+            },
+          }),
+        ),
+      },
+    };
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const events = { notifyTechnician: jest.fn() };
+    const notifications = { create: jest.fn().mockResolvedValue(undefined) };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue(job) },
+      $queryRaw: jest.fn().mockResolvedValue([
+        {
+          technicianId,
+          distanceMeters: 500,
+          rejectionCount: 0,
+          cancellationCount: 0,
+        },
+      ]),
+      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+        work(tx),
+      ),
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      { log: jest.fn().mockResolvedValue(undefined) } as never,
+      events as never,
+      notifications as never,
+      queue as never,
+      undefined as never,
+    );
+    jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as never);
+
+    await service.proposeTechnician(customerId, jobId, {
+      technicianId,
+    });
+
+    const offerData = tx.jobOffer.create.mock.calls[0][0].data as {
+      expiresAt: Date;
+    };
+    expect(offerData.expiresAt.getTime() - Date.now()).toBeGreaterThan(119_000);
+    expect(offerData.expiresAt.getTime() - Date.now()).toBeLessThanOrEqual(
+      120_000,
+    );
+    expect(queue.add).toHaveBeenCalledWith(
+      'expire-offer',
+      { offerId: 'offer-1' },
+      expect.objectContaining({ delay: 120_000 }),
+    );
+  });
+
+  it('expires a normal offer and leaves the job open for the creator to choose again', async () => {
+    const offer = {
+      id: 'offer-expired',
+      jobId,
+      round: 2,
+      status: JobOfferStatus.OFFERED,
+      expiresAt: new Date(Date.now() - 1_000),
+      job: { requestType: JobRequestType.NORMAL },
+    };
+    const tx = {
+      jobOffer: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const prisma = {
+      jobOffer: { findUnique: jest.fn().mockResolvedValue(offer) },
+      job: { findUnique: jest.fn() },
+      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+        work(tx),
+      ),
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      { log: jest.fn().mockResolvedValue(undefined) } as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+
+    await service.expireOffer(offer.id);
+
+    expect(tx.jobOffer.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: offer.id,
+          status: JobOfferStatus.OFFERED,
+        }),
+        data: { status: JobOfferStatus.EXPIRED, respondedAt: expect.any(Date) },
+      }),
+    );
+    expect(tx.job.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: jobId,
+          status: JobStatus.OPEN,
+          technicianId: null,
+          dispatchRound: offer.round,
+        }),
+        data: { dispatchStatus: JobDispatchStatus.PENDING },
+      }),
+    );
+    expect(prisma.job.findUnique).not.toHaveBeenCalled();
+  });
+});
+
 // Covers the dashboard counts: OPEN, ASSIGNED, and PAUSED jobs are active,
 // COMPLETED is terminal, and a dispute counts as open until it is resolved.
 describe('JobsService.summaryForAdmin', () => {
@@ -540,10 +1002,10 @@ describe('JobsService admin pipeline', () => {
     const { service, jobCount, jobFindMany } = createService();
     jobCount.mockResolvedValue(21);
 
-    const result = await service.pipelineStageForAdmin(
-      JobPipelineStage.VISIT,
-      { page: 2, limit: 10 },
-    );
+    const result = await service.pipelineStageForAdmin(JobPipelineStage.VISIT, {
+      page: 2,
+      limit: 10,
+    });
 
     expect(result.stage).toMatchObject({
       key: JobPipelineStage.VISIT,

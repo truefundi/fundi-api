@@ -64,6 +64,11 @@
       "type": "string"
     },
     {
+      "key": "ratingItemId",
+      "value": "",
+      "type": "string"
+    },
+    {
       "key": "technicianId",
       "value": "",
       "type": "string"
@@ -4002,6 +4007,235 @@
             "method": "DELETE",
             "header": [],
             "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Feedback and Ratings",
+      "description": "Rating submission is optional and available only for completed jobs with an assigned technician. Admin deletion archives rating items so historical scores remain available.",
+      "item": [
+        {
+          "name": "List rating items (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/rating-items"
+          },
+          "response": []
+        },
+        {
+          "name": "Create rating item (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/rating-items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Time management\",\n  \"description\": \"Arrived and completed the work at the agreed times.\",\n  \"sortOrder\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update or reactivate rating item (admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/rating-items/{{ratingItemId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Communication\",\n  \"isActive\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Archive rating item (admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/rating-items/{{ratingItemId}}"
+          },
+          "response": []
+        },
+        {
+          "name": "Get rating items for my completed job",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/rating-items",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Submit optional job rating",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/rating",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"responses\": [\n    { \"itemId\": \"{{ratingItemId}}\", \"score\": 5 }\n  ],\n  \"comment\": \"Arrived on time and explained the repair clearly.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Read my job rating",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/rating",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "View my technician ratings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/technicians/profile/ratings?page=1&limit=20",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{technicianToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List ratings for technician (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/technicians/{{technicianId}}/ratings?page=1&limit=20"
+          },
+          "response": []
+        },
+        {
+          "name": "Get rating for job (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/jobs/{{jobId}}/ratings"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit rating for job on owner's behalf (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/jobs/{{jobId}}/ratings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"responses\": [\n    { \"itemId\": \"{{ratingItemId}}\", \"score\": 4 }\n  ],\n  \"comment\": \"Recorded with the customer by phone.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Correct job rating (admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/jobs/{{jobId}}/ratings",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"responses\": [\n    { \"itemId\": \"{{ratingItemId}}\", \"score\": 5 }\n  ],\n  \"comment\": \"Corrected after review.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           },
           "response": []
         }

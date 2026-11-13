@@ -61,6 +61,12 @@ chooses its audience roles and its delivery channel, either in-app only or
 in-app plus SMS. See [Broadcasts API](broadcasts.md) for the audience preview,
 the send request, and the delivery counters.
 
+## Audit logs
+
+Administrators can review append-only audit trail entries via
+`/api/v1/admin/audit-logs`. See [Audit logs API](audit-logs.md) for filters,
+request examples, and response shapes.
+
 ## Changing the administrator password
 
 `POST /api/v1/auth/admin/change-password` requires the signed-in administrator's

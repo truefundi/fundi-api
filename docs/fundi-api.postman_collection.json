@@ -924,7 +924,35 @@
               }
             }
           },
-          "response": []
+          "response": [
+            {
+              "name": "201 Created",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/api/v1/catalog/categories",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Home Services\",\n  \"description\": \"Repairs and maintenance for homes.\"\n}"
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"84cfa9af-05d4-40c1-ad36-123e412ec509\",\n  \"name\": \"Home Services\",\n  \"description\": \"Repairs and maintenance for homes.\",\n  \"isActive\": true,\n  \"createdAt\": \"2026-11-13T09:00:00.000Z\",\n  \"updatedAt\": \"2026-11-13T09:00:00.000Z\"\n}"
+            }
+          ]
         },
         {
           "name": "List all parent categories (admin)",
@@ -1071,7 +1099,35 @@
               }
             }
           },
-          "response": []
+          "response": [
+            {
+              "name": "201 Created",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/api/v1/catalog/services",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"categoryId\": \"84cfa9af-05d4-40c1-ad36-123e412ec509\",\n  \"name\": \"Plumbing\",\n  \"description\": \"Leak repairs, pipe fitting, and drain unblocking.\",\n  \"keywords\": \"leak repair, pipes, blocked drain\",\n  \"icon\": \"wrench\",\n  \"bookingFee\": 1000,\n  \"emergencyVisitFee\": 1500,\n  \"sosBookingFee\": 2500,\n  \"isActive\": true\n}"
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"e5a4f4d7-0b21-46d8-9a4b-98765d332100\",\n  \"categoryId\": \"84cfa9af-05d4-40c1-ad36-123e412ec509\",\n  \"name\": \"Plumbing\",\n  \"slug\": \"plumbing\",\n  \"description\": \"Leak repairs, pipe fitting, and drain unblocking.\",\n  \"keywords\": \"leak repair, pipes, blocked drain\",\n  \"bookingFee\": 1000,\n  \"emergencyVisitFee\": 1500,\n  \"sosBookingFee\": 2500,\n  \"icon\": \"wrench\",\n  \"isActive\": true,\n  \"createdAt\": \"2026-11-13T09:05:00.000Z\",\n  \"updatedAt\": \"2026-11-13T09:05:00.000Z\",\n  \"category\": {\n    \"id\": \"84cfa9af-05d4-40c1-ad36-123e412ec509\",\n    \"name\": \"Home Services\",\n    \"description\": \"Repairs and maintenance for homes.\",\n    \"isActive\": true,\n    \"createdAt\": \"2026-11-13T09:00:00.000Z\",\n    \"updatedAt\": \"2026-11-13T09:00:00.000Z\"\n  }\n}"
+            }
+          ]
         },
         {
           "name": "List all services (admin)",
@@ -4004,6 +4060,132 @@
             "url": "{{baseUrl}}/api/v1/admin/chat/rooms/{{chatRoomId}}/messages/{{chatMessageId}}"
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "Admin Audit Logs",
+      "item": [
+        {
+          "name": "List audit logs (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-logs?entityType=Job&entityId={{auditEntityId}}&limit=20&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-logs"
+              ],
+              "query": [
+                {
+                  "key": "entityType",
+                  "value": "Job",
+                  "description": "Optional. Filter by entity type (e.g. Job, User, Dispute)."
+                },
+                {
+                  "key": "entityId",
+                  "value": "{{auditEntityId}}",
+                  "description": "Optional. Filter by the affected entity id."
+                },
+                {
+                  "key": "action",
+                  "value": "JOB_STATUS_UPDATED",
+                  "description": "Optional. Filter by action.",
+                  "disabled": true
+                },
+                {
+                  "key": "actorId",
+                  "value": "{{auditActorId}}",
+                  "description": "Optional. Filter by actor user id (UUID).",
+                  "disabled": true
+                },
+                {
+                  "key": "from",
+                  "value": "2026-11-01T00:00:00.000Z",
+                  "description": "Optional. ISO-8601 start timestamp.",
+                  "disabled": true
+                },
+                {
+                  "key": "to",
+                  "value": "2026-11-30T23:59:59.999Z",
+                  "description": "Optional. ISO-8601 end timestamp.",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "Optional. Page size (1-200, default 50)."
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "description": "Optional. Records to skip (default 0)."
+                }
+              ]
+            },
+            "description": "Returns audit trail entries, newest first. Requires an authenticated admin session cookie.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/api/v1/admin/audit-logs?entityType=Job&entityId={{auditEntityId}}&limit=20&offset=0"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"items\": [\n    {\n      \"id\": \"8d2b6a91-1c34-4d7b-a4e2-9f0c1d2e3f45\",\n      \"entityType\": \"Job\",\n      \"entityId\": \"2f7a0f6e-4b3d-4f5a-9b7d-1d2f3c4b5a6e\",\n      \"action\": \"JOB_STATUS_UPDATED\",\n      \"fromStatus\": \"OPEN\",\n      \"toStatus\": \"ASSIGNED\",\n      \"actorId\": \"1a4e8f20-9b7c-4d11-8e5a-6b2c3d4e5f60\",\n      \"metadata\": {\n        \"reason\": \"Technician accepted the offer\",\n        \"source\": \"system\"\n      },\n      \"createdAt\": \"2026-11-13T08:42:15.123Z\"\n    }\n  ],\n  \"total\": 1,\n  \"limit\": 20,\n  \"offset\": 0\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get audit log by id (admin)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/admin/audit-logs/{{auditLogId}}",
+            "description": "Returns a single audit log entry by id. Requires an authenticated admin session cookie.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/api/v1/admin/audit-logs/{{auditLogId}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"id\": \"8d2b6a91-1c34-4d7b-a4e2-9f0c1d2e3f45\",\n  \"entityType\": \"Job\",\n  \"entityId\": \"2f7a0f6e-4b3d-4f5a-9b7d-1d2f3c4b5a6e\",\n  \"action\": \"JOB_STATUS_UPDATED\",\n  \"fromStatus\": \"OPEN\",\n  \"toStatus\": \"ASSIGNED\",\n  \"actorId\": \"1a4e8f20-9b7c-4d11-8e5a-6b2c3d4e5f60\",\n  \"metadata\": {\n    \"reason\": \"Technician accepted the offer\",\n    \"source\": \"system\"\n  },\n  \"createdAt\": \"2026-11-13T08:42:15.123Z\"\n}"
+            }
+          ]
         }
       ]
     }

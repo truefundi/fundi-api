@@ -1486,6 +1486,159 @@ paths:
       tags:
         - Auth
       x-fundi-status: implemented
+  /auth/admin/password/reset/request:
+    post:
+      description: |-
+        Sends a reset-only OTP to the registered phone of an active administrator. The response is identical whether the email belongs to an active administrator or not. Requests are limited to three per email per 15 minutes.
+      operationId: AdminAuthController_requestPasswordReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestAdminPasswordResetDto'
+      responses:
+        '200':
+          description: A generic response that does not disclose account existence.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: If an active administrator account matches that email, a verification code has been sent to its registered phone.
+                required:
+                  - message
+        '400':
+          description: The request failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+        '429':
+          description: Too many password reset requests for this email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+        '503':
+          description: The SMS delivery service or verification store is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+      summary: Request an admin password reset code
+      tags:
+        - AuthAdmin
+      x-fundi-status: implemented
+  /auth/admin/password/reset/verify:
+    post:
+      description: |-
+        Consumes the reset-only OTP sent to the administrator phone and returns a short-lived, single-use reset authorization. This does not sign in the administrator.
+      operationId: AdminAuthController_verifyPasswordResetCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyAdminPasswordResetDto'
+      responses:
+        '200':
+          description: The OTP is valid and a short-lived reset authorization was issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resetToken:
+                    type: string
+                    example: 6f80b469-f3dd-4126-9092-612e5c065fbc
+                    description: Short-lived, single-use password reset authorization.
+                  expiresInSeconds:
+                    type: number
+                    example: 300
+                required:
+                  - resetToken
+                  - expiresInSeconds
+        '400':
+          description: The request failed validation or no reset code is pending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+        '401':
+          description: The email or verification code is incorrect or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+        '403':
+          description: Too many incorrect verification codes were submitted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+        '503':
+          description: The verification store is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+      summary: Verify an admin password reset OTP
+      tags:
+        - AuthAdmin
+      x-fundi-status: implemented
+  /auth/admin/password/reset:
+    post:
+      description: |-
+        Accepts the short-lived, single-use reset authorization returned by `/password/reset/verify`, updates the password, and revokes all existing sessions. Authenticator-app two-factor enrollment is unchanged.
+      operationId: AdminAuthController_resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetAdminPasswordDto'
+      responses:
+        '200':
+          description: Password reset and all existing sessions revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Password reset successfully. Sign in with your new password.
+                  sessionsRevoked:
+                    type: boolean
+                    example: true
+                required:
+                  - message
+                  - sessionsRevoked
+        '400':
+          description: The request failed validation or the password does not meet requirements.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+        '401':
+          description: The email or password reset authorization is invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+        '503':
+          description: The verification store is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseDto'
+      summary: Set an admin password after OTP verification
+      tags:
+        - AuthAdmin
+      x-fundi-status: implemented
   /auth/admin/login:
     post:
       description: |-
@@ -6896,6 +7049,59 @@ components:
         - message
         - enrollmentRequired
         - expiresInSeconds
+    RequestAdminPasswordResetDto:
+      type: object
+      properties:
+        email:
+          type: string
+          example: admin@fundi.rw
+          description: The administrator email address. Trimmed and lowercased before matching.
+          format: email
+      required:
+        - email
+    VerifyAdminPasswordResetDto:
+      type: object
+      properties:
+        email:
+          type: string
+          example: admin@fundi.rw
+          description: The administrator email address. Trimmed and lowercased before matching.
+          format: email
+        otp:
+          type: string
+          example: '123456'
+          description: The six-digit OTP sent to the administrator phone number.
+          pattern: ^\d{6}$
+          minLength: 6
+          maxLength: 6
+      required:
+        - email
+        - otp
+    ResetAdminPasswordDto:
+      type: object
+      properties:
+        email:
+          type: string
+          example: admin@fundi.rw
+          description: The administrator email address. Trimmed and lowercased before matching.
+          format: email
+        resetToken:
+          type: string
+          example: 6f80b469-f3dd-4126-9092-612e5c065fbc
+          description: Short-lived, single-use reset authorization returned after OTP verification.
+          minLength: 36
+          maxLength: 36
+        newPassword:
+          type: string
+          example: NewAdmin@456
+          description: At least 8 characters, including an uppercase letter, a number, and a non-alphanumeric character. At most 72 characters.
+          format: password
+          minLength: 8
+          maxLength: 72
+      required:
+        - email
+        - resetToken
+        - newPassword
     AdminLoginDto:
       type: object
       properties:

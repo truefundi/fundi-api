@@ -17,6 +17,7 @@ import { AuditService } from '../audit/audit.service';
 import { AdminAuthService } from './admin-auth.service';
 import { AuthService } from './auth.service';
 import { TotpCryptoService } from './totp-crypto.service';
+import { SmsService } from '../sms/sms.service';
 
 // The password step is exercised against a real bcrypt hash rather than a mock, so the
 // decoy comparison that hides whether an address exists is genuinely covered. Four
@@ -34,16 +35,22 @@ const STEP_MS = 30_000;
 // Codes are computed with the same library the service uses, so a passing test means
 // a real authenticator would produce a matching code rather than that a mock agreed.
 const codeAt = (offsetSteps: number) =>
-  authenticator.create({ ...authenticator.allOptions(), epoch: Date.now() + offsetSteps * STEP_MS }).generate(
-    TOTP_SECRET,
-  );
+  authenticator
+    .create({
+      ...authenticator.allOptions(),
+      epoch: Date.now() + offsetSteps * STEP_MS,
+    })
+    .generate(TOTP_SECRET);
 
 const currentCode = () => codeAt(0);
 
 // A code the window cannot accept. Derived from the live one by walking forward until
 // it lies outside the window, so it cannot collide with a real code by luck.
 const rejectedCode = () => {
-  const withinWindow = authenticator.create({ ...authenticator.allOptions(), window: 1 });
+  const withinWindow = authenticator.create({
+    ...authenticator.allOptions(),
+    window: 1,
+  });
   let code = currentCode();
   do {
     code = String((Number(code) + 1) % 1_000_000).padStart(6, '0');
@@ -79,7 +86,12 @@ describe('AdminAuthService', () => {
     const redisClient = {
       get: jest.fn().mockResolvedValue(null),
       ttl: jest.fn().mockResolvedValue(600),
-      hgetall: jest.fn().mockResolvedValue({ userId: enrolledAdmin.id, mode: 'verify', secret: '' }),
+      set: jest.fn().mockResolvedValue('OK'),
+      hgetall: jest.fn().mockResolvedValue({
+        userId: enrolledAdmin.id,
+        mode: 'verify',
+        secret: '',
+      }),
       del: jest.fn().mockResolvedValue(1),
       eval: jest.fn().mockResolvedValue(1),
     };
@@ -105,7 +117,9 @@ describe('AdminAuthService', () => {
           expiresAt: new Date(Date.now() + 3_600_000),
         }),
       },
-      $transaction: jest.fn(async (callback: (t: typeof tx) => unknown) => callback(tx)),
+      $transaction: jest.fn(async (callback: (t: typeof tx) => unknown) =>
+        callback(tx),
+      ),
     };
     const totpCrypto = {
       encrypt: jest.fn().mockReturnValue('encrypted-blob'),
@@ -130,6 +144,10 @@ describe('AdminAuthService', () => {
       otpLifetimeSeconds: jest.fn().mockReturnValue(300),
     };
     const audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const smsService = {
+      ensureOtpDeliveryAvailable: jest.fn(),
+      sendOtp: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new AdminAuthService(
       jwt as unknown as JwtService,
       config as unknown as ConfigService,
@@ -138,8 +156,19 @@ describe('AdminAuthService', () => {
       totpCrypto as unknown as TotpCryptoService,
       authService as unknown as AuthService,
       audit as unknown as AuditService,
+      smsService as unknown as SmsService,
     );
-    return { service, prisma, totpCrypto, jwt, redisClient, tx, authService, audit };
+    return {
+      service,
+      prisma,
+      totpCrypto,
+      jwt,
+      redisClient,
+      tx,
+      authService,
+      audit,
+      smsService,
+    };
   };
 
   // Captures a rejection so both its type and its HTTP status can be asserted.
@@ -152,12 +181,186 @@ describe('AdminAuthService', () => {
     }
   };
 
+  describe('admin password reset', () => {
+    it('sends a reset-only code to the active admin phone and returns a generic response', async () => {
+      const { service, authService, smsService, redisClient } = createService();
+
+      const result = await service.requestPasswordReset('admin@fundi.rw');
+
+      expect(result.message).toContain(
+        'If an active administrator account matches',
+      );
+      expect(authService.issueOtpCode).toHaveBeenCalledWith(
+        adminUser.id,
+        'admin-password-reset',
+      );
+      expect(smsService.sendOtp).toHaveBeenCalledWith(
+        adminUser.phoneNumber,
+        '135790',
+      );
+      expect(redisClient.eval).toHaveBeenCalled();
+    });
+
+    it('returns the same response without sending a code for an unknown account', async () => {
+      const { service, prisma, authService, smsService } = createService();
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      const result = await service.requestPasswordReset('unknown@fundi.rw');
+
+      expect(result.message).toContain(
+        'If an active administrator account matches',
+      );
+      expect(authService.issueOtpCode).not.toHaveBeenCalled();
+      expect(smsService.sendOtp).not.toHaveBeenCalled();
+    });
+
+    it('throttles repeated password reset requests', async () => {
+      const { service, redisClient, smsService } = createService();
+      redisClient.eval.mockResolvedValue(-1);
+
+      const error = await captureError(
+        service.requestPasswordReset('admin@fundi.rw'),
+      );
+
+      expect(error.getStatus()).toBe(429);
+      expect(smsService.sendOtp).not.toHaveBeenCalled();
+    });
+
+    it('verifies the reset OTP and issues a short-lived reset grant', async () => {
+      const { service, authService, redisClient } = createService();
+
+      const result = await service.verifyPasswordResetCode(
+        'admin@fundi.rw',
+        '135790',
+      );
+
+      expect(authService.verifyOtpCode).toHaveBeenCalledWith(
+        adminUser.id,
+        '135790',
+        'admin-password-reset',
+      );
+      expect(result.resetToken).toEqual(expect.any(String));
+      expect(result.expiresInSeconds).toBe(300);
+      expect(redisClient.set).toHaveBeenCalledWith(
+        expect.stringContaining('auth:admin:password-reset:grant:'),
+        adminUser.id,
+        'EX',
+        300,
+        'NX',
+      );
+    });
+
+    it('does not issue a reset grant when the OTP is invalid', async () => {
+      const { service, authService, redisClient } = createService();
+      authService.verifyOtpCode.mockRejectedValue(
+        new UnauthorizedException('The OTP is incorrect.'),
+      );
+
+      await expect(
+        service.verifyPasswordResetCode('admin@fundi.rw', '000000'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(redisClient.set).not.toHaveBeenCalled();
+    });
+
+    it('changes the password with a reset grant and revokes sessions', async () => {
+      const { service, prisma, authService, tx, audit, redisClient } =
+        createService({
+          'adminAuth.bcryptRounds': 4,
+        });
+      redisClient.eval.mockResolvedValue(1);
+
+      const result = await service.resetPassword(
+        'admin@fundi.rw',
+        '6f80b469-f3dd-4126-9092-612e5c065fbc',
+        'NewAdmin@456',
+      );
+
+      expect(result.sessionsRevoked).toBe(true);
+      expect(authService.verifyOtpCode).not.toHaveBeenCalled();
+      expect(redisClient.eval).toHaveBeenCalledWith(
+        expect.stringContaining('userId ~= ARGV[1]'),
+        1,
+        expect.stringContaining('auth:admin:password-reset:grant:'),
+        adminUser.id,
+      );
+      expect(tx.user.update).toHaveBeenCalledWith({
+        where: { id: adminUser.id },
+        data: { passwordHash: expect.any(String) },
+      });
+      const savedPasswordHash =
+        tx.user.update.mock.calls[0][0].data.passwordHash;
+      await expect(compare('NewAdmin@456', savedPasswordHash)).resolves.toBe(
+        true,
+      );
+      expect(tx.refreshToken.deleteMany).toHaveBeenCalledWith({
+        where: { userId: adminUser.id },
+      });
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'ADMIN_PASSWORD_RESET' }),
+        tx,
+      );
+      expect(prisma.$transaction).toHaveBeenCalled();
+    });
+
+    it('does not disclose non-admin accounts during password reset', async () => {
+      const { service, prisma, authService } = createService();
+      prisma.user.findUnique.mockResolvedValue({
+        ...adminUser,
+        role: UserRole.CUSTOMER,
+      });
+
+      const error = await captureError(
+        service.verifyPasswordResetCode('admin@fundi.rw', '135790'),
+      );
+
+      expect(error).toBeInstanceOf(UnauthorizedException);
+      expect(error.message).toBe(
+        'The email or verification code is incorrect.',
+      );
+      expect(authService.verifyOtpCode).not.toHaveBeenCalled();
+    });
+
+    it('does not consume a reset grant or update the password when the new password is weak', async () => {
+      const { service, prisma } = createService();
+
+      const error = await captureError(
+        service.resetPassword(
+          'admin@fundi.rw',
+          '6f80b469-f3dd-4126-9092-612e5c065fbc',
+          'weak',
+        ),
+      );
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('does not update the password when the reset grant is missing or spent', async () => {
+      const { service, prisma, redisClient } = createService();
+      redisClient.eval.mockResolvedValue(0);
+
+      await expect(
+        service.resetPassword(
+          'admin@fundi.rw',
+          '6f80b469-f3dd-4126-9092-612e5c065fbc',
+          'NewAdmin@456',
+        ),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
+
   describe('login', () => {
     // An account that has already enrolled asks for the code it can already see, and
     // is given no new secret.
     it('asks an enrolled admin for the code it already has', async () => {
       const { service } = createService();
-      const result = await service.login({ email: 'admin@fundi.rw', password: PASSWORD });
+      const result = await service.login({
+        email: 'admin@fundi.rw',
+        password: PASSWORD,
+      });
 
       expect(result.enrollmentRequired).toBe(false);
       expect(result.challengeId).toEqual(expect.any(String));
@@ -170,7 +373,10 @@ describe('AdminAuthService', () => {
     it('returns a scannable enrollment on the first sign-in', async () => {
       const { service, prisma } = createService();
       prisma.user.findUnique.mockResolvedValue(adminUser);
-      const result = await service.login({ email: 'admin@fundi.rw', password: PASSWORD });
+      const result = await service.login({
+        email: 'admin@fundi.rw',
+        password: PASSWORD,
+      });
 
       expect(result.enrollmentRequired).toBe(true);
       expect(result.challengeId).toEqual(expect.any(String));
@@ -187,12 +393,17 @@ describe('AdminAuthService', () => {
         'adminAuth.totpIssuer': 'Fundi Rwanda',
       });
       prisma.user.findUnique.mockResolvedValue(adminUser);
-      const result = await service.login({ email: 'admin@fundi.rw', password: PASSWORD });
+      const result = await service.login({
+        email: 'admin@fundi.rw',
+        password: PASSWORD,
+      });
       expect(result.enrollmentRequired).toBe(true);
       const uri = new URL(result.otpauthUri as string);
 
       expect(uri.host).toBe('totp');
-      expect(decodeURIComponent(uri.pathname)).toBe('/Fundi Rwanda:admin@fundi.rw');
+      expect(decodeURIComponent(uri.pathname)).toBe(
+        '/Fundi Rwanda:admin@fundi.rw',
+      );
       expect(uri.searchParams.get('issuer')).toBe('Fundi Rwanda');
       expect(uri.searchParams.get('period')).toBe('30');
       expect(uri.searchParams.get('digits')).toBe('6');
@@ -202,8 +413,14 @@ describe('AdminAuthService', () => {
     it('generates a different secret on every unconfirmed sign-in', async () => {
       const { service, prisma } = createService();
       prisma.user.findUnique.mockResolvedValue(adminUser);
-      const first = await service.login({ email: 'admin@fundi.rw', password: PASSWORD });
-      const second = await service.login({ email: 'admin@fundi.rw', password: PASSWORD });
+      const first = await service.login({
+        email: 'admin@fundi.rw',
+        password: PASSWORD,
+      });
+      const second = await service.login({
+        email: 'admin@fundi.rw',
+        password: PASSWORD,
+      });
 
       expect(first.secret).not.toBe(second.secret);
     });
@@ -228,7 +445,10 @@ describe('AdminAuthService', () => {
       unknown.prisma.user.findUnique.mockResolvedValue(null);
 
       const wrongPassword = await captureError(
-        known.service.login({ email: 'admin@fundi.rw', password: 'Wrong#Password1' }),
+        known.service.login({
+          email: 'admin@fundi.rw',
+          password: 'Wrong#Password1',
+        }),
       );
       const unknownEmail = await captureError(
         unknown.service.login({ email: 'nobody@fundi.rw', password: PASSWORD }),
@@ -241,7 +461,10 @@ describe('AdminAuthService', () => {
     // A valid password on a non-admin account is refused without revealing why.
     it('refuses a non-admin account with the shared message', async () => {
       const { service, prisma } = createService();
-      prisma.user.findUnique.mockResolvedValue({ ...enrolledAdmin, role: UserRole.CUSTOMER });
+      prisma.user.findUnique.mockResolvedValue({
+        ...enrolledAdmin,
+        role: UserRole.CUSTOMER,
+      });
       const error = await captureError(
         service.login({ email: 'admin@fundi.rw', password: PASSWORD }),
       );
@@ -253,14 +476,19 @@ describe('AdminAuthService', () => {
     // counts as a failed attempt, because from the caller's side it is one.
     it('refuses a disabled account without opening a challenge', async () => {
       const { service, prisma, redisClient } = createService();
-      prisma.user.findUnique.mockResolvedValue({ ...enrolledAdmin, status: 'INACTIVE' });
+      prisma.user.findUnique.mockResolvedValue({
+        ...enrolledAdmin,
+        status: 'INACTIVE',
+      });
       const error = await captureError(
         service.login({ email: 'admin@fundi.rw', password: PASSWORD }),
       );
 
       expect(error.message).toBe('Invalid email or password.');
       const challengeCalls = redisClient.eval.mock.calls.filter((call) =>
-        call.some((argument: unknown) => String(argument).includes('auth:admin:2fa')),
+        call.some((argument: unknown) =>
+          String(argument).includes('auth:admin:2fa'),
+        ),
       );
       expect(challengeCalls).toHaveLength(0);
     });
@@ -268,7 +496,10 @@ describe('AdminAuthService', () => {
     // A phone-only account has no password, so it cannot be used as an admin login.
     it('refuses an account that has no password set', async () => {
       const { service, prisma } = createService();
-      prisma.user.findUnique.mockResolvedValue({ ...enrolledAdmin, passwordHash: null });
+      prisma.user.findUnique.mockResolvedValue({
+        ...enrolledAdmin,
+        passwordHash: null,
+      });
       const error = await captureError(
         service.login({ email: 'admin@fundi.rw', password: PASSWORD }),
       );
@@ -278,7 +509,9 @@ describe('AdminAuthService', () => {
 
     // Once the attempt budget is spent the address is refused before bcrypt runs.
     it('locks a repeatedly failing address out with 429', async () => {
-      const { service, redisClient } = createService({ 'adminAuth.maxLoginAttempts': 5 });
+      const { service, redisClient } = createService({
+        'adminAuth.maxLoginAttempts': 5,
+      });
       redisClient.get.mockResolvedValue('5');
       redisClient.ttl.mockResolvedValue(420);
 
@@ -339,9 +572,13 @@ describe('AdminAuthService', () => {
     it('reports 503 when the authenticator secret cannot be read', async () => {
       const { service, totpCrypto } = createService();
       totpCrypto.decrypt.mockImplementation(() => {
-        throw new ServiceUnavailableException('Authenticator encryption is not configured.');
+        throw new ServiceUnavailableException(
+          'Authenticator encryption is not configured.',
+        );
       });
-      const error = await captureError(service.verifyTwoFactor('challenge-1', currentCode()));
+      const error = await captureError(
+        service.verifyTwoFactor('challenge-1', currentCode()),
+      );
 
       expect(error).toBeInstanceOf(ServiceUnavailableException);
       expect(error.message).toContain('not configured');
@@ -352,11 +589,16 @@ describe('AdminAuthService', () => {
     // A correct code is the only path that issues a session.
     it('issues tokens and a session row for the code on screen', async () => {
       const { service, prisma, jwt } = createService();
-      const result = await service.verifyTwoFactor('challenge-1', currentCode());
+      const result = await service.verifyTwoFactor(
+        'challenge-1',
+        currentCode(),
+      );
 
       expect(jwt.signAsync).toHaveBeenCalledTimes(2);
       expect(prisma.refreshToken.create).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ userId: adminUser.id }) }),
+        expect.objectContaining({
+          data: expect.objectContaining({ userId: adminUser.id }),
+        }),
       );
       expect(result.user).toEqual({
         id: adminUser.id,
@@ -377,14 +619,18 @@ describe('AdminAuthService', () => {
     it('accepts a code from the neighbouring time step', async () => {
       const { service } = createService();
 
-      await expect(service.verifyTwoFactor('challenge-1', codeAt(-1))).resolves.toBeDefined();
+      await expect(
+        service.verifyTwoFactor('challenge-1', codeAt(-1)),
+      ).resolves.toBeDefined();
     });
 
     // The tolerance is one step either side and no more, so it cannot be used to walk
     // the whole six-digit space from a single sign-in.
     it('refuses a code from a distant time step', async () => {
       const { service, prisma } = createService();
-      const error = await captureError(service.verifyTwoFactor('challenge-1', codeAt(-4)));
+      const error = await captureError(
+        service.verifyTwoFactor('challenge-1', codeAt(-4)),
+      );
 
       expect(error.message).toBe('The verification code is incorrect.');
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
@@ -395,9 +641,9 @@ describe('AdminAuthService', () => {
       const { service, prisma, redisClient } = createService();
       redisClient.hgetall.mockResolvedValue({});
 
-      await expect(service.verifyTwoFactor('missing', '123456')).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(
+        service.verifyTwoFactor('missing', '123456'),
+      ).rejects.toBeInstanceOf(BadRequestException);
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
     });
 
@@ -405,7 +651,9 @@ describe('AdminAuthService', () => {
     it('refuses a code that is not live', async () => {
       const { service, prisma } = createService();
 
-      const error = await captureError(service.verifyTwoFactor('challenge-1', rejectedCode()));
+      const error = await captureError(
+        service.verifyTwoFactor('challenge-1', rejectedCode()),
+      );
 
       expect(error).toBeInstanceOf(UnauthorizedException);
       expect(error.message).toBe('The verification code is incorrect.');
@@ -416,7 +664,9 @@ describe('AdminAuthService', () => {
     it('refuses a code that is not six digits', async () => {
       const { service, prisma } = createService();
 
-      const error = await captureError(service.verifyTwoFactor('challenge-1', '12345'));
+      const error = await captureError(
+        service.verifyTwoFactor('challenge-1', '12345'),
+      );
 
       expect(error.message).toBe('The verification code is incorrect.');
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
@@ -428,7 +678,9 @@ describe('AdminAuthService', () => {
       const { service, redisClient } = createService();
       redisClient.eval.mockResolvedValue(-3);
 
-      const error = await captureError(service.verifyTwoFactor('challenge-1', currentCode()));
+      const error = await captureError(
+        service.verifyTwoFactor('challenge-1', currentCode()),
+      );
 
       expect(error.message).toContain('expired');
     });
@@ -438,7 +690,9 @@ describe('AdminAuthService', () => {
       const { service, prisma, redisClient } = createService();
       redisClient.eval.mockResolvedValue(-2);
 
-      const error = await captureError(service.verifyTwoFactor('challenge-1', rejectedCode()));
+      const error = await captureError(
+        service.verifyTwoFactor('challenge-1', rejectedCode()),
+      );
 
       expect(error.getStatus()).toBe(429);
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
@@ -448,30 +702,42 @@ describe('AdminAuthService', () => {
     // every guess rather than only the ones that happen to be evaluated.
     it('claims and counts an attempt before checking the code', async () => {
       const { service, redisClient } = createService();
-      await captureError(service.verifyTwoFactor('challenge-1', rejectedCode()));
+      await captureError(
+        service.verifyTwoFactor('challenge-1', rejectedCode()),
+      );
 
       const claimScript = redisClient.eval.mock.calls[0][0] as string;
-      expect(claimScript).toContain("redis.call('HINCRBY', KEYS[1], 'verificationTries', 1)");
+      expect(claimScript).toContain(
+        "redis.call('HINCRBY', KEYS[1], 'verificationTries', 1)",
+      );
       expect(claimScript).toContain("redis.call('INCR', KEYS[2])");
     });
 
     // The account is re-checked at this point because a challenge outlives a demotion.
     it('refuses to issue a session when the account is no longer an administrator', async () => {
       const { service, prisma } = createService();
-      prisma.user.findUnique.mockResolvedValue({ ...enrolledAdmin, role: UserRole.CUSTOMER });
+      prisma.user.findUnique.mockResolvedValue({
+        ...enrolledAdmin,
+        role: UserRole.CUSTOMER,
+      });
 
-      await expect(service.verifyTwoFactor('challenge-1', currentCode())).rejects.toBeInstanceOf(
-        ForbiddenException,
-      );
+      await expect(
+        service.verifyTwoFactor('challenge-1', currentCode()),
+      ).rejects.toBeInstanceOf(ForbiddenException);
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
     });
 
     // A challenge whose enrollment was cleared underneath it has to say so plainly.
     it('refuses when the account has no authenticator enrolled', async () => {
       const { service, prisma } = createService();
-      prisma.user.findUnique.mockResolvedValue({ ...enrolledAdmin, totpSecret: null });
+      prisma.user.findUnique.mockResolvedValue({
+        ...enrolledAdmin,
+        totpSecret: null,
+      });
 
-      const error = await captureError(service.verifyTwoFactor('challenge-1', currentCode()));
+      const error = await captureError(
+        service.verifyTwoFactor('challenge-1', currentCode()),
+      );
 
       expect(error).toBeInstanceOf(BadRequestException);
       expect(error.message).toContain('no authenticator enrolled');
@@ -483,7 +749,9 @@ describe('AdminAuthService', () => {
       const { service, prisma, redisClient } = createService();
       redisClient.eval.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
 
-      const error = await captureError(service.verifyTwoFactor('challenge-1', currentCode()));
+      const error = await captureError(
+        service.verifyTwoFactor('challenge-1', currentCode()),
+      );
 
       expect(error).toBeInstanceOf(BadRequestException);
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
@@ -523,7 +791,9 @@ describe('AdminAuthService', () => {
     // An enrolment that is abandoned must leave nothing on the account.
     it('leaves nothing behind when enrolment is abandoned', async () => {
       const { service, prisma, totpCrypto } = enrolmentService();
-      await captureError(service.verifyTwoFactor('challenge-1', rejectedCode()));
+      await captureError(
+        service.verifyTwoFactor('challenge-1', rejectedCode()),
+      );
 
       expect(prisma.user.update).not.toHaveBeenCalled();
       expect(totpCrypto.encrypt).not.toHaveBeenCalled();
@@ -558,7 +828,9 @@ describe('AdminAuthService', () => {
       const { service, prisma } = createService();
       prisma.refreshToken.findUnique.mockResolvedValue(null);
 
-      await expect(service.refresh('nope')).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(service.refresh('nope')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
     });
 
     // A session past its stored expiry cannot be renewed.
@@ -577,9 +849,14 @@ describe('AdminAuthService', () => {
     // A demoted account cannot keep renewing its session.
     it('refuses renewal for an account that is no longer an administrator', async () => {
       const { service, prisma } = createService();
-      prisma.user.findUnique.mockResolvedValue({ ...enrolledAdmin, role: UserRole.CUSTOMER });
+      prisma.user.findUnique.mockResolvedValue({
+        ...enrolledAdmin,
+        role: UserRole.CUSTOMER,
+      });
 
-      await expect(service.refresh('old')).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(service.refresh('old')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
     });
   });
 
@@ -674,7 +951,9 @@ describe('AdminAuthService', () => {
         data: { passwordHash: string };
       };
       expect(stored.where).toEqual({ id: adminUser.id });
-      await expect(compare(NEW_PASSWORD, stored.data.passwordHash)).resolves.toBe(true);
+      await expect(
+        compare(NEW_PASSWORD, stored.data.passwordHash),
+      ).resolves.toBe(true);
       expect(tx.refreshToken.deleteMany).toHaveBeenCalledWith({
         where: { userId: adminUser.id },
       });
@@ -716,7 +995,9 @@ describe('AdminAuthService', () => {
     });
 
     it('refuses an account that is not an active administrator', async () => {
-      const { service, prisma } = createService({ 'adminAuth.bcryptRounds': 4 });
+      const { service, prisma } = createService({
+        'adminAuth.bcryptRounds': 4,
+      });
       prisma.user.findUnique.mockResolvedValue({
         ...adminUser,
         role: UserRole.CUSTOMER,
@@ -731,8 +1012,13 @@ describe('AdminAuthService', () => {
     });
 
     it('refuses an administrator that has no password provisioned', async () => {
-      const { service, prisma } = createService({ 'adminAuth.bcryptRounds': 4 });
-      prisma.user.findUnique.mockResolvedValue({ ...adminUser, passwordHash: null });
+      const { service, prisma } = createService({
+        'adminAuth.bcryptRounds': 4,
+      });
+      prisma.user.findUnique.mockResolvedValue({
+        ...adminUser,
+        passwordHash: null,
+      });
 
       const error = await captureError(
         service.changePassword(adminUser.id, {
@@ -760,12 +1046,20 @@ describe('AdminAuthService', () => {
 
     it('issues a session once the code is accepted', async () => {
       const { service, prisma, authService, jwt } = createService();
-      const result = await service.verifyDevOtpLogin('admin@fundi.rw', '135790');
+      const result = await service.verifyDevOtpLogin(
+        'admin@fundi.rw',
+        '135790',
+      );
 
-      expect(authService.verifyOtpCode).toHaveBeenCalledWith(adminUser.id, '135790');
+      expect(authService.verifyOtpCode).toHaveBeenCalledWith(
+        adminUser.id,
+        '135790',
+      );
       expect(jwt.signAsync).toHaveBeenCalledTimes(2);
       expect(prisma.refreshToken.create).toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ userId: adminUser.id }) }),
+        expect.objectContaining({
+          data: expect.objectContaining({ userId: adminUser.id }),
+        }),
       );
       expect(result.tokens).toEqual({
         accessToken: 'access-token',
@@ -780,9 +1074,9 @@ describe('AdminAuthService', () => {
         new UnauthorizedException('The OTP is incorrect.'),
       );
 
-      await expect(service.verifyDevOtpLogin('admin@fundi.rw', '000000')).rejects.toBeInstanceOf(
-        UnauthorizedException,
-      );
+      await expect(
+        service.verifyDevOtpLogin('admin@fundi.rw', '000000'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
     });
 
@@ -795,9 +1089,9 @@ describe('AdminAuthService', () => {
       const { service, prisma, authService } = createService();
       prisma.user.findUnique.mockResolvedValue(user);
 
-      await expect(service.startDevOtpLogin('admin@fundi.rw')).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.startDevOtpLogin('admin@fundi.rw'),
+      ).rejects.toBeInstanceOf(NotFoundException);
       expect(authService.issueOtpCode).not.toHaveBeenCalled();
     });
   });

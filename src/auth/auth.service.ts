@@ -96,6 +96,8 @@ redis.call('EXPIRE', KEYS[2], tonumber(ARGV[5]))
 return 0
 `;
 
+type OtpPurpose = 'login' | 'admin-password-reset';
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -254,7 +256,7 @@ export class AuthService {
   }
 
   // Verifies a time-limited OTP and creates persisted refresh-token state.
-  async verifyOtp(phoneNumber: string, otp: string) {
+  async verifyOtp(phoneNumber: string, otp: string, deviceId?: string) {
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user)
       throw new NotFoundException(
@@ -269,11 +271,15 @@ export class AuthService {
         data: { phoneVerifiedAt: new Date() },
       });
     }
-    return this.createUserSession(user);
+    return this.createUserSession(user, deviceId);
   }
 
   // Authenticates a customer or technician using an optional account password.
-  async loginWithPassword(phoneNumber: string, password: string) {
+  async loginWithPassword(
+    phoneNumber: string,
+    password: string,
+    deviceId?: string,
+  ) {
     this.assertPasswordLength(password);
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) {
@@ -305,11 +311,11 @@ export class AuthService {
       );
     }
     await this.clearPasswordAttempts(user.id);
-    return this.createUserSession(user);
+    return this.createUserSession(user, deviceId);
   }
 
   // Authenticates a customer or verified technician using a phone number and PIN.
-  async loginWithPin(phoneNumber: string, pin: string) {
+  async loginWithPin(phoneNumber: string, pin: string, deviceId?: string) {
     this.assertPin(pin);
     const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
     if (!user) {
@@ -336,7 +342,7 @@ export class AuthService {
       throw new UnauthorizedException('The phone number or PIN is incorrect.');
     }
     await this.clearPasswordAttempts(user.id);
-    return this.createUserSession(user);
+    return this.createUserSession(user, deviceId);
   }
 
   // Resets a password only after consuming an OTP sent to the account phone.
@@ -511,6 +517,7 @@ export class AuthService {
   async verifyPasskeyAuthentication(
     phoneNumber: string,
     response: AuthenticationResponseJSON,
+    deviceId?: string,
   ) {
     const user = await this.prisma.user.findUnique({
       where: { phoneNumber },
@@ -581,7 +588,7 @@ export class AuthService {
         'The passkey credential has already been used. Start sign-in again.',
       );
     }
-    return this.createUserSession(user);
+    return this.createUserSession(user, deviceId);
   }
 
   // Returns metadata for the caller's registered passkeys without exposing keys.
@@ -669,7 +676,13 @@ export class AuthService {
         );
       }
       await tx.refreshToken.create({
-        data: { token: rotatedHash, sessionId, userId: user.id, expiresAt },
+        data: {
+          token: rotatedHash,
+          sessionId,
+          userId: user.id,
+          deviceId: session.deviceId,
+          expiresAt,
+        },
       });
     });
     return {
@@ -733,11 +746,14 @@ export class AuthService {
     await this.deliverOtp(userId, phoneNumber, code);
   }
 
-  // Creates and stores a fresh code without delivering it, so a caller that has its
-  // own channel can hand the code over itself. Reused by the development-only admin
-  // sign-in, which returns the code in the response instead of texting it.
-  async issueOtpCode(userId: string): Promise<string> {
-    return this.issueOtpForKeys(this.otpKey(userId));
+  // Creates and stores a fresh code without delivering it, so a caller with its own
+  // delivery channel can send it. Purpose namespaces keep reset codes isolated from
+  // login codes.
+  async issueOtpCode(
+    userId: string,
+    purpose: OtpPurpose = 'login',
+  ): Promise<string> {
+    return this.issueOtpForKeys(this.otpKey(userId, purpose));
   }
 
   private async issueOtpForKeys(otpKey: string): Promise<string> {
@@ -754,11 +770,18 @@ export class AuthService {
     return code;
   }
 
-  // Checks a code against the pending one and consumes it on a match, raising the
-  // same errors the phone flow does on every kind of failure. Split out so the
-  // development-only admin sign-in reuses this exact logic rather than a copy.
-  async verifyOtpCode(userId: string, otp: string): Promise<void> {
-    return this.verifyCode(this.otpKey(userId), this.otpTriesKey(userId), otp);
+  // Checks a purpose-specific code and consumes it on a match, raising the same
+  // errors as the phone flow.
+  async verifyOtpCode(
+    userId: string,
+    otp: string,
+    purpose: OtpPurpose = 'login',
+  ): Promise<void> {
+    return this.verifyCode(
+      this.otpKey(userId, purpose),
+      this.otpTriesKey(userId, purpose),
+      otp,
+    );
   }
 
   /**
@@ -780,44 +803,61 @@ export class AuthService {
     };
   }
 
-  async requestCustomerJobOtp(customerId: string, phoneNumberOverride?: string) {
+  async requestCustomerJobOtp(
+    customerId: string,
+    requestedPhoneNumber?: string,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { id: customerId },
-      select: { id: true, phoneNumber: true, role: true, status: true },
+      select: {
+        id: true,
+        phoneNumber: true,
+        phoneVerifiedAt: true,
+        role: true,
+        status: true,
+      },
     });
     if (!user || user.role === UserRole.ADMIN) {
       throw new NotFoundException('Account not found.');
     }
     this.ensureActive(user.status);
-    // A different number is only a candidate: the code goes to it, and the account
-    // is updated in verifyCustomerJobOtp once the customer proves they hold it.
-    let targetPhone = user.phoneNumber;
-    if (phoneNumberOverride) {
-      const normalized = normalizeRwandaPhoneNumber(phoneNumberOverride);
-      if (
-        typeof normalized !== 'string' ||
-        !RWANDA_PHONE_NUMBER_PATTERN.test(normalized)
-      ) {
-        throw new BadRequestException(
-          'Enter a valid Rwandan mobile number (078, 079, 072 or 073).',
-        );
-      }
-      targetPhone = normalized;
-      if (targetPhone !== user.phoneNumber) {
-        await this.assertPhoneAvailable(targetPhone, customerId);
-      }
+    const phoneNumber = requestedPhoneNumber?.trim() || user.phoneNumber;
+    if (user.role !== UserRole.CUSTOMER && phoneNumber !== user.phoneNumber) {
+      throw new BadRequestException(
+        'Only customer accounts can verify a different phone number.',
+      );
+    }
+    if (
+      user.role === UserRole.CUSTOMER &&
+      user.phoneVerifiedAt &&
+      phoneNumber === user.phoneNumber
+    ) {
+      return {
+        verified: true,
+        phoneNumber: user.phoneNumber,
+        message: 'The account phone number is already verified.',
+      };
+    }
+    const phoneOwner = await this.prisma.user.findUnique({
+      where: { phoneNumber },
+      select: { id: true },
+    });
+    if (phoneOwner && phoneOwner.id !== customerId) {
+      throw new ConflictException(
+        'This phone number is already associated with another account.',
+      );
     }
     const verification = await this.prisma.customerPhoneVerification.create({
       data: {
         customerId,
-        phoneNumber: targetPhone,
+        phoneNumber,
         expiresAt: new Date(Date.now() + this.otpTtlSeconds * 1000),
       },
     });
     const key = this.jobVerificationOtpKey(verification.id);
     try {
       const code = await this.issueOtpForKeys(key);
-      await this.deliverOtp(user.id, targetPhone, code, key);
+      await this.deliverOtp(user.id, phoneNumber, code, key);
     } catch (error) {
       await this.prisma.customerPhoneVerification.delete({
         where: { id: verification.id },
@@ -827,7 +867,7 @@ export class AuthService {
     return {
       verificationId: verification.id,
       expiresAt: verification.expiresAt,
-      phoneNumber: targetPhone,
+      phoneNumber,
       message: `OTP sent. It expires in ${this.otpLifetimeMinutes()} minutes.`,
     };
   }
@@ -872,65 +912,51 @@ export class AuthService {
       otp,
     );
     const verifiedAt = new Date();
-    const updated = await this.prisma.customerPhoneVerification.updateMany({
-      where: {
-        id: verification.id,
-        customerId,
-        verifiedAt: null,
-        consumedAt: null,
-        expiresAt: { gt: verifiedAt },
-      },
-      data: { verifiedAt },
-    });
-    if (!updated.count) {
-      throw new ConflictException(
-        'Phone verification expired or was already used. Request a new OTP.',
-      );
-    }
-    // The customer has now proven they hold the number the code was sent to.
-    const verifiedPhone = verification.phoneNumber;
     try {
-      await this.prisma.user.update({
-        where: { id: customerId },
-        data: {
-          phoneVerifiedAt: verifiedAt,
-          ...(verifiedPhone ? { phoneNumber: verifiedPhone } : {}),
-        },
+      await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.customerPhoneVerification.updateMany({
+          where: {
+            id: verification.id,
+            customerId,
+            verifiedAt: null,
+            consumedAt: null,
+            expiresAt: { gt: verifiedAt },
+          },
+          data: { verifiedAt },
+        });
+        if (!updated.count) {
+          throw new ConflictException(
+            'Phone verification expired or was already used. Request a new OTP.',
+          );
+        }
+        const user = await tx.user.findUnique({
+          where: { id: customerId },
+          select: { role: true },
+        });
+        if (!user) throw new NotFoundException('Account not found.');
+        await tx.user.update({
+          where: { id: customerId },
+          data: {
+            phoneVerifiedAt: verifiedAt,
+            ...(user.role === UserRole.CUSTOMER
+              ? { phoneNumber: verification.phoneNumber }
+              : {}),
+          },
+        });
       });
     } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        // Another account claimed the number between request and verification.
-        await this.prisma.customerPhoneVerification.updateMany({
-          where: { id: verification.id },
-          data: { consumedAt: verifiedAt },
-        });
+      if (this.isPrismaError(error, 'P2002')) {
         throw new ConflictException(
-          'This phone number is already linked to another account.',
+          'This phone number is already associated with another account.',
         );
       }
       throw error;
     }
     return {
       verificationId: verification.id,
+      phoneNumber: verification.phoneNumber,
       verifiedAt,
-      ...(verifiedPhone ? { phoneNumber: verifiedPhone } : {}),
     };
-  }
-
-  /** Rejects a number that already belongs to a different account. */
-  private async assertPhoneAvailable(phoneNumber: string, userId: string) {
-    const owner = await this.prisma.user.findUnique({
-      where: { phoneNumber },
-      select: { id: true },
-    });
-    if (owner && owner.id !== userId) {
-      throw new ConflictException(
-        'This phone number is already linked to another account.',
-      );
-    }
   }
 
   private async verifyCode(
@@ -1019,14 +1045,18 @@ export class AuthService {
   }
 
   // Keeps pending OTP records in a namespaced key per account.
-  private otpKey(userId: string) {
-    return `auth:otp:${userId}`;
+  private otpKey(userId: string, purpose: OtpPurpose = 'login') {
+    return purpose === 'login'
+      ? `auth:otp:${userId}`
+      : `auth:otp:${purpose}:${userId}`;
   }
 
   // Holds the account-wide wrong-guess tally, deliberately separate from the OTP
   // hash so that issuing a new code cannot reset it.
-  private otpTriesKey(userId: string) {
-    return `auth:otp:tries:${userId}`;
+  private otpTriesKey(userId: string, purpose: OtpPurpose = 'login') {
+    return purpose === 'login'
+      ? `auth:otp:tries:${userId}`
+      : `auth:otp:tries:${purpose}:${userId}`;
   }
 
   private jobVerificationOtpKey(verificationId: string) {
@@ -1162,21 +1192,38 @@ export class AuthService {
     }
   }
 
+  private normalizeDeviceId(deviceId?: string) {
+    const normalized = deviceId?.trim();
+    if (normalized && normalized.length > 255) {
+      throw new BadRequestException(
+        'The X-Device-Id header must not exceed 255 characters.',
+      );
+    }
+    return normalized || null;
+  }
+
   private async createUserSession(
     user: Pick<User, 'id' | 'fullName' | 'phoneNumber' | 'role'>,
+    deviceId?: string,
   ) {
+    const normalizedDeviceId = this.normalizeDeviceId(deviceId);
     const { sessionId, ...tokens } = await this.generateTokens(
       user.id,
       user.phoneNumber,
       user.role,
     );
-    await this.prisma.refreshToken.create({
-      data: {
-        token: this.hash(tokens.refreshToken),
-        sessionId,
-        userId: user.id,
-        expiresAt: this.refreshTokenExpiresAt(),
-      },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${user.id} FOR UPDATE`;
+      await tx.refreshToken.deleteMany({ where: { userId: user.id } });
+      await tx.refreshToken.create({
+        data: {
+          token: this.hash(tokens.refreshToken),
+          sessionId,
+          userId: user.id,
+          deviceId: normalizedDeviceId,
+          expiresAt: this.refreshTokenExpiresAt(),
+        },
+      });
     });
     return {
       user: {

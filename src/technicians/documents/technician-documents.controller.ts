@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Header,
+  Patch,
   Param,
   ParseUUIDPipe,
   Post,
@@ -13,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
-import { DocumentType, UserRole } from '@prisma/client';
+import { CertificateType, DocumentType, UserRole } from '@prisma/client';
 import {
   Auth,
   AuthUser,
@@ -21,6 +22,7 @@ import {
 } from '../../common/decorators/auth.decorator';
 import { TechniciansService } from '../technicians.service';
 import { UploadDocumentDto } from './dto/upload-document.dto';
+import { UpdateDeniedDocumentDto } from './dto/update-denied-document.dto';
 import {
   MAX_UPLOAD_BYTES,
   toStreamableFile,
@@ -85,8 +87,29 @@ export class TechnicianDocumentsController {
       required: ['file', 'type', 'title'],
       properties: {
         file: { type: 'string', format: 'binary' },
-        type: { type: 'string', enum: Object.values(DocumentType) },
+        type: {
+          type: 'string',
+          enum: Object.values(DocumentType),
+          description: 'NATIONAL_ID or CERTIFICATE.',
+        },
         title: { type: 'string', example: 'National ID (front and back)' },
+        certificateType: {
+          type: 'string',
+          enum: Object.values(CertificateType),
+          description: 'Required when type is CERTIFICATE.',
+        },
+        categoryId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Required when type is CERTIFICATE: UUID of an active service category. Mutually exclusive with customCategoryName.',
+        },
+        customCategoryName: {
+          type: 'string',
+          example: 'Solar Panel Install',
+          description:
+            'Required when type is CERTIFICATE and the service is not in the catalogue. Mutually exclusive with categoryId.',
+        },
       },
     },
   })
@@ -96,6 +119,33 @@ export class TechnicianDocumentsController {
     @UploadedFile() file: UploadedFileData,
   ) {
     return this.documents.uploadDocument(user.id, dto, file);
+  }
+
+  // Replaces and resubmits a document that an administrator denied.
+  @Patch('documents/:documentId')
+  @Auth(UserRole.TECHNICIAN)
+  @UseInterceptors(FileInterceptor('file', UPLOAD_LIMITS))
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        title: { type: 'string', example: 'National ID (front and back)' },
+        certificateType: { type: 'string' },
+        categoryId: { type: 'string', format: 'uuid' },
+        customCategoryName: { type: 'string' },
+      },
+    },
+  })
+  updateDeniedDocument(
+    @CurrentUser() user: AuthUser,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+    @Body() dto: UpdateDeniedDocumentDto,
+    @UploadedFile() file: UploadedFileData,
+  ) {
+    return this.documents.updateDeniedDocument(user.id, documentId, dto, file);
   }
 
   // Lists the technician's own documents and their review status.

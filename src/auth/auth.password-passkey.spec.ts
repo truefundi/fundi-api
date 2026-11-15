@@ -77,11 +77,14 @@ describe('AuthService password and passkey flows', () => {
   };
 
   const createService = (user = activeUser) => {
+    const refreshToken = {
+      create: jest.fn().mockResolvedValue({}),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+    };
     const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
       user: { update: jest.fn().mockResolvedValue({}) },
-      refreshToken: {
-        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
-      },
+      refreshToken,
     };
     const prisma = {
       user: {
@@ -95,7 +98,7 @@ describe('AuthService password and passkey flows', () => {
           }),
         ),
       },
-      refreshToken: { create: jest.fn().mockResolvedValue({}) },
+      refreshToken,
       passkeyCredential: {
         findMany: jest.fn().mockResolvedValue([credential]),
         create: jest.fn().mockResolvedValue({
@@ -233,10 +236,11 @@ describe('AuthService password and passkey flows', () => {
   });
 
   it('signs in with a valid password and clears failed attempts', async () => {
-    const { service, prisma, redisClient } = createService();
+    const { service, prisma, redisClient, tx } = createService();
     const result = await service.loginWithPassword(
       activeUser.phoneNumber,
       'secure-password',
+      'mobile-install-1',
     );
 
     expect(bcryptMock.compare).toHaveBeenCalledWith(
@@ -247,6 +251,14 @@ describe('AuthService password and passkey flows', () => {
       `auth:password:attempts:${activeUser.id}`,
     );
     expect(prisma.refreshToken.create).toHaveBeenCalled();
+    expect(tx.refreshToken.deleteMany).toHaveBeenCalledWith({
+      where: { userId: activeUser.id },
+    });
+    expect(tx.refreshToken.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ deviceId: 'mobile-install-1' }),
+      }),
+    );
     expect(result).toMatchObject({
       user: { id: activeUser.id },
       accessToken: 'access-token',

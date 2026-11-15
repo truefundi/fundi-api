@@ -37,7 +37,9 @@ The platform has three account statuses: `ACTIVE`, `INACTIVE`, and `SUSPENDED`.
 blocked state that forbids login and sessions. (`INACTIVE` is a separate
 opt-out state and is not counted.) Administrators are never counted here.
 
-The dashboard's job counts come from `GET /api/v1/admin/jobs/summary`; see [Jobs API](jobs.md#administrator-endpoints).
+The dashboard's job counts come from `GET /api/v1/admin/jobs/summary`, and the
+ten-stage lifecycle pipeline comes from `GET /api/v1/admin/jobs/pipeline`; see
+[Jobs API](jobs.md#administrator-endpoints).
 
 Administrators can review technician cancellation requests, edit jobs, and
 permanently delete only completed or cancelled jobs. They can also inspect
@@ -58,6 +60,12 @@ Administrator messages are sent from `/api/v1/admin/broadcasts`. Each broadcast
 chooses its audience roles and its delivery channel, either in-app only or
 in-app plus SMS. See [Broadcasts API](broadcasts.md) for the audience preview,
 the send request, and the delivery counters.
+
+## Audit logs
+
+Administrators can review append-only audit trail entries via
+`/api/v1/admin/audit-logs`. See [Audit logs API](audit-logs.md) for filters,
+request examples, and response shapes.
 
 ## Changing the administrator password
 

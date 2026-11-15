@@ -13,25 +13,27 @@ collection named `fundi-api`; it does not merge into an existing collection.
 
 Create a Postman environment with:
 
-| Variable          | Example value                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------- |
-| `baseUrl`         | `http://localhost:3000`                                                               |
-| `customerToken`   | Access token from phone OTP verification                                              |
-| `technicianToken` | Access token for technician routes (or a customer token when converting that account) |
-| `jobId`           | A job UUID returned by the API                                                        |
-| `offerId`         | An offer UUID returned by the API                                                     |
-| `mediaId`         | A media UUID returned by the API                                                      |
-| `userId`          | A user UUID returned by the API                                                       |
-| `technicianId`    | A technician profile UUID returned by the API                                         |
-| `categoryId`      | A service category UUID returned by the API                                           |
-| `paymentId`       | A booking payment UUID returned by the mock-payment endpoint                          |
-| `verificationId`  | A job phone-verification UUID returned by the OTP request                             |
-| `documentId`      | A technician document UUID returned by the API                                        |
-| `chatRoomId`      | A chat room UUID returned for an accepted job assignment                              |
-| `chatMessageId`   | A chat message UUID returned by a send/list request                                   |
-| `adId`            | An ad UUID returned by the admin ad endpoints                                         |
-| `broadcastId`     | A broadcast UUID returned by the admin broadcast endpoints                            |
-| `adminNewPassword` | The new administrator password used by the change-password request                   |
+| Variable            | Example value                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------- |
+| `baseUrl`           | `http://localhost:3000`                                                               |
+| `customerToken`     | Access token from phone OTP verification                                              |
+| `technicianToken`   | Access token for technician routes (or a customer token when converting that account) |
+| `jobId`             | A job UUID returned by the API                                                        |
+| `ratingItemId`      | A rating item UUID returned by the admin rating-item endpoints                        |
+| `offerId`           | An offer UUID returned by the API                                                     |
+| `mediaId`           | A media UUID returned by the API                                                      |
+| `userId`            | A user UUID returned by the API                                                       |
+| `technicianId`      | A technician profile UUID returned by the API                                         |
+| `categoryId`        | A service ID returned by `/catalog/services` (used by jobs and technician profiles)   |
+| `catalogCategoryId` | A parent category UUID returned by `/catalog/categories`                              |
+| `paymentId`         | A booking payment UUID returned by the mock-payment endpoint                          |
+| `verificationId`    | A job phone-verification UUID returned by the OTP request                             |
+| `documentId`        | A technician document UUID returned by the API                                        |
+| `chatRoomId`        | A chat room UUID returned for an accepted job assignment                              |
+| `chatMessageId`     | A chat message UUID returned by a send/list request                                   |
+| `adId`              | An ad UUID returned by the admin ad endpoints                                         |
+| `broadcastId`       | A broadcast UUID returned by the admin broadcast endpoints                            |
+| `adminNewPassword`  | The new administrator password used by the change-password request                    |
 
 Use `{{baseUrl}}` at the start of every URL below. For JSON requests, choose
 **Body → raw → JSON** and send `Content-Type: application/json`.
@@ -65,8 +67,8 @@ token must not be used for admin routes.
    `technicianToken`. Save the `refreshToken` if testing refresh/logout.
 3. Verify a new technician's registration phone, then upload the required
    National ID document. A logged-in customer can instead create a technician
-   profile on the same account. Create a service category and configure its
-   booking fee before testing paid job creation.
+   profile on the same account. As admin, create a parent category and then a
+   service under it before testing paid job creation.
 4. Sign in as an admin and retain the cookies for admin-only routes.
 5. Use response IDs in later requests in place of the environment placeholders.
 
@@ -393,76 +395,95 @@ Allowed statuses: `ACTIVE`, `INACTIVE`, `SUSPENDED`.
 **DELETE** `{{baseUrl}}/api/v1/users/{{userId}}` — admin authentication; no
 body.
 
-## Service category endpoints
+## Service catalog endpoints
 
-### List active categories
+Parent categories are read at `/catalog/categories`; service offerings are read
+at `/catalog/services`. A service response includes its parent category
+details. Existing `categoryId` fields used by technician profiles and jobs
+refer to a **service ID**; use `catalogCategoryId` only when creating or
+managing a parent category.
 
-**GET** `{{baseUrl}}/api/v1/catalog/categories` — public; no body.
+### Public category endpoints
 
-### Search active categories
+**GET** `{{baseUrl}}/api/v1/catalog/categories` — list active parent
+categories; no body.
 
-**GET** `{{baseUrl}}/api/v1/catalog/categories/search?name=plumb` — public;
-no body.
+**GET** `{{baseUrl}}/api/v1/catalog/categories/search?name=home` — search
+active parent categories by name; no body.
 
-### Get an active category by ID
+**GET** `{{baseUrl}}/api/v1/catalog/categories/{{catalogCategoryId}}` — get
+one active parent category; no body.
 
-**GET** `{{baseUrl}}/api/v1/catalog/categories/{{categoryId}}` — public; no
-body.
-
-### Create a category (admin)
+### Admin category endpoints
 
 **POST** `{{baseUrl}}/api/v1/catalog/categories` — admin authentication.
 
 ```json
 {
-  "name": "Home Repair",
-  "category": "Home Services",
-  "description": "General household repairs.",
-  "visitFee": 1000,
-  "emergencyVisitFee": 1500,
-  "sosBookingFee": 2500
+  "name": "Home Services",
+  "description": "Repairs and maintenance for homes."
 }
 ```
 
-### List all categories (admin)
+**GET** `{{baseUrl}}/api/v1/catalog/admin/categories` — list all parent
+categories, including inactive.
 
-**GET** `{{baseUrl}}/api/v1/catalog/admin/categories` — admin authentication;
-no body.
+**GET**
+`{{baseUrl}}/api/v1/catalog/admin/categories/by-name?name=Home%20Services` —
+find a parent category by exact name.
 
-### Find a category by exact name (admin)
+**PATCH**
+`{{baseUrl}}/api/v1/catalog/categories/{{catalogCategoryId}}` — update the
+parent category; send one or more of `name`, `description`, and `isActive`.
 
-**GET** `{{baseUrl}}/api/v1/catalog/admin/categories/by-name?name=Home%20Repair`
-— admin authentication; no body.
+**DELETE**
+`{{baseUrl}}/api/v1/catalog/categories/{{catalogCategoryId}}` — deactivate a
+parent category.
 
-### Get any category by ID (admin)
+### Public service endpoints
 
-**GET** `{{baseUrl}}/api/v1/catalog/admin/categories/{{categoryId}}` — admin
-authentication; no body.
+**GET** `{{baseUrl}}/api/v1/catalog/services` — list active services with
+their parent category details.
 
-### Update a category (admin)
+**GET** `{{baseUrl}}/api/v1/catalog/services/search?name=leak` — search
+service names and optional `keywords`.
 
-**PATCH** `{{baseUrl}}/api/v1/catalog/categories/{{categoryId}}` — admin
-authentication.
+**GET** `{{baseUrl}}/api/v1/catalog/services/{{categoryId}}` — get a service
+by its service ID.
+
+### Admin service endpoints
+
+**POST** `{{baseUrl}}/api/v1/catalog/services` — create a service under an
+active parent category.
 
 ```json
 {
-  "name": "Home Maintenance",
-  "description": "General maintenance and repairs.",
-  "isActive": true,
-  "visitFee": 1500,
-  "emergencyVisitFee": 2000,
-  "sosBookingFee": 3500
+  "categoryId": "{{catalogCategoryId}}",
+  "name": "Plumbing",
+  "description": "Leak repairs, pipe fitting, and drain unblocking.",
+  "keywords": "leak repair, pipes, blocked drain",
+  "bookingFee": 1000,
+  "emergencyVisitFee": 1500,
+  "sosBookingFee": 2500,
+  "icon": "wrench"
 }
 ```
 
-`visitFee` and `emergencyVisitFee` are non-negative integer amounts in RWF.
-When configured, `sosBookingFee` is positive and higher than `visitFee`. At least one of
-`name`, `isActive`, `visitFee`, or `sosBookingFee` is required.
+`keywords` is optional and can be omitted. Fees are non-negative integer RWF
+amounts; the optional SOS fee must be positive and greater than `bookingFee`.
 
-### Deactivate a category (admin)
+**GET** `{{baseUrl}}/api/v1/catalog/admin/services` — list all services,
+including inactive.
 
-**DELETE** `{{baseUrl}}/api/v1/catalog/categories/{{categoryId}}` — admin
-authentication; no body.
+**GET**
+`{{baseUrl}}/api/v1/catalog/admin/services/by-name?name=Plumbing` — find a
+service by exact name.
+
+**PATCH** `{{baseUrl}}/api/v1/catalog/services/{{categoryId}}` — update a
+service; to move it to another parent category, send the new `categoryId`.
+
+**DELETE** `{{baseUrl}}/api/v1/catalog/services/{{categoryId}}` — deactivate
+a service.
 
 ## Technician profile and discovery endpoints
 
@@ -748,6 +769,16 @@ bearer token; no body.
 `{{baseUrl}}/api/v1/technicians/profile/documents/{{documentId}}` —
 technician bearer token; no body. Only `SUBMITTED` or `DENIED` documents can
 be deleted.
+
+### Update and resubmit a denied document
+
+**PATCH**
+`{{baseUrl}}/api/v1/technicians/profile/documents/{{documentId}}` —
+technician bearer token. Use form-data with a replacement `file` (required).
+Optionally include `title`; for certificates you can also update
+`certificateType` and provide `categoryId` or `customCategoryName`. Only a
+`DENIED` document can be changed. The same document ID is returned with status
+`SUBMITTED`.
 
 ### List a technician's documents (admin)
 
@@ -1079,6 +1110,26 @@ bearer token; no body.
 `{{baseUrl}}/api/v1/jobs/{{jobId}}/media/{{mediaId}}` — job owner, assigned
 technician, or admin authentication; no body. Returns file bytes.
 
+## Feedback and ratings
+
+Ratings are optional. Once a job is completed, its owner can fetch the active
+items and submit one 1-to-5 score for each item:
+
+1. **GET** `{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/rating-items`
+2. **POST** `{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/rating`
+
+The POST body contains a `responses` array of `{ "itemId": "...", "score": 5 }`
+objects and an optional `comment`. The owner cannot edit a submitted rating.
+An admin can manage rating items at `/api/v1/admin/rating-items`, view ratings
+at `/api/v1/admin/jobs/{{jobId}}/ratings` or
+`/api/v1/admin/technicians/{{technicianId}}/ratings`, and submit or correct
+dynamic ratings on a job. Technicians can view their own paginated results at
+`/api/v1/technicians/profile/ratings`.
+
+The importable collection has matching requests under **Feedback and Ratings**.
+See [Feedback and Ratings API](./ratings.md) for request examples and the full
+endpoint reference.
+
 ## Technician jobs
 
 All routes in this section require a technician bearer token.
@@ -1168,6 +1219,20 @@ These routes require administrator authentication.
 ### Get job summary
 
 **GET** `{{baseUrl}}/api/v1/admin/jobs/summary` — no body.
+
+### Get job pipeline counts
+
+**GET** `{{baseUrl}}/api/v1/admin/jobs/pipeline` — no body. Returns the ten
+dashboard stages in lifecycle order. Diagnose, Quote, and Approve return
+`count: null` with `tracked: false` because the backend does not record those
+steps.
+
+### List jobs at a pipeline stage
+
+**GET** `{{baseUrl}}/api/v1/admin/jobs/pipeline/visit?page=1&limit=20` — no
+body. The stage is one of `request`, `match`, `accept`, `visit`, `diagnose`,
+`quote`, `approve`, `repair`, `settle`, or `rate`. Untracked stages return an
+empty page rather than an error.
 
 ### Get a job by ID
 
@@ -1394,6 +1459,6 @@ audit snapshot of the payment data.
   authentication](./admin-authentication.md), [user management](./users.md),
   [technician onboarding](./technician-onboarding.md), [technician
   documents](./technician-documents.md), [service categories](./service-categories.md),
-  [jobs](./jobs.md), [booking payments](./booking-payments.md),
+  [jobs](./jobs.md), [feedback and ratings](./ratings.md), [booking payments](./booking-payments.md),
   [job chat](./chat.md), [ads](./ads.md), and [broadcasts](./broadcasts.md)
   guides.

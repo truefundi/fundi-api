@@ -708,12 +708,12 @@ describe('TechniciansService', () => {
     expect(result).toHaveProperty('paymentNumber');
   });
 
-  it('redacts payment and national ID for authenticated non-owners', async () => {
+  it('redacts payment and omits national ID for authenticated non-owners', async () => {
     const { service, prisma } = createService();
     prisma.technicianProfile.findMany.mockResolvedValue([baseProfile()]);
     const { data } = await service.listAvailable({}, 'authenticated');
     const [result] = data;
-    expect(result.nationalIdNumber).toBeNull();
+    expect(result).not.toHaveProperty('nationalIdNumber');
     expect(result.paymentMethod).toBeNull();
     expect(result.paymentNumber).toBeNull();
     expect(result.user.phoneNumber).toBe('+250788123456');
@@ -737,7 +737,6 @@ describe('TechniciansService', () => {
     });
     expect(result.paymentMethod).toBeNull();
     expect(result.paymentNumber).toBeNull();
-    expect(result.nationalIdNumber).toBeNull();
   });
 
   // ─── Derived experience + picture ──────────────────────────────────────

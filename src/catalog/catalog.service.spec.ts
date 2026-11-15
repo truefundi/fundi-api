@@ -3,36 +3,56 @@ import { PrismaService } from '../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CatalogService } from './catalog.service';
 
-// Tests public discovery and audited administrator category changes.
 describe('CatalogService', () => {
   const category = {
+    id: '84cfa9af-05d4-40c1-ad36-123e412ec509',
+    name: 'Home Services',
+    description: 'Repairs and maintenance for homes.',
+    isActive: true,
+    createdAt: new Date('2026-10-01T10:00:00.000Z'),
+    updatedAt: new Date('2026-10-01T10:00:00.000Z'),
+  };
+  const serviceRecord = {
     id: 'e5a4f4d7-0b21-46d8-9a4b-98765d332100',
+    categoryId: category.id,
     name: 'Plumbing',
     slug: 'plumbing',
-    isActive: true,
-    description: '',
-    category: 'Home Services',
+    description: 'Leak repairs, pipe fitting, and drain unblocking.',
     keywords: 'leak repair, pipes',
     visitFee: 1000,
-    emergencyVisitFee: 0,
+    emergencyVisitFee: 1500,
     sosBookingFee: 2500,
-    createdAt: new Date('2026-10-01T10:00:00.000Z'),
+    icon: 'wrench',
+    isActive: true,
+    createdAt: category.createdAt,
+    updatedAt: category.updatedAt,
+    category,
   };
 
-  // Creates a service with transaction-aware Prisma and audit test doubles.
   const createService = () => {
     const transaction = {
-      serviceCategory: {
+      catalogCategory: {
         create: jest.fn().mockResolvedValue(category),
         update: jest.fn().mockResolvedValue(category),
         findUnique: jest.fn().mockResolvedValue(category),
+        findFirst: jest.fn().mockResolvedValue(category),
+      },
+      serviceCategory: {
+        create: jest.fn().mockResolvedValue(serviceRecord),
+        update: jest.fn().mockResolvedValue(serviceRecord),
+        findUnique: jest.fn().mockResolvedValue(serviceRecord),
       },
     };
     const prisma = {
-      serviceCategory: {
+      catalogCategory: {
         findMany: jest.fn().mockResolvedValue([category]),
         findFirst: jest.fn().mockResolvedValue(category),
         findUnique: jest.fn().mockResolvedValue(category),
+      },
+      serviceCategory: {
+        findMany: jest.fn().mockResolvedValue([serviceRecord]),
+        findFirst: jest.fn().mockResolvedValue(serviceRecord),
+        findUnique: jest.fn().mockResolvedValue(serviceRecord),
       },
       $transaction: jest.fn(
         (callback: (tx: typeof transaction) => Promise<unknown>) =>
@@ -51,81 +71,34 @@ describe('CatalogService', () => {
     };
   };
 
-  // Limits public listings and searches to active categories.
-  it('lists active categories for public discovery', async () => {
+  it('lists only active categories', async () => {
     const { service, prisma } = createService();
-    await service.listActive();
-    expect(prisma.serviceCategory.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { isActive: true },
-      }),
+    await service.listCategories();
+
+    expect(prisma.catalogCategory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { isActive: true } }),
     );
   });
 
-  // Searches active categories by name and optional search keywords.
-  it('searches active category names and keywords case-insensitively', async () => {
-    const { service, prisma } = createService();
-    await service.searchActive('  PLUMB  ');
-    expect(prisma.serviceCategory.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          isActive: true,
-          OR: [
-            { name: { contains: 'PLUMB', mode: 'insensitive' } },
-            { keywords: { contains: 'PLUMB', mode: 'insensitive' } },
-          ],
-        },
-      }),
-    );
-  });
-
-  it('returns bookingFee and keywords in public category responses', async () => {
-    const { service } = createService();
-    const [result] = await service.listActive();
-    expect(result).toMatchObject({
-      bookingFee: 1000,
-      keywords: 'leak repair, pipes',
-    });
-    expect(result).not.toHaveProperty('visitFee');
-  });
-
-  // Fails clearly when a public lookup targets an inactive or missing category.
-  it('returns not found for a category unavailable to the public', async () => {
-    const { service, prisma } = createService();
-    prisma.serviceCategory.findFirst.mockResolvedValue(null);
-    await expect(service.getActiveById(category.id)).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
-  });
-
-  // Trims names, derives slugs, and writes the audit entry in the same transaction.
-  it('creates a normalized category and audit row', async () => {
+  it('creates a parent category with an audit record', async () => {
     const { service, transaction, audit } = createService();
-    await service.create(
+    await service.createCategory(
       {
-        name: '  Home Repair  ',
-        keywords: '  handyman, general repairs ',
-        bookingFee: 100,
+        name: '  Home Services ',
+        description: '  Repairs and maintenance for homes. ',
       },
       'admin-1',
     );
-    expect(transaction.serviceCategory.create).toHaveBeenCalledWith({
+
+    expect(transaction.catalogCategory.create).toHaveBeenCalledWith({
       data: {
-        name: 'Home Repair',
-        slug: 'home-repair',
-        description: '',
-        category: 'Home Services',
-        keywords: 'handyman, general repairs',
-        visitFee: 100,
-        emergencyVisitFee: 0,
-        isActive: true,
-        sosBookingFee: null,
-        icon: null,
+        name: 'Home Services',
+        description: 'Repairs and maintenance for homes.',
       },
     });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
-        entityType: 'ServiceCategory',
+        entityType: 'CatalogCategory',
         action: 'CREATED',
         actorId: 'admin-1',
       }),
@@ -133,103 +106,196 @@ describe('CatalogService', () => {
     );
   });
 
-  // Persists the dashboard's editable booking fees and service metadata.
-  it('updates booking fees and records the change', async () => {
+  it('rejects empty category updates', async () => {
+    const { service } = createService();
+    await expect(
+      service.updateCategory(category.id, {}, 'admin-1'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('searches services by name and keywords within active categories', async () => {
+    const { service, prisma } = createService();
+    const [result] = await service.searchActiveServices('  PIPES  ');
+
+    expect(prisma.serviceCategory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          isActive: true,
+          category: { isActive: true },
+          OR: [
+            { name: { contains: 'PIPES', mode: 'insensitive' } },
+            { keywords: { contains: 'PIPES', mode: 'insensitive' } },
+          ],
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      id: serviceRecord.id,
+      categoryId: category.id,
+      category: {
+        id: category.id,
+        name: 'Home Services',
+        description: category.description,
+      },
+      bookingFee: 1000,
+      keywords: 'leak repair, pipes',
+    });
+    expect(result).not.toHaveProperty('visitFee');
+  });
+
+  it('gets services with their complete parent category', async () => {
+    const { service, prisma } = createService();
+    const result = await service.getActiveServiceById(serviceRecord.id);
+
+    expect(prisma.serviceCategory.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: serviceRecord.id,
+          isActive: true,
+          category: { isActive: true },
+        },
+        select: expect.objectContaining({
+          category: {
+            select: expect.objectContaining({
+              id: true,
+              name: true,
+              description: true,
+            }),
+          },
+        }),
+      }),
+    );
+    expect(result.category).toEqual(category);
+  });
+
+  it('creates a service linked to an active category', async () => {
     const { service, transaction, audit } = createService();
-    await service.update(
-      category.id,
+    await service.createService(
       {
-        description: ' Leaks and pipe repairs. ',
-        category: 'Home Services',
-        bookingFee: 75,
-        emergencyVisitFee: 110,
-        sosBookingFee: 2500,
-        keywords: 'pipe repair',
+        name: '  Pipe Repair ',
+        categoryId: category.id,
+        keywords: '  drain, leaks ',
+        bookingFee: 1000,
       },
       'admin-1',
     );
-    expect(transaction.serviceCategory.update).toHaveBeenCalledWith({
-      where: { id: category.id },
+
+    expect(transaction.catalogCategory.findFirst).toHaveBeenCalledWith({
+      where: { id: category.id, isActive: true },
+      select: { id: true },
+    });
+    expect(transaction.serviceCategory.create).toHaveBeenCalledWith({
       data: {
-        name: undefined,
-        slug: undefined,
-        description: 'Leaks and pipe repairs.',
-        category: 'Home Services',
-        visitFee: 75,
-        keywords: 'pipe repair',
-        emergencyVisitFee: 110,
-        isActive: undefined,
-        sosBookingFee: 2500,
-        icon: undefined,
+        name: 'Pipe Repair',
+        slug: 'pipe-repair',
+        categoryId: category.id,
+        description: '',
+        keywords: 'drain, leaks',
+        visitFee: 1000,
+        emergencyVisitFee: 0,
+        isActive: true,
+        sosBookingFee: null,
+        icon: null,
       },
+      select: expect.any(Object),
     });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: 'UPDATED',
-        metadata: {
-          description: 'Leaks and pipe repairs.',
-          category: 'Home Services',
-          bookingFee: 75,
-          emergencyVisitFee: 110,
-          sosBookingFee: 2500,
-          keywords: 'pipe repair',
-        },
+        entityType: 'ServiceCategory',
+        action: 'CREATED',
+        actorId: 'admin-1',
+        metadata: expect.objectContaining({ categoryId: category.id }),
       }),
       transaction,
     );
   });
 
-  it('clears a nullable category icon when explicitly set to null', async () => {
+  it('rejects services linked to a missing or inactive category', async () => {
     const { service, transaction } = createService();
-    await service.update(category.id, { icon: null }, 'admin-1');
-
-    expect(transaction.serviceCategory.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ icon: null }),
-      }),
-    );
-  });
-
-  // Rejects updates that do not change any category field.
-  it('rejects an empty category update', async () => {
-    const { service } = createService();
-    await expect(
-      service.update(category.id, {}, 'admin-1'),
-    ).rejects.toBeInstanceOf(BadRequestException);
-  });
-
-  it('requires an SOS booking fee higher than the normal fee', async () => {
-    const { service, transaction } = createService();
+    transaction.catalogCategory.findFirst.mockResolvedValue(null);
 
     await expect(
-      service.create(
-        { name: 'Emergency Plumbing', bookingFee: 1000, sosBookingFee: 1000 },
+      service.createService(
+        { name: 'Pipe Repair', categoryId: category.id },
         'admin-1',
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(transaction.serviceCategory.create).not.toHaveBeenCalled();
   });
 
-  it('rejects an update that makes the SOS fee no longer higher than normal', async () => {
+  it('requires an SOS fee higher than the normal service fee', async () => {
     const { service, transaction } = createService();
-
     await expect(
-      service.update(category.id, { bookingFee: 3000 }, 'admin-1'),
+      service.createService(
+        {
+          name: 'Emergency Plumbing',
+          categoryId: category.id,
+          bookingFee: 1000,
+          sosBookingFee: 1000,
+        },
+        'admin-1',
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
-    expect(transaction.serviceCategory.update).not.toHaveBeenCalled();
+    expect(transaction.serviceCategory.create).not.toHaveBeenCalled();
   });
 
-  // Soft-deactivates categories to preserve existing profile/job references.
-  it('deactivates a category and records the change', async () => {
-    const { service, transaction, audit } = createService();
-    await service.deactivate(category.id, 'admin-1');
-    expect(transaction.serviceCategory.update).toHaveBeenCalledWith({
+  it('updates the service category relationship', async () => {
+    const { service, transaction } = createService();
+    await service.updateService(
+      serviceRecord.id,
+      { categoryId: category.id },
+      'admin-1',
+    );
+
+    expect(transaction.serviceCategory.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: serviceRecord.id },
+        data: expect.objectContaining({ categoryId: category.id }),
+        select: expect.any(Object),
+      }),
+    );
+  });
+
+  it('allows clearing the SOS fee when increasing the normal fee', async () => {
+    const { service, transaction } = createService();
+    await service.updateService(
+      serviceRecord.id,
+      { bookingFee: 3000, sosBookingFee: null },
+      'admin-1',
+    );
+
+    expect(transaction.serviceCategory.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          visitFee: 3000,
+          sosBookingFee: null,
+        }),
+      }),
+    );
+  });
+
+  it('returns not found for a service unavailable to the public', async () => {
+    const { service, prisma } = createService();
+    prisma.serviceCategory.findFirst.mockResolvedValue(null);
+    await expect(
+      service.getActiveServiceById(serviceRecord.id),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('deactivates categories and services without deleting their records', async () => {
+    const { service, transaction } = createService();
+    await service.deactivateCategory(category.id, 'admin-1');
+    await service.deactivateService(serviceRecord.id, 'admin-1');
+
+    expect(transaction.catalogCategory.update).toHaveBeenCalledWith({
       where: { id: category.id },
       data: { isActive: false },
     });
-    expect(audit.log).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'DEACTIVATED' }),
-      transaction,
+    expect(transaction.serviceCategory.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: serviceRecord.id },
+        data: { isActive: false },
+      }),
     );
   });
 });

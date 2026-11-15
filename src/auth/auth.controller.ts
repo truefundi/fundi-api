@@ -8,6 +8,7 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  Headers,
   UseGuards,
   Req,
 } from '@nestjs/common';
@@ -138,8 +139,11 @@ export class AuthController {
   )
   @ApiNotFound('No account was found for this phone number.')
   @ApiServiceUnavailable()
-  async verifyOtp(@Body() body: VerifyOtpDto) {
-    return this.authService.verifyOtp(body.phoneNumber, body.otp);
+  async verifyOtp(
+    @Body() body: VerifyOtpDto,
+    @Headers('x-device-id') deviceId?: string,
+  ) {
+    return this.authService.verifyOtp(body.phoneNumber, body.otp, deviceId);
   }
 
   @Post('login/password')
@@ -153,8 +157,15 @@ export class AuthController {
   @ApiUnauthorized('The phone number or password is incorrect.')
   @ApiForbidden('The account is inactive, unverified, or temporarily locked.')
   @ApiServiceUnavailable()
-  async loginWithPassword(@Body() body: PasswordLoginDto) {
-    return this.authService.loginWithPassword(body.phoneNumber, body.password);
+  async loginWithPassword(
+    @Body() body: PasswordLoginDto,
+    @Headers('x-device-id') deviceId?: string,
+  ) {
+    return this.authService.loginWithPassword(
+      body.phoneNumber,
+      body.password,
+      deviceId,
+    );
   }
 
   @Post('login/pin')
@@ -168,8 +179,11 @@ export class AuthController {
   @ApiUnauthorized('The phone number or PIN is incorrect.')
   @ApiForbidden('The account is inactive, unverified, or temporarily locked.')
   @ApiServiceUnavailable()
-  async loginWithPin(@Body() body: PinLoginDto) {
-    return this.authService.loginWithPin(body.phoneNumber, body.pin);
+  async loginWithPin(
+    @Body() body: PinLoginDto,
+    @Headers('x-device-id') deviceId?: string,
+  ) {
+    return this.authService.loginWithPin(body.phoneNumber, body.pin, deviceId);
   }
 
   @Post('password/reset')
@@ -292,10 +306,14 @@ export class AuthController {
   @ApiUnauthorized('The passkey response is invalid.')
   @ApiForbidden('The account is inactive or an unverified technician.')
   @ApiServiceUnavailable()
-  async verifyPasskeyAuthentication(@Body() body: PasskeyAuthenticationDto) {
+  async verifyPasskeyAuthentication(
+    @Body() body: PasskeyAuthenticationDto,
+    @Headers('x-device-id') deviceId?: string,
+  ) {
     return this.authService.verifyPasskeyAuthentication(
       body.phoneNumber,
       body.response,
+      deviceId,
     );
   }
 

@@ -73,6 +73,21 @@ function detId(...parts: Array<string | number>): string {
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 
+// Allocates the same FD-MMYYNNN job reference the API hands out, so seeded
+// jobs look like production jobs and never collide with real ones.
+async function nextJobReference(): Promise<string> {
+  const rows = await prisma.$queryRaw<
+    Array<{ monthKey: string; lastNumber: number }>
+  >`
+    INSERT INTO "job_number_counters" ("monthKey", "lastNumber")
+    VALUES (to_char(now() AT TIME ZONE 'Africa/Kigali', 'MMYY'), 1)
+    ON CONFLICT ("monthKey")
+    DO UPDATE SET "lastNumber" = "job_number_counters"."lastNumber" + 1
+    RETURNING "monthKey", "lastNumber"`;
+  const { monthKey, lastNumber } = rows[0];
+  return `FD-${monthKey}${String(lastNumber).padStart(3, '0')}`;
+}
+
 // ─── Reference data ────────────────────────────────────────────────────────
 
 const CATEGORIES = [
@@ -193,6 +208,14 @@ const CATEGORY_FEES: Record<string, { fee: number; sos: number }> = {
 };
 
 async function seedCategories() {
+  const parentCategory = await prisma.catalogCategory.upsert({
+    where: { name: 'Home Services' },
+    update: { description: 'Repairs and maintenance for homes.' },
+    create: {
+      name: 'Home Services',
+      description: 'Repairs and maintenance for homes.',
+    },
+  });
   const categories = [];
   for (const name of CATEGORIES) {
     const slug = slugify(name);
@@ -201,6 +224,7 @@ async function seedCategories() {
       where: { slug },
       update: {
         name,
+        categoryId: parentCategory.id,
         isActive: true,
         visitFee: feeInfo.fee,
         emergencyVisitFee: Math.round(feeInfo.fee * 1.5),
@@ -209,6 +233,7 @@ async function seedCategories() {
       create: {
         name,
         slug,
+        categoryId: parentCategory.id,
         visitFee: feeInfo.fee,
         emergencyVisitFee: Math.round(feeInfo.fee * 1.5),
         sosBookingFee: feeInfo.sos,
@@ -438,6 +463,7 @@ async function seedJobs(
       },
       create: {
         id: detId('job', i),
+        reference: await nextJobReference(),
         customerId: customer.id,
         technicianId: technician?.profileId ?? null,
         serviceCategoryId: category.id,

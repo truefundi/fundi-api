@@ -27,10 +27,8 @@ import { JobUpload } from './job-media.util';
 import { JobsService } from './jobs.service';
 import { AuthService } from '../auth/auth.service';
 import { CreateJobMultipartDto } from './dto/create-job-multipart.dto';
-import {
-  RequestJobPhoneVerificationDto,
-  VerifyJobPhoneDto,
-} from './dto/verify-job-phone.dto';
+import { VerifyJobPhoneDto } from './dto/verify-job-phone.dto';
+import { RequestJobPhoneDto } from './dto/request-job-phone.dto';
 import { CancelJobDto } from './dto/cancel-job.dto';
 import {
   MatchingTechniciansDto,
@@ -80,7 +78,7 @@ export class JobsController {
   @Post('phone-verification/request')
   requestPhoneVerification(
     @CurrentUser() user: AuthUser,
-    @Body() dto: RequestJobPhoneVerificationDto,
+    @Body() dto?: RequestJobPhoneDto,
   ) {
     return this.auth.requestCustomerJobOtp(user.id, dto?.phoneNumber);
   }
@@ -170,7 +168,7 @@ export class JobsController {
   @ApiOperation({
     summary: 'Create an SOS job and automatically dispatch it',
     description:
-      'Requires an SOS booking payment and verified phone number. Offers go one at a time to matching approved, online technicians, with a five-minute response window.',
+      'Requires an SOS booking payment and verified phone number. Offers go one at a time to matching approved, online technicians, with a 30-second response window.',
   })
   @ApiBody({
     schema: {

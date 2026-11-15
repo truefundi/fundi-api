@@ -7,29 +7,54 @@ administrator session or token. JSON endpoints use
 `multipart/form-data`.
 
 For a normal request, a logged-in customer or technician previews eligible
-technicians, pays the normal category booking fee, verifies their phone for
-this request, creates the job, then proposes one matching technician. For an
+technicians, pays the normal category booking fee, creates the job, then
+proposes one matching technician. A customer verifies their account phone
+before their first job; later jobs use the saved verification and need no new
+OTP. Technicians continue to verify for each job. For an
 SOS request, the owner pays the higher SOS fee and creates the request through
 the SOS endpoint; the system automatically offers it to eligible technicians
-in match order, one at a time, with 30 seconds to respond to each offer.
+in match order, one at a time, with 30 seconds to respond to each offer. Normal
+job proposals remain open for two minutes.
 
 ## Booking flow
 
-1. List service categories with `GET /catalog/categories`; select a category
-   with a configured positive `visitFee` and, for SOS requests, a higher
-   `sosBookingFee`.
+1. List services with `GET /catalog/services`; each response includes its
+   parent category. Select a service with a configured positive `bookingFee`
+   and, for SOS requests, a higher `sosBookingFee`.
 2. Preview matches using `GET /jobs/matching-technicians`.
 3. Pay the booking fee using `POST /payments/mock`. This development-only
    payment is not a real money transfer.
-4. Request and verify the job owner's phone OTP for this job using
+4. If the customer has not verified their account phone, or the job owner is a
+   technician, request and verify the phone OTP using
    `POST /jobs/phone-verification/request` and
-   `POST /jobs/phone-verification/verify`.
-5. Create the job using the returned `paymentId` and `verificationId`.
+   `POST /jobs/phone-verification/verify`. The verified customer number becomes
+   the account's phone login number. Customers may verify another number later
+   to replace it, provided no other account owns that number.
+5. Create the job using the returned `paymentId` and, when required, the
+   `verificationId`.
 6. Propose a technician from the preview list using
    `POST /jobs/mine/:jobId/requests`.
 
+   The job field `serviceCategoryId` continues to contain the selected **service
+   ID** for compatibility; it is not the ID of the new parent catalog category.
+
 See [Booking Payments API](booking-payments.md) for payment records, validity,
 and administrator extensions.
+
+## Job reference numbers
+
+Every job carries two identifiers:
+
+- `id` — the immutable UUID used in URLs and API calls.
+- `reference` — a human-readable number such as `FD-1126003`, meant for
+  display and support conversations. It is built from the job's creation
+  month (`MMYY`, Kigali time) plus a per-month sequence: `FD-` + `1126` +
+  `003` is the third job created in November 2026. The counter restarts at
+  `001` each month and is allocated inside the creation transaction, so two
+  jobs never share a reference.
+
+Every job response (customer, technician, and admin views) returns both
+fields side by side.
 
 ## Customer and technician job-owner endpoints
 
@@ -44,6 +69,9 @@ and administrator extensions.
 | `POST`   | `/api/v1/jobs/sos`                                   | Customer or technician: create an SOS job and automatically dispatch offers   |
 | `GET`    | `/api/v1/jobs/mine`                                  | List this user's visible jobs                                                 |
 | `GET`    | `/api/v1/jobs/mine/:jobId`                           | Read one owned job                                                            |
+| `GET`    | `/api/v1/jobs/mine/:jobId/rating-items`              | Get active rating items for a completed owned job                             |
+| `GET`    | `/api/v1/jobs/mine/:jobId/rating`                    | Read the owner's rating                                                       |
+| `POST`   | `/api/v1/jobs/mine/:jobId/rating`                    | Optionally rate the assigned technician                                       |
 | `POST`   | `/api/v1/jobs/mine/:jobId/requests`                  | Propose a matching technician                                                 |
 | `POST`   | `/api/v1/jobs/mine/:jobId/confirm-cooperation`       | Customer confirms agreement with the assigned technician                      |
 | `PATCH`  | `/api/v1/jobs/mine/:jobId`                           | Edit an open, unassigned job                                                  |
@@ -56,15 +84,28 @@ and administrator extensions.
 | `POST`   | `/api/v1/jobs/mine/:jobId/media`                     | Add media to an editable job                                                  |
 | `DELETE` | `/api/v1/jobs/mine/:jobId/media/:mediaId`            | Remove media from an editable job                                             |
 
-### Verify a phone number for a job
+Job owners can optionally submit one 1-to-5 score for every active rating item
+after a completed job. See [Feedback and Ratings API](ratings.md) for the item
+management, technician rating views, and administrator endpoints.
 
-Each job request requires a new phone verification, even if the job owner
-verified their phone during login or for an earlier request.
+### Verify an account phone before creating a job
 
 **POST** `/api/v1/jobs/phone-verification/request` — customer or technician
-bearer token.
-No request body. In development, read the code from the API terminal when
-`SMS_MODE=console` is configured. The response includes a `verificationId`.
+bearer token. Customers may omit the body to verify the current account phone,
+or submit a different number to verify and replace it. Technicians may only
+verify their current number and still need a new verification for each job.
+
+```json
+{
+  "phoneNumber": "+250788123456"
+}
+```
+
+For customers whose current number is already verified, omitting the number
+returns `verified: true` without sending an OTP. A different number always
+requires verification, and the number cannot belong to another account. In
+development, read the code from the API terminal when `SMS_MODE=console` is
+configured. A pending verification response includes a `verificationId`.
 
 ```json
 {
@@ -83,8 +124,10 @@ No request body. In development, read the code from the API terminal when
 }
 ```
 
-The response contains the same `verificationId` and `verifiedAt`. The
-verification can be consumed only once and must be passed to job creation.
+After a successful OTP, the response includes `phoneNumber` and `verifiedAt`.
+For customers, the verified number is saved as the account's phone number and
+future jobs do not need a `phoneVerificationId`. For a technician, the
+one-use `verificationId` must still be passed to that job.
 
 ### Preview scored technicians
 
@@ -186,15 +229,16 @@ the JSON is a shape reference, not a raw JSON body:
 }
 ```
 
-Required form fields: `paymentId`, `phoneVerificationId`, exactly one of
-`serviceCategoryId` or `otherServiceName`, `description`, `locationAddress`,
-`latitude`, `longitude`, and `offeredAmount`. A payment must belong to this
-customer, be unused, be valid, and match the selected category and
-`requestType` (`NORMAL` by default). Custom
+Required form fields: `paymentId`, exactly one of `serviceCategoryId` or
+`otherServiceName`, `description`, `locationAddress`, `latitude`, `longitude`,
+and `offeredAmount`. Include `phoneVerificationId` only when required by the
+account's verification state (always for technicians; for customers, until
+their account phone is verified). A payment must belong to this customer, be
+unused, be valid, and match the selected category and `requestType` (`NORMAL`
+by default). Custom
 `otherServiceName` requests can be previewed but cannot currently be booked:
-the payment workflow requires a `serviceCategoryId`. Choose a configured
-category to create a paid request. The phone verification is consumed when the
-job is created.
+the payment workflow requires a `serviceCategoryId`. Choose a configured category to create a paid request. A one-use phone
+verification is consumed when supplied.
 
 Optional files: up to five `photos` (JPEG, PNG, or WebP; 5 MiB each) and one
 `video` (MP4; up to 50 MiB and 30 seconds). Use repeated `photos` fields for
@@ -203,9 +247,10 @@ multiple images. For jobs without attachments, the request may use JSON.
 ### Create an SOS job
 
 **POST** `/api/v1/jobs/sos` — customer or technician bearer token; use
-**Body → form-data**. First create an SOS payment (`requestType: "SOS"`) and
-verify the job owner's phone number. Submit the same fields as job creation:
-`paymentId`, `phoneVerificationId`, `serviceCategoryId`, `description`,
+**Body → form-data**. First create an SOS payment (`requestType: "SOS"`). If
+required by the account's verification state, verify the job owner's phone.
+Submit the same fields as job creation:
+`paymentId`, `serviceCategoryId`, `description`,
 `locationAddress`, `latitude`, `longitude`, and `offeredAmount`. Optional
 `priority`, `photos`, and `video` are supported. This route sets the job type
 to `SOS` and automatically sends an offer to the highest-ranked matching
@@ -238,9 +283,10 @@ technician, provided the payment remains valid.
 ```
 
 Choose a technician returned by the matching preview. Only one proposal can be
-active at a time. A rejection or five-minute timeout leaves the job open so
-the customer can propose another matching technician, provided the payment is
-still valid.
+active at a time. A rejection or two-minute timeout leaves a normal job open
+and ends that technician's request; the job creator must propose another
+matching technician. The booking payment must still be valid. SOS offers use
+the automatic 30-second dispatch flow described above.
 
 ### Read, edit, and cancel a job
 
@@ -363,6 +409,8 @@ A technician cannot accept another job while a job is `ASSIGNED`. A mutually
 | -------- | ----------------------------------------------------- | ------------------------------------------------ |
 | `GET`    | `/api/v1/admin/jobs`                                  | List all jobs, offers, and assignment history    |
 | `GET`    | `/api/v1/admin/jobs/summary`                          | Dashboard job counts                             |
+| `GET`    | `/api/v1/admin/jobs/pipeline`                         | Ten dashboard pipeline stage counts              |
+| `GET`    | `/api/v1/admin/jobs/pipeline/:stage`                  | One page of jobs at a pipeline stage             |
 | `POST`   | `/api/v1/admin/jobs`                                  | Create and dispatch a job on a customer's behalf |
 | `GET`    | `/api/v1/admin/jobs/cancellation-requests`            | List technician cancellation requests            |
 | `PATCH`  | `/api/v1/admin/jobs/cancellation-requests/:requestId` | Approve or reject a technician cancellation      |
@@ -423,6 +471,76 @@ Example admin response:
 `active` counts `OPEN`, `ASSIGNED`, and `PAUSED` jobs. `completed` counts jobs
 with `status: "COMPLETED"`. `FAILED` and `CANCELLED` jobs are terminal and
 excluded. `openDisputes` counts dispute records without an admin resolution.
+
+## Job pipeline
+
+`GET /api/v1/admin/jobs/pipeline` returns the ten stages the dashboard shows, in
+lifecycle order. Each stage reports `key`, `label`, `tracked`, `count`, and a
+`description` of how the count is derived. The response also carries
+`generatedAt`.
+
+Only stages backed by stored job state are counted. Because the API has no
+diagnosis, quote, or quote-approval records, those three stages return
+`tracked: false` and `count: null`; the endpoint never invents a zero.
+
+| Stage    | Derivation                                                                                                                |
+| -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Request  | `status: OPEN` and `dispatchStatus: PENDING`                                                                              |
+| Match    | `status: OPEN` and `dispatchStatus` is `OFFERED`, `EXHAUSTED`, or `STOPPED`                                               |
+| Accept   | `status` is `ASSIGNED`/`PAUSED`, a technician is assigned, and `cooperationStatus: PENDING`                               |
+| Visit    | `status` is `ASSIGNED`/`PAUSED`, `cooperationStatus: CONFIRMED`, and neither side's progress is `IN_PROGRESS`/`COMPLETED` |
+| Diagnose | Not tracked                                                                                                               |
+| Quote    | Not tracked                                                                                                               |
+| Approve  | Not tracked                                                                                                               |
+| Repair   | `status` is `ASSIGNED`/`PAUSED`, `cooperationStatus: CONFIRMED`, and either side's progress is `IN_PROGRESS`/`COMPLETED`  |
+| Settle   | `status: COMPLETED` and `ratedAt` is null                                                                                 |
+| Rate     | `status: COMPLETED` and `ratedAt` is set                                                                                  |
+
+Cancelled and failed jobs are terminal and appear in no in-flight stage, so the
+tracked counts are indicators rather than a partition of every job.
+
+```json
+{
+  "stages": [
+    {
+      "key": "request",
+      "label": "Request",
+      "count": 4,
+      "tracked": true,
+      "description": "Open jobs still waiting for dispatch to start."
+    },
+    {
+      "key": "diagnose",
+      "label": "Diagnose",
+      "count": null,
+      "tracked": false,
+      "description": "Not tracked: the backend does not record diagnosis separately from work progress."
+    }
+  ],
+  "generatedAt": "2026-11-09T09:00:00.000Z"
+}
+```
+
+`GET /api/v1/admin/jobs/pipeline/:stage` returns one page of the same admin job
+objects as `GET /api/v1/admin/jobs/:jobId`, wrapped in
+`{ stage, data, pagination }`. `stage` repeats the stage summary with `count`
+equal to the page total. Untracked stages return an empty page with `total: 0`
+rather than an error. Paging uses `page` (default 1) and `limit` (default 20,
+maximum 100).
+
+```json
+{
+  "stage": {
+    "key": "visit",
+    "label": "Visit",
+    "count": 8,
+    "tracked": true,
+    "description": "Cooperation is confirmed and neither side has started the work yet."
+  },
+  "data": [{ "id": "…", "status": "ASSIGNED" }],
+  "pagination": { "page": 1, "limit": 20, "total": 8, "totalPages": 1 }
+}
+```
 
 ## Job and payment status
 

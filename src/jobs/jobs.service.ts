@@ -36,6 +36,11 @@ import {
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
+import { PagedQueryDto } from '../common/dto/paged-query.dto';
+import {
+  DEFAULT_PAGE,
+  DEFAULT_PAGE_LIMIT,
+} from '../common/dto/pagination.constants';
 import { PrismaService } from '../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { EventsGateway } from '../websockets/events.gateway';
@@ -74,6 +79,12 @@ import {
   validateJobUploads,
   ValidatedJobUpload,
 } from './job-media.util';
+import {
+  JOB_PIPELINE_STAGES,
+  JOB_PIPELINE_STAGE_MAP,
+  JobPipelineStage,
+  JobPipelineStageConfig,
+} from './job-pipeline';
 
 const JOB_INCLUDE = {
   customer: {
@@ -120,7 +131,25 @@ const JOB_INCLUDE = {
   },
 } satisfies Prisma.JobInclude;
 
+// Admin responses add every offer with the technician's name, so the details
+// view can show the full matching history. The list, detail, and pipeline
+// endpoints share this include to keep their shapes identical.
+const ADMIN_JOB_INCLUDE = {
+  ...JOB_INCLUDE,
+  offers: {
+    include: {
+      technician: {
+        include: { user: { select: { id: true, fullName: true } } },
+      },
+    },
+    orderBy: [{ round: 'asc' as const }, { matchScore: 'desc' as const }],
+  },
+} satisfies Prisma.JobInclude;
+
 type JobWithDetails = Prisma.JobGetPayload<{ include: typeof JOB_INCLUDE }>;
+type AdminJobWithDetails = Prisma.JobGetPayload<{
+  include: typeof ADMIN_JOB_INCLUDE;
+}>;
 type MatchCandidate = {
   technicianId: string;
   matchScore: number;
@@ -153,6 +182,20 @@ interface MediaInput {
 @Injectable()
 export class JobsService {
   private readonly logger = new Logger(JobsService.name);
+
+  static shouldRetainSingleMatchOffer(waitingOfferCount: number): boolean {
+    return waitingOfferCount === 1;
+  }
+
+  static selectOfferForDispatch<T extends { id: string }>(
+    waitingOffers: T[],
+  ): T | null {
+    if (!waitingOffers.length) return null;
+    if (JobsService.shouldRetainSingleMatchOffer(waitingOffers.length)) {
+      return waitingOffers[0];
+    }
+    return waitingOffers[0];
+  }
 
   static adjustMatchScore(
     score: number,
@@ -459,8 +502,19 @@ export class JobsService {
             'A valid, unused booking payment for this service category is required.',
           );
         }
-        // A per-job code is only needed when the account's phone number has
-        // not been verified yet (or the customer chose to verify a new one).
+        const account = await tx.user.findUnique({
+          where: { id: customerId },
+          select: { role: true, phoneVerifiedAt: true },
+        });
+        if (!account) throw new NotFoundException('Account not found.');
+        const accountPhoneIsVerified =
+          account.role === UserRole.CUSTOMER &&
+          account.phoneVerifiedAt !== null;
+        if (!dto.phoneVerificationId && !accountPhoneIsVerified) {
+          throw new ConflictException(
+            'Verify your phone number for this job request before submitting it.',
+          );
+        }
         if (dto.phoneVerificationId) {
           const phoneVerification =
             await tx.customerPhoneVerification.findFirst({
@@ -478,20 +532,12 @@ export class JobsService {
               'Verify your phone number for this job request before submitting it.',
             );
           }
-        } else {
-          const customer = await tx.user.findUnique({
-            where: { id: customerId },
-            select: { phoneVerifiedAt: true },
-          });
-          if (!customer?.phoneVerifiedAt) {
-            throw new ConflictException(
-              'Verify your phone number for this job request before submitting it.',
-            );
-          }
         }
+        const reference = await this.nextJobReference(tx);
         await tx.job.create({
           data: {
             id: jobId,
+            reference,
             customerId,
             ...selection,
             phoneVerificationId: dto.phoneVerificationId ?? null,
@@ -556,6 +602,7 @@ export class JobsService {
             actorId,
             toStatus: JobStatus.OPEN,
             metadata: {
+              reference,
               priority: dto.priority ?? JobPriority.NORMAL,
               matchCount: candidates.length,
               paymentId: payment.id,
@@ -1476,6 +1523,9 @@ export class JobsService {
         'Only an assigned or completed job can be rated.',
       );
     }
+    if (job.ratedAt) {
+      throw new ConflictException('This job has already been rated.');
+    }
     const comment = dto.comment?.trim() || null;
     const ratedAt = new Date();
     await this.prisma.$transaction(async (tx) => {
@@ -1922,6 +1972,7 @@ export class JobsService {
         job: {
           select: {
             id: true,
+            reference: true,
             status: true,
             description: true,
             customer: {
@@ -2375,6 +2426,7 @@ export class JobsService {
         dropReason: offer.dropReason,
         job: {
           id: offer.job.id,
+          reference: offer.job.reference,
           service: this.serviceName(offer.job),
           description: offer.job.description,
           locationAddress: offer.job.locationAddress,
@@ -2866,38 +2918,10 @@ export class JobsService {
 
   async listForAdmin() {
     const jobs = await this.prisma.job.findMany({
-      include: {
-        ...JOB_INCLUDE,
-        offers: {
-          include: {
-            technician: {
-              include: { user: { select: { id: true, fullName: true } } },
-            },
-          },
-          orderBy: [{ round: 'asc' }, { matchScore: 'desc' }],
-        },
-      },
+      include: ADMIN_JOB_INCLUDE,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
     });
-    return Promise.all(
-      jobs.map(async (job) => ({
-        ...(await this.toResponse(job, 'admin')),
-        offers: job.offers.map((offer) => ({
-          id: offer.id,
-          technicianId: offer.technicianId,
-          technicianName: offer.technician.user.fullName,
-          round: offer.round,
-          matchScore: offer.matchScore,
-          distanceMeters: Math.round(offer.distanceMeters),
-          status: offer.status,
-          offeredAt: offer.offeredAt,
-          expiresAt: offer.expiresAt,
-          respondedAt: offer.respondedAt,
-          rejectionReason: offer.rejectionReason,
-          dropReason: offer.dropReason,
-        })),
-      })),
-    );
+    return Promise.all(jobs.map((job) => this.adminJobResponse(job)));
   }
 
   // Counts the jobs the admin dashboard summarises. In-flight jobs are those
@@ -2918,22 +2942,66 @@ export class JobsService {
     return { active, completed, openDisputes };
   }
 
+  // Returns the ten lifecycle stages in order. Only stages backed by stored
+  // job state get a number; the rest report `tracked: false` and a null count.
+  async pipelineForAdmin() {
+    const counts = await Promise.all(
+      JOB_PIPELINE_STAGES.map((stage) =>
+        stage.where ? this.prisma.job.count({ where: stage.where }) : null,
+      ),
+    );
+    return {
+      stages: JOB_PIPELINE_STAGES.map((stage, index) =>
+        this.pipelineStageResponse(stage, counts[index]),
+      ),
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  // One page of jobs at a single pipeline stage, in the same admin shape the
+  // list and detail endpoints return. Untracked stages return an empty page.
+  async pipelineStageForAdmin(
+    stage: JobPipelineStage,
+    query: PagedQueryDto = {},
+  ) {
+    const config = JOB_PIPELINE_STAGE_MAP[stage];
+    if (!config) throw new BadRequestException('Unknown job pipeline stage.');
+    const page = query.page ?? DEFAULT_PAGE;
+    const limit = query.limit ?? DEFAULT_PAGE_LIMIT;
+    if (!config.where) {
+      return {
+        stage: this.pipelineStageResponse(config, null),
+        data: [],
+        pagination: { page, limit, total: 0, totalPages: 0 },
+      };
+    }
+    const [total, jobs] = await Promise.all([
+      this.prisma.job.count({ where: config.where }),
+      this.prisma.job.findMany({
+        where: config.where,
+        include: ADMIN_JOB_INCLUDE,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+    return {
+      stage: this.pipelineStageResponse(config, total),
+      data: await Promise.all(jobs.map((job) => this.adminJobResponse(job))),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
   async getForAdmin(jobId: string) {
     const job = await this.prisma.job.findUnique({
       where: { id: jobId },
-      include: {
-        ...JOB_INCLUDE,
-        offers: {
-          include: {
-            technician: {
-              include: { user: { select: { id: true, fullName: true } } },
-            },
-          },
-          orderBy: [{ round: 'asc' }, { matchScore: 'desc' }],
-        },
-      },
+      include: ADMIN_JOB_INCLUDE,
     });
     if (!job) throw new NotFoundException('Job not found.');
+    return this.adminJobResponse(job);
+  }
+
+  private async adminJobResponse(job: AdminJobWithDetails) {
     return {
       ...(await this.toResponse(job, 'admin')),
       offers: job.offers.map((offer) => ({
@@ -2950,6 +3018,19 @@ export class JobsService {
         rejectionReason: offer.rejectionReason,
         dropReason: offer.dropReason,
       })),
+    };
+  }
+
+  private pipelineStageResponse(
+    config: JobPipelineStageConfig,
+    count: number | null,
+  ) {
+    return {
+      key: config.key,
+      label: config.label,
+      count,
+      tracked: config.tracked,
+      description: config.description,
     };
   }
 
@@ -3667,6 +3748,25 @@ export class JobsService {
     };
   }
 
+  // Builds the next human-readable job reference, e.g. FD-1126003: the
+  // creation month (MMYY, Kigali time) plus a per-month sequence. The counter
+  // row is allocated inside the creation transaction, so concurrent requests
+  // never share a number and a rolled-back job does not consume one.
+  private async nextJobReference(
+    tx: Prisma.TransactionClient,
+  ): Promise<string> {
+    const rows = await tx.$queryRaw<
+      Array<{ monthKey: string; lastNumber: number }>
+    >`
+      INSERT INTO "job_number_counters" ("monthKey", "lastNumber")
+      VALUES (to_char(now() AT TIME ZONE 'Africa/Kigali', 'MMYY'), 1)
+      ON CONFLICT ("monthKey")
+      DO UPDATE SET "lastNumber" = "job_number_counters"."lastNumber" + 1
+      RETURNING "monthKey", "lastNumber"`;
+    const { monthKey, lastNumber } = rows[0];
+    return `FD-${monthKey}${String(lastNumber).padStart(3, '0')}`;
+  }
+
   private async deleteStoredFiles(keys: string[]) {
     for (const key of keys) {
       try {
@@ -3768,6 +3868,8 @@ export class JobsService {
       : null;
     const response = {
       id: job.id,
+      // Human-readable job number (FD-1126003) for display; the UUID stays the id.
+      reference: job.reference,
       service: this.serviceName(job),
       serviceCategory: job.serviceCategory,
       otherServiceName: job.otherServiceName,

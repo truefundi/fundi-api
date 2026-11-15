@@ -1,125 +1,71 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
-  IsInt,
-  IsOptional,
   IsString,
-  Matches,
-  Max,
   MaxLength,
-  Min,
   MinLength,
   ValidateIf,
 } from 'class-validator';
 
-// Validates the category name accepted when an administrator creates a category.
 export class CreateCategoryDto {
+  @ApiProperty({
+    description: 'Display name for the parent category.',
+    minLength: 2,
+    maxLength: 60,
+    example: 'Home Services',
+  })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MinLength(2)
   @MaxLength(60)
   name!: string;
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  description?: string;
-
-  @ValidateIf((_object, value) => value !== undefined)
+  @ApiProperty({
+    description: 'Short description shown to administrators and clients.',
+    minLength: 2,
+    maxLength: 2000,
+    example: 'Repairs and maintenance for homes.',
+  })
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  @IsString()
-  @MaxLength(500)
-  keywords?: string;
-
-  // Dashboard grouping, e.g. "Home Services" or "Car Services".
-  @IsOptional()
   @IsString()
   @MinLength(2)
-  @MaxLength(60)
-  category?: string;
-
-  @IsOptional()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  @IsString()
-  @MaxLength(80)
-  @Matches(/^[a-z0-9][a-z0-9-]*$/i)
-  icon?: string | null;
-
-  // Booking (visit) fee in RWF.
-  @ValidateIf((_object, value) => value !== undefined)
-  @IsInt()
-  @Min(0)
-  @Max(2_000_000_000)
-  bookingFee?: number;
-
-  // Booking fee applied to emergency requests.
-  @ValidateIf((_object, value) => value !== undefined)
-  @IsInt()
-  @Min(0)
-  @Max(2_000_000_000)
-  emergencyVisitFee?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(2_000_000_000)
-  sosBookingFee?: number;
-
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
+  @MaxLength(2000)
+  description!: string;
 }
 
-// Validates editable category fields; an empty update is rejected by the service.
 export class UpdateCategoryDto {
-  @IsOptional()
+  @ApiPropertyOptional({
+    description: 'Updated display name for the parent category.',
+    minLength: 2,
+    maxLength: 60,
+    example: 'Home Services',
+  })
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MinLength(2)
   @MaxLength(60)
   name?: string;
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  description?: string;
-
+  @ApiPropertyOptional({
+    description: 'Updated category description.',
+    minLength: 2,
+    maxLength: 2000,
+    example: 'Repairs, installations, and maintenance for homes.',
+  })
   @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
-  @MaxLength(500)
-  keywords?: string;
-
-  @IsOptional()
-  @IsString()
   @MinLength(2)
-  @MaxLength(60)
-  category?: string;
+  @MaxLength(2000)
+  description?: string;
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(80)
-  @Matches(/^[a-z0-9][a-z0-9-]*$/i)
-  icon?: string | null;
-
+  @ApiPropertyOptional({
+    description: 'Whether the category is active and visible in public listings.',
+    example: true,
+  })
   @ValidateIf((_object, value) => value !== undefined)
-  @IsInt()
-  @Min(0)
-  @Max(2_000_000_000)
-  bookingFee?: number;
-
-  @ValidateIf((_object, value) => value !== undefined)
-  @IsInt()
-  @Min(0)
-  @Max(2_000_000_000)
-  emergencyVisitFee?: number;
-
-  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(2_000_000_000)
-  sosBookingFee?: number;
 }

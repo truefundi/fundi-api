@@ -24,6 +24,7 @@
     "prisma:seed-admin": "ts-node prisma/seed-admin.ts",
     "prisma:seed-test-data": "ts-node prisma/seed-test-data.ts",
     "prisma:seed-journey": "ts-node prisma/seed-journey.ts",
+    "prisma:seed-empty-tables": "ts-node prisma/seed-empty-tables.ts",
     "prisma:studio": "prisma studio"
   },
   "dependencies": {

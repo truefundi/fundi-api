@@ -55,6 +55,9 @@ describe('TechnicianDocumentsService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUniqueOrThrow: jest.fn().mockResolvedValue(updatedDocument),
       },
+      technicianProfile: {
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
     };
     const prisma = {
       technicianProfile: {
@@ -140,6 +143,37 @@ describe('TechnicianDocumentsService', () => {
       transaction,
     );
     expect(storage.delete).toHaveBeenCalledWith(oldObjectKey);
+  });
+
+  it('puts a rejected application back into review when a denied document is resubmitted', async () => {
+    const { service, transaction, audit } = createService();
+    transaction.technicianProfile.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.updateDeniedDocument(userId, documentId, {}, replacementFile);
+
+    expect(transaction.technicianProfile.updateMany).toHaveBeenCalledWith({
+      where: { id: profileId, verificationStatus: 'REJECTED' },
+      data: { verificationStatus: 'PENDING' },
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'VERIFICATION_REOPENED',
+        fromStatus: 'REJECTED',
+        toStatus: 'PENDING',
+      }),
+      transaction,
+    );
+  });
+
+  it('leaves a pending application alone when a denied document is resubmitted', async () => {
+    const { service, audit } = createService();
+
+    await service.updateDeniedDocument(userId, documentId, {}, replacementFile);
+
+    expect(audit.log).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'VERIFICATION_REOPENED' }),
+      expect.anything(),
+    );
   });
 
   it('rejects attempts to update a document that is not denied', async () => {

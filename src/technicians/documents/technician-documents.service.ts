@@ -11,6 +11,7 @@ import {
   NotificationType,
   Prisma,
   TechnicianDocument,
+  VerificationStatus,
 } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { AuditService } from '../../audit/audit.service';
@@ -187,6 +188,7 @@ export class TechnicianDocumentsService {
             sizeBytes: file!.buffer.length,
           },
         });
+        await this.reopenRejectedApplication(tx, profile.id, userId);
         await this.audit.log(
           {
             entityType: 'TechnicianDocument',
@@ -329,6 +331,7 @@ export class TechnicianDocumentsService {
             'The document is no longer denied and cannot be updated.',
           );
         }
+        await this.reopenRejectedApplication(tx, profile.id, userId);
         await this.audit.log(
           {
             entityType: 'TechnicianDocument',
@@ -596,6 +599,32 @@ export class TechnicianDocumentsService {
   }
 
   // ---------- Private helpers ----------
+
+  // A rejected application goes back to review once the technician sends a
+  // new or corrected document; otherwise a fixed document would never be seen.
+  private async reopenRejectedApplication(
+    tx: Prisma.TransactionClient,
+    profileId: string,
+    actorId: string,
+  ) {
+    const reopened = await tx.technicianProfile.updateMany({
+      where: { id: profileId, verificationStatus: VerificationStatus.REJECTED },
+      data: { verificationStatus: VerificationStatus.PENDING },
+    });
+    if (!reopened.count) return;
+    await this.audit.log(
+      {
+        entityType: 'TechnicianProfile',
+        entityId: profileId,
+        action: 'VERIFICATION_REOPENED',
+        fromStatus: VerificationStatus.REJECTED,
+        toStatus: VerificationStatus.PENDING,
+        actorId,
+        metadata: { reason: 'Technician resubmitted a document' },
+      },
+      tx,
+    );
+  }
 
   // Builds one checklist item, applying the CERTIFICATE + TVET_CERTIFICATE rule.
   private buildChecklistItem(

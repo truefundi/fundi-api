@@ -374,6 +374,80 @@ export class AuthService {
     return { message: 'Password reset successfully. You can now sign in.' };
   }
 
+  // Replaces a forgotten PIN after consuming an SMS OTP, then signs the user in.
+  // Signing in replaces every other session, so a lost phone is logged out too.
+  async resetPin(
+    phoneNumber: string,
+    otp: string,
+    newPin: string,
+    deviceId?: string,
+  ) {
+    this.assertPin(newPin);
+    const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
+    if (!user) {
+      throw new UnauthorizedException('The phone number or OTP is incorrect.');
+    }
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    await this.verifyOtpCode(user.id, otp);
+    await this.clearPasswordAttempts(user.id);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        pinHash: await bcrypt.hash(newPin, this.passwordBcryptRounds),
+        // The OTP just proved the phone, as it does at sign-in.
+        ...(user.phoneVerifiedAt ? {} : { phoneVerifiedAt: new Date() }),
+      },
+    });
+    return this.createUserSession(user, deviceId);
+  }
+
+  // Changes the PIN of a signed-in account; the current PIN is required when one exists.
+  async changePin(
+    userId: string,
+    currentPin: string | undefined,
+    newPin: string,
+  ) {
+    this.assertPin(newPin);
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Account not found.');
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+
+    if (user.pinHash) {
+      if (!currentPin) {
+        throw new BadRequestException('Enter your current PIN.');
+      }
+      const attempts = await this.consumePasswordAttempt(user.id);
+      if (attempts === -1) {
+        throw new ForbiddenException(
+          'Too many incorrect PIN attempts. Wait before trying again.',
+        );
+      }
+      if (!(await bcrypt.compare(currentPin, user.pinHash))) {
+        if (attempts >= this.passwordMaxAttempts) {
+          throw new ForbiddenException(
+            'Too many incorrect PIN attempts. Wait before trying again.',
+          );
+        }
+        throw new UnauthorizedException('Your current PIN is incorrect.');
+      }
+      if (currentPin === newPin) {
+        throw new BadRequestException(
+          'Choose a PIN different from your current one.',
+        );
+      }
+    }
+    await this.clearPasswordAttempts(user.id);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { pinHash: await bcrypt.hash(newPin, this.passwordBcryptRounds) },
+    });
+    return {
+      message: user.pinHash ? 'Your PIN was changed.' : 'Your PIN is set.',
+    };
+  }
+
   // Starts passkey enrollment for the currently authenticated account.
   async generatePasskeyRegistrationOptions(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });

@@ -35,6 +35,7 @@ import {
   ProposeTechnicianDto,
 } from './dto/matching-technicians.dto';
 import { MatchingTechniciansByLocationDto } from './dto/matching-technicians-by-location.dto';
+import { GeocodeLocationDto } from './dto/geocode-location.dto';
 
 const JOB_MEDIA_INTERCEPTOR = FileFieldsInterceptor(
   [
@@ -91,6 +92,11 @@ export class JobsController {
   @Get('matching-technicians')
   matchingTechnicians(@Query() dto: MatchingTechniciansDto) {
     return this.jobs.previewMatchingTechnicians(dto);
+  }
+
+  @Post('geocode-location')
+  geocodeLocation(@Body() dto: GeocodeLocationDto) {
+    return this.jobs.geocodeLocation(dto.location);
   }
 
   @Post('matching-technicians/geocode')

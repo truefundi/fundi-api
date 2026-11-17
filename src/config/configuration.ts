@@ -133,7 +133,10 @@ export default () => {
       userAgent: process.env.GEOCODING_USER_AGENT || 'FundiBackend/0.1.0',
     },
     cors: {
-      origins: (process.env.CORS_ORIGINS || 'http://localhost:3000').split(','),
+      origins: (
+        process.env.CORS_ORIGINS ||
+        'http://localhost:3000,http://localhost:8081'
+      ).split(','),
     },
   };
 };

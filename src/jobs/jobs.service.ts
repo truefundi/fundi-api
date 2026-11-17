@@ -701,6 +701,15 @@ export class JobsService {
     return this.toMatchingTechnicianResponses(candidates);
   }
 
+  async geocodeLocation(location: string) {
+    const [result] = await this.geocoding.geocodeMany([location.trim()]);
+    return {
+      displayName: result.displayName,
+      latitude: result.latitude,
+      longitude: result.longitude,
+    };
+  }
+
   async previewMatchingTechniciansByGeocodedLocation(
     dto: MatchingTechniciansByLocationDto,
   ) {

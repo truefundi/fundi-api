@@ -30,6 +30,7 @@ async function bootstrap() {
   const port = configService.get<number>('port', 3000);
   const corsOrigins = configService.get<string[]>('cors.origins', [
     'http://localhost:3000',
+    'http://localhost:8081',
   ]);
 
   // Global Exception Filter

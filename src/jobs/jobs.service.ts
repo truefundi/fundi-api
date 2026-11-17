@@ -1189,8 +1189,8 @@ export class JobsService {
       .create({
         userId: offer.technician.userId,
         type: NotificationType.JOB_OFFER,
-        title: 'New job offer',
-        body: 'You have a new job offer.',
+        title: 'New service request',
+        body: 'A client sent you a service request. Open it to accept or decline.',
         data: {
           offerId: offer.id,
           jobId: offer.jobId,
@@ -2842,6 +2842,27 @@ export class JobsService {
                   : 'The job ended without completion.',
             },
           });
+        }
+        // Accepting the job took the technician offline; once it ends they can
+        // take requests again, unless another job still holds them.
+        if (job.technicianId) {
+          const otherActiveJobs = await tx.job.count({
+            where: {
+              technicianId: job.technicianId,
+              status: JobStatus.ASSIGNED,
+              id: { not: jobId },
+            },
+          });
+          if (!otherActiveJobs) {
+            await tx.technicianProfile.updateMany({
+              where: {
+                id: job.technicianId,
+                verificationStatus: VerificationStatus.APPROVED,
+                user: { is: { status: UserStatus.ACTIVE } },
+              },
+              data: { availabilityStatus: TechnicianAvailability.ONLINE },
+            });
+          }
         }
         if (status === JobStatus.COMPLETED) {
           await tx.bookingPayment.updateMany({

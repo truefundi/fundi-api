@@ -187,6 +187,7 @@ describe('RatingsService', () => {
       jobId,
       items: [item1, item2],
       canSubmit: true,
+      canEdit: false,
       rating: null,
     });
 
@@ -348,6 +349,43 @@ describe('RatingsService', () => {
       expect.objectContaining({ action: 'ADMIN_CORRECTED' }),
       tx,
     );
+  });
+
+  it('lets the customer change their own rating without touching who submitted it', async () => {
+    const { service, tx, audit } = setup();
+    tx.jobRating.findUnique.mockResolvedValue({
+      ...rating,
+      responses: rating.responses,
+    });
+    await service.updateJobRatingAsOwner(customerId, jobId, {
+      comment: 'Even better on reflection',
+      responses: [
+        { itemId: item1.id, score: 5 },
+        { itemId: item2.id, score: 5 },
+      ],
+    });
+
+    expect(tx.jobRating.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: rating.id },
+        data: { comment: 'Even better on reflection' },
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'UPDATED', actorId: customerId }),
+      tx,
+    );
+  });
+
+  it('does not let another customer change a rating', async () => {
+    const { service, tx } = setup();
+    tx.jobRating.findUnique.mockResolvedValue({
+      ...rating,
+      responses: rating.responses,
+    });
+    await expect(
+      service.updateJobRatingAsOwner('someone-else', jobId, { comment: 'x' }),
+    ).rejects.toThrow('Rating not found.');
   });
 
   it('summarizes technician ratings without exposing customer details to the technician', async () => {

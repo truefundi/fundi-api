@@ -3,8 +3,9 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
-import { JobStatus, Prisma } from '@prisma/client';
+import { JobStatus, NotificationType, Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import {
   DEFAULT_PAGE,
@@ -12,6 +13,7 @@ import {
 } from '../common/dto/pagination.constants';
 import { PagedQueryDto } from '../common/dto/paged-query.dto';
 import { PrismaService } from '../database/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateJobRatingDto, UpdateJobRatingDto } from './dto/job-rating.dto';
 import {
   CreateRatingItemDto,
@@ -45,6 +47,7 @@ export class RatingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   listRatingItems() {
@@ -177,6 +180,7 @@ export class RatingsService {
       jobId,
       items,
       canSubmit: !rating && job.ratedAt === null,
+      canEdit: !!rating,
       rating: rating ? this.toResponse(rating, false) : null,
     };
   }
@@ -191,8 +195,37 @@ export class RatingsService {
     return this.toResponse(rating, false);
   }
 
-  submitJobRating(ownerId: string, jobId: string, dto: CreateJobRatingDto) {
-    return this.createJobRating(jobId, dto, ownerId, ownerId);
+  async submitJobRating(
+    ownerId: string,
+    jobId: string,
+    dto: CreateJobRatingDto,
+  ) {
+    const rating = await this.createJobRating(jobId, dto, ownerId, ownerId);
+    await this.notifyTechnician(jobId, rating.averageScore);
+    return rating;
+  }
+
+  /** Lets the technician know a customer rated the job. */
+  private async notifyTechnician(jobId: string, average: number | null) {
+    if (!this.notifications) return;
+    const job = await this.prisma.job.findUnique({
+      where: { id: jobId },
+      select: { technician: { select: { userId: true } } },
+    });
+    const userId = job?.technician?.userId;
+    if (!userId) return;
+    const stars = average === null ? null : Math.round(average);
+    await this.notifications
+      .create({
+        userId,
+        type: NotificationType.SYSTEM,
+        title: 'You received a rating',
+        body: stars
+          ? `Your customer rated the job ${stars}/5.`
+          : 'Your customer rated the job.',
+        data: { jobId, rating: stars, dedupeKey: `job-rated:${jobId}` },
+      })
+      .catch(() => undefined);
   }
 
   submitJobRatingAsAdmin(
@@ -203,10 +236,28 @@ export class RatingsService {
     return this.createJobRating(jobId, dto, undefined, adminId);
   }
 
-  async updateJobRatingAsAdmin(
+  updateJobRatingAsAdmin(
     jobId: string,
     dto: UpdateJobRatingDto,
     adminId: string,
+  ) {
+    return this.updateJobRating(jobId, dto, adminId, undefined);
+  }
+
+  /** The customer changes their own rating; the scored items stay the same. */
+  updateJobRatingAsOwner(
+    ownerId: string,
+    jobId: string,
+    dto: UpdateJobRatingDto,
+  ) {
+    return this.updateJobRating(jobId, dto, ownerId, ownerId);
+  }
+
+  private async updateJobRating(
+    jobId: string,
+    dto: UpdateJobRatingDto,
+    actorId: string,
+    ownerId: string | undefined,
   ) {
     if (dto.responses === undefined && dto.comment === undefined) {
       throw new BadRequestException('Provide rating scores or a comment.');
@@ -218,7 +269,9 @@ export class RatingsService {
           where: { jobId },
           include: { responses: true },
         });
-        if (!rating) throw new NotFoundException('Rating not found.');
+        if (!rating || (ownerId && rating.customerId !== ownerId)) {
+          throw new NotFoundException('Rating not found.');
+        }
 
         if (dto.responses) {
           this.assertExactResponseSet(
@@ -246,7 +299,7 @@ export class RatingsService {
             ...(dto.comment !== undefined
               ? { comment: dto.comment?.trim() || null }
               : {}),
-            submittedById: adminId,
+            ...(ownerId ? {} : { submittedById: actorId }),
           },
           include: RATING_INCLUDE,
         });
@@ -266,8 +319,8 @@ export class RatingsService {
           {
             entityType: 'JobRating',
             entityId: rating.id,
-            action: 'ADMIN_CORRECTED',
-            actorId: adminId,
+            action: ownerId ? 'UPDATED' : 'ADMIN_CORRECTED',
+            actorId,
             metadata: {
               jobId,
               ...(dto.comment !== undefined
@@ -285,7 +338,7 @@ export class RatingsService {
           },
           tx,
         );
-        return this.toResponse(updated, true);
+        return this.toResponse(updated, ownerId === undefined);
       });
     } catch (error) {
       this.rethrow(error);

@@ -89,6 +89,7 @@ describe('AuthService password and passkey flows', () => {
     const prisma = {
       user: {
         findUnique: jest.fn().mockResolvedValue(user),
+        update: jest.fn().mockResolvedValue({}),
         create: jest.fn().mockImplementation(({ data }) =>
           Promise.resolve({
             id: activeUser.id,
@@ -318,6 +319,75 @@ describe('AuthService password and passkey flows', () => {
     expect(tx.refreshToken.deleteMany).toHaveBeenCalledWith({
       where: { userId: activeUser.id },
     });
+  });
+
+  it('resets a forgotten PIN after an OTP, verifies the phone and signs in', async () => {
+    const { service, prisma, redisClient } = createService();
+    const result = await service.resetPin(
+      activeUser.phoneNumber,
+      '123456',
+      '24680',
+    );
+
+    expect(redisClient.eval).toHaveBeenCalled();
+    expect(bcryptMock.hash).toHaveBeenCalledWith('24680', expect.any(Number));
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: activeUser.id },
+      data: { pinHash: 'bcrypt-hash', phoneVerifiedAt: expect.any(Date) },
+    });
+    expect(prisma.refreshToken.deleteMany).toHaveBeenCalledWith({
+      where: { userId: activeUser.id },
+    });
+    expect(result).toMatchObject({ user: { id: activeUser.id } });
+  });
+
+  it('rejects a malformed new PIN before touching the OTP', async () => {
+    const { service, redisClient } = createService();
+    await expect(
+      service.resetPin(activeUser.phoneNumber, '123456', '12ab'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(redisClient.eval).not.toHaveBeenCalled();
+  });
+
+  it('changes the PIN only when the current PIN matches', async () => {
+    const { service, prisma } = createService();
+    bcryptMock.compare.mockResolvedValue(true);
+    await expect(
+      service.changePin(activeUser.id, '13579', '24680'),
+    ).resolves.toEqual({ message: 'Your PIN was changed.' });
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: activeUser.id },
+      data: { pinHash: 'bcrypt-hash' },
+    });
+
+    bcryptMock.compare.mockResolvedValue(false);
+    prisma.user.update.mockClear();
+    await expect(
+      service.changePin(activeUser.id, '11111', '24680'),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('asks for the current PIN, and refuses reusing it', async () => {
+    const { service } = createService();
+    bcryptMock.compare.mockResolvedValue(true);
+    await expect(
+      service.changePin(activeUser.id, undefined, '24680'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.changePin(activeUser.id, '24680', '24680'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('lets an account without a PIN set one directly', async () => {
+    const { service, prisma } = createService({
+      ...activeUser,
+      pinHash: null,
+    } as never);
+    await expect(
+      service.changePin(activeUser.id, undefined, '24680'),
+    ).resolves.toEqual({ message: 'Your PIN is set.' });
+    expect(prisma.user.update).toHaveBeenCalled();
   });
 
   it('stores the passkey registration challenge in Redis', async () => {

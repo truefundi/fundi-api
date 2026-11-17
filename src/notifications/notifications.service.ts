@@ -209,6 +209,23 @@ export class NotificationsService {
     return { updated: result.count };
   }
 
+  /**
+   * Marks every unread notification about one job as read. The app shows a
+   * job's updates as a single conversation-like entry, so opening it clears
+   * them together.
+   */
+  async markJobRead(userId: string, jobId: string) {
+    const result = await this.prisma.notification.updateMany({
+      where: {
+        userId,
+        readAt: null,
+        data: { path: ['jobId'], equals: jobId },
+      },
+      data: { readAt: new Date() },
+    });
+    return { updated: result.count };
+  }
+
   private toResponse(notification: Prisma.NotificationGetPayload<{}>) {
     return {
       id: notification.id,

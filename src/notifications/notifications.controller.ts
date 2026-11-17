@@ -72,6 +72,15 @@ export class NotificationsController {
     return this.notifications.markAllRead(user.id);
   }
 
+  /** Marks all of the user's unread notifications about one job as read. */
+  @Patch('jobs/:jobId/read')
+  markJobRead(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.notifications.markJobRead(user.id, jobId);
+  }
+
   @Patch(':notificationId/read')
   markRead(
     @CurrentUser() user: AuthUser,

@@ -1,6 +1,15 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
-import { UserRole, UserStatus } from '@prisma/client';
+import {
+  JobStatus,
+  UserRole,
+  UserStatus,
+  VerificationStatus,
+} from '@prisma/client';
 import { UsersService } from './users.service';
 
 // Tests admin listing (paging, filters, search) and status management rules.
@@ -29,6 +38,24 @@ describe('UsersService', () => {
 
   // Builds a Prisma double exposing only the user methods the service touches.
   const createService = () => {
+    const transaction = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: technician.id,
+          role: UserRole.CUSTOMER,
+        }),
+        update: jest.fn(({ data }: { data: { role: UserRole } }) =>
+          Promise.resolve({ role: data.role }),
+        ),
+      },
+      technicianProfile: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+      job: {
+        count: jest.fn().mockResolvedValue(0),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    };
     const prisma = {
       user: {
         findMany: jest.fn().mockResolvedValue([technician]),
@@ -38,9 +65,14 @@ describe('UsersService', () => {
         update: jest.fn().mockResolvedValue(admin),
         delete: jest.fn().mockResolvedValue(undefined),
       },
+      job: { count: jest.fn().mockResolvedValue(0) },
+      $transaction: jest.fn(
+        (callback: (tx: typeof transaction) => Promise<unknown>) =>
+          callback(transaction),
+      ),
     };
     const service = new UsersService(prisma as unknown as PrismaService);
-    return { service, prisma };
+    return { service, prisma, transaction };
   };
 
   // Mirrors of the fields UserResponseDto documents. The service must select
@@ -78,6 +110,90 @@ describe('UsersService', () => {
       expect(prisma.user.count).toHaveBeenCalledWith({ where: {} });
       expect(result.data).toEqual([technician]);
       expect(result.pagination).toEqual({ page: 3, limit: 10, total: 45, totalPages: 5 });
+    });
+
+    describe('technician eligibility and role switching', () => {
+      it('reports an unapproved application as ineligible to switch', async () => {
+        const { service, prisma } = createService();
+        prisma.user.findUnique.mockResolvedValue({
+          role: UserRole.CUSTOMER,
+          technicianProfile: {
+            verificationStatus: VerificationStatus.PENDING,
+          },
+        } as never);
+
+        await expect(service.getTechnicianEligibility(technician.id)).resolves
+          .toMatchObject({
+            technicianRegistered: true,
+            technicianApproved: false,
+            canSwitchToTechnician: false,
+          });
+      });
+
+      it('allows switching to technician only for an approved profile', async () => {
+        const { service, transaction } = createService();
+        transaction.technicianProfile.findUnique.mockResolvedValue({
+          id: 'profile-1',
+          verificationStatus: VerificationStatus.APPROVED,
+        });
+
+        await expect(
+          service.switchRole(technician.id, UserRole.TECHNICIAN),
+        ).resolves.toEqual({ role: UserRole.TECHNICIAN, changed: true });
+        expect(transaction.user.update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: { role: UserRole.TECHNICIAN },
+          }),
+        );
+      });
+
+      it('requires customer accounts to register and receive technician approval first', async () => {
+        const { service, transaction } = createService();
+        await expect(
+          service.switchRole(technician.id, UserRole.TECHNICIAN),
+        ).rejects.toBeInstanceOf(ConflictException);
+        expect(transaction.user.update).not.toHaveBeenCalled();
+      });
+
+      it('blocks switching to customer while assigned technician jobs remain active', async () => {
+        const { service, transaction } = createService();
+        transaction.user.findUnique.mockResolvedValue({
+          id: technician.id,
+          role: UserRole.TECHNICIAN,
+        });
+        transaction.technicianProfile.findUnique.mockResolvedValue({
+          id: 'profile-1',
+          verificationStatus: VerificationStatus.APPROVED,
+        });
+        transaction.job.count.mockResolvedValue(1);
+
+        await expect(
+          service.switchRole(technician.id, UserRole.CUSTOMER),
+        ).rejects.toBeInstanceOf(ConflictException);
+        expect(transaction.job.count).toHaveBeenCalledWith({
+          where: {
+            technicianId: 'profile-1',
+            status: { in: [JobStatus.ASSIGNED, JobStatus.PAUSED] },
+          },
+        });
+        expect(transaction.user.update).not.toHaveBeenCalled();
+      });
+
+      it('switches an idle technician back to customer mode', async () => {
+        const { service, transaction } = createService();
+        transaction.user.findUnique.mockResolvedValue({
+          id: technician.id,
+          role: UserRole.TECHNICIAN,
+        });
+        transaction.technicianProfile.findUnique.mockResolvedValue({
+          id: 'profile-1',
+          verificationStatus: VerificationStatus.APPROVED,
+        });
+
+        await expect(
+          service.switchRole(technician.id, UserRole.CUSTOMER),
+        ).resolves.toEqual({ role: UserRole.CUSTOMER, changed: true });
+      });
     });
 
     // Callers that send no parameters still get the documented defaults.

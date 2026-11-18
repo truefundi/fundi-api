@@ -12,6 +12,13 @@ import { UpdateAccountDto } from './dto/update-account.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { PaginatedUsersResponseDto } from './dto/paginated-users-response.dto';
 import { UserResponseDto } from './dto/user-response.dto';
+import { SwitchRoleDto } from './dto/switch-role.dto';
+import {
+  Auth,
+  AuthUser,
+  CurrentUser,
+} from '../common/decorators/auth.decorator';
+import { UserRole } from '@prisma/client';
 import {
   ApiBadRequest,
   ApiConflict,
@@ -25,6 +32,21 @@ import {
 @Controller('api/v1/users')
 export class UsersController {
   constructor(private usersService: UsersService) {}
+
+  @Get('me/technician-eligibility')
+  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  technicianEligibility(@CurrentUser() user: AuthUser) {
+    return this.usersService.getTechnicianEligibility(user.id);
+  }
+
+  @Patch('me/role')
+  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  switchRole(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: SwitchRoleDto,
+  ) {
+    return this.usersService.switchRole(user.id, dto.role);
+  }
 
   // Allows a signed-in user to edit profile fields but not role or status.
   @Patch('me')

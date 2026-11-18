@@ -6,6 +6,7 @@ import {
 import {
   Prisma,
   TechnicianAvailability,
+  TechnicianBusinessType,
   TechnicianGender,
   UserStatus,
   VerificationStatus,
@@ -43,6 +44,7 @@ describe('TechniciansService', () => {
     profilePictureObjectKey: null as string | null,
     profilePictureMimeType: null as string | null,
     verificationStatus: VerificationStatus.PENDING,
+    businessType: TechnicianBusinessType.INDIVIDUAL,
     availabilityStatus: TechnicianAvailability.OFFLINE,
     createdAt: now,
     updatedAt: now,
@@ -84,6 +86,13 @@ describe('TechniciansService', () => {
         update: jest.fn().mockResolvedValue(baseProfile()),
         findUnique: jest.fn().mockResolvedValue(baseProfile()),
         findUniqueOrThrow: jest.fn().mockResolvedValue(baseProfile()),
+      },
+      company: {
+        create: jest.fn().mockResolvedValue({
+          id: 'company-id',
+          name: 'Example Company',
+          verificationStatus: VerificationStatus.PENDING,
+        }),
       },
       technicianCategory: {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -183,7 +192,7 @@ describe('TechniciansService', () => {
     );
   });
 
-  it('lets a signed-in customer with an SMS-verified phone become a technician on the same account', async () => {
+  it('keeps a signed-in customer in customer mode while their technician profile is pending', async () => {
     const { service, transaction, prisma } = createService();
     prisma.user.findUnique.mockResolvedValue({
       phoneVerifiedAt: now,
@@ -193,12 +202,39 @@ describe('TechniciansService', () => {
 
     await service.registerMyProfile(userId, validRegistration());
 
-    // The role changes; the phone's verification date is left exactly as it was.
-    expect(transaction.user.update).toHaveBeenCalledWith({
-      where: { id: userId },
-      data: { role: 'TECHNICIAN' },
-    });
+    expect(transaction.user.update).not.toHaveBeenCalled();
     expect(transaction.technicianProfile.create).toHaveBeenCalled();
+  });
+
+  it('creates a pending company with a company-owner technician profile', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue(null);
+
+    await service.registerMyProfile(userId, {
+      ...validRegistration(),
+      businessType: TechnicianBusinessType.COMPANY,
+      company: {
+        name: 'Example Company',
+        location: 'Kigali, Rwanda',
+        email: 'info@example.com',
+        phoneNumber: '+250788123456',
+      },
+    });
+
+    expect(transaction.technicianProfile.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          businessType: TechnicianBusinessType.COMPANY,
+        }),
+      }),
+    );
+    expect(transaction.company.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        technicianId: profileId,
+        name: 'Example Company',
+        verificationStatus: VerificationStatus.PENDING,
+      }),
+    });
   });
 
   it('refuses an application from a phone that was never verified by SMS', async () => {

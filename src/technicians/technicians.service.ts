@@ -8,6 +8,7 @@ import {
   Prisma,
   TechnicianAvailability,
   JobStatus,
+  TechnicianBusinessType,
   UserRole,
   UserStatus,
   VerificationStatus,
@@ -29,8 +30,10 @@ import { SearchTechniciansByUserDto } from './dto/search-technicians-by-user.dto
 import { SearchTechniciansDto } from './dto/search-technicians.dto';
 import { ServiceExperienceDto } from './dto/service-experience.dto';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto';
+import { RegisterTechnicianProfileDto } from './dto/register-technician-profile.dto';
 import { RegisterTechnicianDto } from './dto/register-technician.dto';
 import { NationalIdCryptoService } from './national-id-crypto.service';
+import { CompanyDetailsDto } from '../companies/dto/company.dto';
 
 type Viewer = 'owner' | 'admin' | 'authenticated' | 'anonymous';
 
@@ -71,6 +74,7 @@ export interface TechnicianResponse {
     updatedAt: Date | null;
   };
   gender: string;
+  businessType: string;
   yearsOfExperience: number;
   serviceExperiences: Array<{
     categoryId: string | null;
@@ -120,7 +124,7 @@ export class TechniciansService {
 
   // ─── Technician self-service ────────────────────────────────────────────
 
-  async registerMyProfile(userId: string, dto: UpdateTechnicianProfileDto) {
+  async registerMyProfile(userId: string, dto: RegisterTechnicianProfileDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { phoneVerifiedAt: true, role: true },
@@ -133,7 +137,9 @@ export class TechniciansService {
         'Verify your phone number with the SMS code before applying.',
       );
     }
-    const profileDto = await this.resolveProfileCoordinates(dto);
+    const businessType = this.registrationBusinessType(dto);
+    const { company, ...profileInput } = dto;
+    const profileDto = await this.resolveProfileCoordinates(profileInput);
     this.assertCoordinatePair(profileDto);
     this.assertServiceExperiences(profileDto.serviceExperiences);
     try {
@@ -162,15 +168,17 @@ export class TechniciansService {
           );
         }
         this.assertRequiredProfileFieldsForCreate(profileDto);
-        if (user.role === UserRole.CUSTOMER) {
-          await tx.user.update({
-            where: { id: userId },
-            data: { role: UserRole.TECHNICIAN },
-          });
-        }
+        // Applying keeps the account's role; once approved, the user switches
+        // with PATCH /api/v1/users/me/role.
         const created = await tx.technicianProfile.create({
-          data: this.buildProfileCreateData(userId, profileDto),
+          data: {
+            ...this.buildProfileCreateData(userId, profileDto),
+            businessType,
+          },
         });
+        if (company) {
+          await this.createRegisteredCompany(tx, created.id, company, userId);
+        }
         await this.lockProfile(tx, created.id);
         await this.replaceServiceExperiences(
           tx,
@@ -254,7 +262,9 @@ export class TechniciansService {
   }
 
   async registerPublicTechnician(dto: RegisterTechnicianDto) {
-    const profileDto = await this.resolveProfileCoordinates(dto.profile);
+    const businessType = this.registrationBusinessType(dto.profile);
+    const { company, ...profileInput } = dto.profile;
+    const profileDto = await this.resolveProfileCoordinates(profileInput);
     this.assertCoordinatePair(profileDto);
     this.assertServiceExperiences(profileDto.serviceExperiences);
     this.assertRequiredProfileFieldsForCreate(profileDto);
@@ -273,8 +283,14 @@ export class TechniciansService {
           },
         });
         const created = await tx.technicianProfile.create({
-          data: this.buildProfileCreateData(user.id, profileDto),
+          data: {
+            ...this.buildProfileCreateData(user.id, profileDto),
+            businessType,
+          },
         });
+        if (company) {
+          await this.createRegisteredCompany(tx, created.id, company, user.id);
+        }
         await this.lockProfile(tx, created.id);
         await this.replaceServiceExperiences(
           tx,
@@ -301,6 +317,56 @@ export class TechniciansService {
     } catch (error) {
       this.throwWriteError(error);
     }
+  }
+
+  private registrationBusinessType(dto: RegisterTechnicianProfileDto) {
+    const businessType =
+      dto.businessType ??
+      (dto.company
+        ? TechnicianBusinessType.COMPANY
+        : TechnicianBusinessType.INDIVIDUAL);
+    if (businessType === TechnicianBusinessType.COMPANY && !dto.company) {
+      throw new BadRequestException(
+        'Company details are required when registering as a company owner.',
+      );
+    }
+    if (businessType === TechnicianBusinessType.INDIVIDUAL && dto.company) {
+      throw new BadRequestException(
+        'Company details can only be supplied when businessType is COMPANY.',
+      );
+    }
+    return businessType;
+  }
+
+  private async createRegisteredCompany(
+    tx: Prisma.TransactionClient,
+    technicianId: string,
+    details: CompanyDetailsDto,
+    actorId: string,
+  ) {
+    const company = await tx.company.create({
+      data: {
+        technicianId,
+        name: details.name.trim(),
+        location: details.location.trim(),
+        email: details.email.trim().toLowerCase(),
+        phoneNumber: details.phoneNumber,
+        description: details.description?.trim() || null,
+        verificationStatus: VerificationStatus.PENDING,
+      },
+    });
+    await this.audit.log(
+      {
+        entityType: 'Company',
+        entityId: company.id,
+        action: 'REGISTERED',
+        actorId,
+        toStatus: VerificationStatus.PENDING,
+        metadata: { technicianId, name: company.name },
+      },
+      tx,
+    );
+    return company;
   }
 
   async getMyProfile(userId: string): Promise<TechnicianResponse> {
@@ -1336,6 +1402,7 @@ export class TechniciansService {
           updatedAt: profile.user.updatedAt,
         },
         gender: profile.gender,
+        businessType: profile.businessType,
         nationalIdNumber: profile.nationalIdLast4
           ? `****${profile.nationalIdLast4}`
           : null,
@@ -1373,6 +1440,7 @@ export class TechniciansService {
           updatedAt: profile.user.updatedAt,
         },
         gender: profile.gender,
+        businessType: profile.businessType,
         yearsOfExperience: totalYearsOfExperience,
         serviceExperiences,
         verificationStatus: profile.verificationStatus,
@@ -1405,6 +1473,7 @@ export class TechniciansService {
         updatedAt: null,
       },
       gender: profile.gender,
+      businessType: profile.businessType,
       nationalIdNumber: null,
       yearsOfExperience: totalYearsOfExperience,
       serviceExperiences,

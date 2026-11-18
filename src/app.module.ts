@@ -21,6 +21,7 @@ import { ChatModule } from './chat/chat.module';
 import { AdsModule } from './ads/ads.module';
 import { BroadcastsModule } from './broadcasts/broadcasts.module';
 import { RatingsModule } from './ratings/ratings.module';
+import { CompaniesModule } from './companies/companies.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { RatingsModule } from './ratings/ratings.module';
     AdsModule,
     BroadcastsModule,
     RatingsModule,
+    CompaniesModule,
     HealthModule,
   ],
   controllers: [AppController],

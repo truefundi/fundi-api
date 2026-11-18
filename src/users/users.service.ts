@@ -1,6 +1,12 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
-import { Prisma, UserRole, UserStatus } from '@prisma/client';
+import {
+  JobStatus,
+  Prisma,
+  UserRole,
+  UserStatus,
+  VerificationStatus,
+} from '@prisma/client';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateAccountDto } from './dto/update-account.dto';
@@ -138,6 +144,88 @@ export class UsersService {
     } catch (error) {
       this.handleWriteError(error);
     }
+  }
+
+  async getTechnicianEligibility(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        role: true,
+        technicianProfile: {
+          select: { verificationStatus: true },
+        },
+      },
+    });
+    if (!user) throw new NotFoundException('User account not found.');
+    const registered = user.technicianProfile !== null;
+    const approved =
+      user.technicianProfile?.verificationStatus ===
+      VerificationStatus.APPROVED;
+    return {
+      role: user.role,
+      technicianRegistered: registered,
+      technicianVerificationStatus:
+        user.technicianProfile?.verificationStatus ?? null,
+      technicianApproved: approved,
+      canSwitchToTechnician:
+        user.role === UserRole.CUSTOMER && approved,
+    };
+  }
+
+  async switchRole(
+    userId: string,
+    targetRole: UserRole,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, role: true },
+      });
+      if (!user) throw new NotFoundException('User account not found.');
+      if (user.role === targetRole) {
+        return { role: user.role, changed: false };
+      }
+
+      const profile = await tx.technicianProfile.findUnique({
+        where: { userId },
+        select: { id: true, verificationStatus: true },
+      });
+      if (targetRole === UserRole.TECHNICIAN) {
+        if (!profile) {
+          throw new ConflictException(
+            'Register as a technician before switching to technician mode.',
+          );
+        }
+        if (profile.verificationStatus !== VerificationStatus.APPROVED) {
+          throw new ConflictException(
+            'Your technician profile must be approved by an administrator before switching to technician mode.',
+          );
+        }
+      } else if (profile) {
+        await tx.$queryRaw`
+          SELECT "id" FROM "technician_profiles"
+          WHERE "id" = ${profile.id}
+          FOR UPDATE`;
+        const activeJobs = await tx.job.count({
+          where: {
+            technicianId: profile.id,
+            status: { in: [JobStatus.ASSIGNED, JobStatus.PAUSED] },
+          },
+        });
+        if (activeJobs > 0) {
+          throw new ConflictException(
+            'You cannot switch to customer mode while you have active technician jobs.',
+          );
+        }
+      }
+
+      const updated = await tx.user.update({
+        where: { id: userId },
+        data: { role: targetRole },
+        select: { role: true },
+      });
+      return { role: updated.role, changed: true };
+    });
   }
 
   // Changes only active/inactive state through the dedicated admin route.

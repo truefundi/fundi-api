@@ -20,6 +20,7 @@ import { PaginatedTechniciansResponseDto } from './dto/paginated-technicians-res
 import { SearchAvailableTechniciansDto } from './dto/search-available-technicians.dto';
 import { UpdateAvailabilityDto } from './dto/update-availability.dto';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto';
+import { RegisterTechnicianProfileDto } from './dto/register-technician-profile.dto';
 import { RegisterTechnicianDto } from './dto/register-technician.dto';
 import { TechniciansService } from './technicians.service';
 import { AuthService } from '../auth/auth.service';
@@ -48,7 +49,7 @@ export class TechniciansController {
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
   registerProfile(
     @CurrentUser() user: AuthUser,
-    @Body() dto: UpdateTechnicianProfileDto,
+    @Body() dto: RegisterTechnicianProfileDto,
   ) {
     return this.technicians.registerMyProfile(user.id, dto);
   }

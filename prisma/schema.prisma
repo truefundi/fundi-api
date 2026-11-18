@@ -3,6 +3,33 @@ generator client {
   previewFeatures = ["postgresqlExtensions"]
 }
 
+enum TechnicianBusinessType {
+  INDIVIDUAL
+  COMPANY
+}
+
+enum ServiceChargeType {
+  FIXED
+  PERCENTAGE
+}
+
+enum ServiceChargePayer {
+  CUSTOMER
+  FUNDI
+}
+
+enum PaymentClaimMethod {
+  MTN
+  AIRTEL
+  CREDIT_CARD
+}
+
+enum PaymentClaimStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 datasource db {
   provider   = "postgresql"
   url        = env("DATABASE_URL")
@@ -37,6 +64,9 @@ model User {
   passkeyCredentials PasskeyCredential[]
   submittedRatings   JobRating[]                 @relation("JobRatingSubmittedBy")
   customerRatings    JobRating[]                 @relation("JobRatingCustomer")
+  verifiedCompanies  Company[]                   @relation("CompanyVerifiedBy")
+  paymentClaims      PaymentClaim[]              @relation("PaymentClaimCustomer")
+  reviewedClaims     PaymentClaim[]              @relation("PaymentClaimReviewer")
 
   @@map("users")
 }
@@ -102,10 +132,29 @@ model ServiceCategory {
   technicians       TechnicianCategory[]
   documents         TechnicianDocument[]
   bookingPayments   BookingPayment[]
+  serviceCharges    ServiceCharge[]
+  paymentClaims     PaymentClaim[]
   category          CatalogCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
 
   @@index([categoryId])
   @@map("service_categories")
+}
+
+model ServiceCharge {
+  id                String             @id @default(uuid())
+  serviceCategoryId String
+  name              String
+  description       String?
+  chargeType        ServiceChargeType
+  value             Decimal            @db.Decimal(12, 4)
+  payer             ServiceChargePayer
+  sortOrder         Int                @default(0)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  serviceCategory   ServiceCategory    @relation(fields: [serviceCategoryId], references: [id], onDelete: Cascade)
+
+  @@index([serviceCategoryId, sortOrder, name])
+  @@map("service_charges")
 }
 
 model TechnicianProfile {
@@ -118,6 +167,7 @@ model TechnicianProfile {
   baseLatitude            Float?
   baseLongitude           Float?
   verificationStatus      VerificationStatus        @default(PENDING)
+  businessType            TechnicianBusinessType    @default(INDIVIDUAL)
   createdAt               DateTime                  @default(now())
   updatedAt               DateTime                  @updatedAt
   gender                  TechnicianGender
@@ -136,11 +186,33 @@ model TechnicianProfile {
   categories              TechnicianCategory[]
   documents               TechnicianDocument[]
   ratings                 JobRating[]
+  company                 Company?
   user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([verificationStatus])
   @@index([availabilityStatus, verificationStatus])
   @@map("technician_profiles")
+}
+
+model Company {
+  id                 String             @id @default(uuid())
+  technicianId       String             @unique
+  name               String
+  location           String
+  email              String
+  phoneNumber        String
+  description        String?
+  verificationStatus VerificationStatus @default(PENDING)
+  verifiedAt         DateTime?
+  verifiedById       String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  technician         TechnicianProfile  @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  verifiedBy         User?              @relation("CompanyVerifiedBy", fields: [verifiedById], references: [id], onDelete: SetNull)
+
+  @@index([verificationStatus, createdAt])
+  @@index([name])
+  @@map("companies")
 }
 
 model TechnicianCategory {
@@ -347,6 +419,7 @@ model BookingPayment {
   signature                String
   phoneNumber              String
   amount                   Int
+  pricingSnapshot          Json?
   requestType              JobRequestType       @default(NORMAL)
   status                   BookingPaymentStatus @default(VALID)
   paidAt                   DateTime             @default(now())
@@ -358,10 +431,37 @@ model BookingPayment {
   customer                 User                 @relation(fields: [customerId], references: [id], onDelete: Cascade)
   serviceCategory          ServiceCategory      @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
   job                      Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  paymentClaim             PaymentClaim?
 
   @@index([customerId, paidAt])
   @@index([status, validUntil])
   @@map("booking_payments")
+}
+
+model PaymentClaim {
+  id                String             @id @default(uuid())
+  customerId        String
+  serviceCategoryId String
+  requestType       JobRequestType     @default(NORMAL)
+  amount            Int
+  paymentMethod     PaymentClaimMethod
+  paymentNumber     String
+  pricingSnapshot   Json
+  status            PaymentClaimStatus @default(PENDING)
+  reviewNote        String?
+  reviewedById      String?
+  reviewedAt        DateTime?
+  bookingPaymentId  String?            @unique
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  customer          User               @relation("PaymentClaimCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory   ServiceCategory    @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
+  reviewedBy        User?              @relation("PaymentClaimReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  bookingPayment    BookingPayment?    @relation(fields: [bookingPaymentId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@index([status, createdAt])
+  @@map("payment_claims")
 }
 
 /// A promotion card managed by administrators. Landing-page ads are public and

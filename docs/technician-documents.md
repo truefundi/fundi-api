@@ -26,9 +26,12 @@ service; job media also uses this configured driver.
   become `APPROVED` once the required National ID document is accepted. An
   accepted certificate is not required for approval.
 
-Technician routes require a `TECHNICIAN` access token. Admin routes require an
-`ADMIN` access token. Uploads use `multipart/form-data`; every other request
-body is JSON with `Content-Type: application/json`.
+Technician self-service routes accept a `CUSTOMER` or `TECHNICIAN` access
+token and only operate on that user's own technician profile. This allows
+customers with a pending technician application to upload verification
+documents before changing roles. Admin routes require an `ADMIN` access token.
+Uploads use `multipart/form-data`; every other request body is JSON with
+`Content-Type: application/json`.
 
 ## Upload rules
 
@@ -111,7 +114,7 @@ Success response (`200`): the full technician object (see
 | ------ | ------------------------------------------------------------- |
 | `400`  | No file, unsupported type (e.g. PDF, GIF), or file over 5 MiB |
 | `401`  | Missing or invalid token                                      |
-| `403`  | Caller is not a `TECHNICIAN`                                  |
+| `403`  | Caller is not a `CUSTOMER` or `TECHNICIAN`                     |
 | `404`  | No technician profile registered yet                          |
 | `409`  | Concurrent update — retry                                     |
 
@@ -187,7 +190,7 @@ Success response (`201`): the created document object (see
 | `400`  | `type=CERTIFICATE` and both or neither of `categoryId` / `customCategoryName`                                        |
 | `400`  | `categoryId` is not an active category                                                                               |
 | `401`  | Missing or invalid token                                                                                             |
-| `403`  | Caller is not a `TECHNICIAN`                                                                                         |
+| `403`  | Caller is not a `CUSTOMER` or `TECHNICIAN`                                                                            |
 | `404`  | No technician profile registered yet                                                                                 |
 | `409`  | Duplicate title, second live `NATIONAL_ID`, or duplicate live certificate for the same `(category, certificateType)` |
 | `409`  | More than 10 non-denied documents                                                                                    |

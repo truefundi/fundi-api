@@ -16,22 +16,31 @@ the SOS endpoint; the system automatically offers it to eligible technicians
 in match order, one at a time, with 30 seconds to respond to each offer. Normal
 job proposals remain open for two minutes.
 
+Both job-creation endpoints accept `CUSTOMER` and `TECHNICIAN` roles. Users
+with a pending technician application remain in customer mode until approval;
+role eligibility and switching are documented in
+[`companies.md`](./companies.md).
+
 ## Booking flow
 
 1. List services with `GET /catalog/services`; each response includes its
    parent category. Select a service with a configured positive `bookingFee`
    and, for SOS requests, a higher `sosBookingFee`.
 2. Preview matches using `GET /jobs/matching-technicians`.
-3. Pay the booking fee using `POST /payments/mock`. This development-only
-   payment is not a real money transfer.
+3. Pay the booking fee using `POST /payments/mock` in development or the
+   configured online flow. If online payment is unavailable but the owner has
+   paid through an accepted offline method, submit `POST /payments/claims` and
+   wait for administrator approval. Pending or rejected claims cannot be used
+   to create a job.
 4. If the customer has not verified their account phone, or the job owner is a
    technician, request and verify the phone OTP using
    `POST /jobs/phone-verification/request` and
    `POST /jobs/phone-verification/verify`. The verified customer number becomes
    the account's phone login number. Customers may verify another number later
    to replace it, provided no other account owns that number.
-5. Create the job using the returned `paymentId` and, when required, the
-   `verificationId`.
+5. Create the job using the returned `paymentId` (for an approved claim, use
+   `bookingPayment.id` from `GET /payments/claims/mine`) and, when required,
+   the `verificationId`.
 6. Propose a technician from the preview list using
    `POST /jobs/mine/:jobId/requests`.
 

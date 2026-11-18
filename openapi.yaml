@@ -28,6 +28,8 @@ tags:
   - name: AuthAdmin
   - name: Catalog
     description: Service categories, their groups, descriptions, and booking fees.
+  - name: Companies
+    description: Technician-owned company registration and administrator verification.
   - name: Conversations
     description: Customer/technician price negotiation and messaging.
   - name: Disputes
@@ -36,6 +38,8 @@ tags:
   - name: Jobs
   - name: Notifications
     description: In-app notification inbox and read state.
+  - name: Payments
+    description: Booking payment quotes and saved pricing details.
   - name: TechnicianJobs
   - name: Technicians
     description: Technician self-service profile, availability, and discovery.
@@ -2791,10 +2795,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateTechnicianProfileDto'
+              $ref: '#/components/schemas/RegisterTechnicianProfileDto'
       responses:
         '201':
-          description: 'Created with `verificationStatus: PENDING`, `availabilityStatus: OFFLINE`.'
+          description: 'Created with `verificationStatus: PENDING`, `availabilityStatus: OFFLINE`. A customer applicant remains in customer mode until technician approval.'
           content:
             application/json:
               schema:
@@ -2810,6 +2814,7 @@ paths:
       x-fundi-status: implemented
     get:
       operationId: TechniciansController_getMyProfile
+      description: Available to the owner in customer or technician mode, including while the application is pending.
       responses:
         '200':
           description: My profile.
@@ -2828,6 +2833,7 @@ paths:
       x-fundi-status: implemented
     put:
       operationId: TechniciansController_updateMyProfile
+      description: Available to the owner in customer or technician mode, including while the application is pending.
       requestBody:
         required: true
         content:
@@ -2846,6 +2852,26 @@ paths:
       tags:
         - Technicians
       summary: Update my technician profile
+      x-fundi-status: implemented
+  /technicians/register:
+    post:
+      operationId: TechniciansController_registerPublic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterTechnicianDto'
+      responses:
+        '201':
+          description: Technician account and pending profile created; registration OTP details returned.
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      summary: Public technician registration
+      tags:
+        - Technicians
       x-fundi-status: implemented
   /technicians/profile/ratings:
     get:
@@ -4433,6 +4459,585 @@ paths:
       tags:
         - Disputes
       x-fundi-status: implemented
+  /payments/quote:
+    get:
+      operationId: PaymentsController_quote
+      parameters:
+        - name: serviceCategoryId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: requestType
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [NORMAL, SOS]
+            default: NORMAL
+      responses:
+        '200':
+          description: Itemized quote using the normal or SOS booking fee.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentPricingQuote'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      summary: Quote service booking price (public)
+      tags:
+        - Payments
+      x-fundi-status: implemented
+  /payments/mock:
+    post:
+      operationId: PaymentsController_createMock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MockPaymentWrite'
+      responses:
+        '201':
+          description: Development mock payment with its pricing snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentReceipt'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+      security:
+        - bearerAuth: []
+      summary: Create a development mock booking payment
+      tags:
+        - Payments
+      x-fundi-status: implemented
+  /payments/processed:
+    post:
+      operationId: PaymentsController_recordProcessed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcessedPaymentWrite'
+      responses:
+        '201':
+          description: Recorded payment and saved pricing details; provider verification is false.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentReceipt'
+        '400':
+          description: Invalid request or amount does not match the quote; mismatch details include expectedAmount and pricingDetails.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentAmountMismatch'
+        '503':
+          description: Unavailable in production or payment recording is not configured.
+      security:
+        - bearerAuth: []
+      summary: Record frontend-reported payment (development only)
+      tags:
+        - Payments
+      x-fundi-status: implemented
+  /payments/mine:
+    get:
+      operationId: PaymentsController_listMine
+      responses:
+        '200':
+          description: Payment history, including each saved pricingDetails snapshot.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    pricingDetails:
+                      oneOf:
+                        - $ref: '#/components/schemas/PaymentPricingQuote'
+                        - type: 'null'
+      security:
+        - bearerAuth: []
+      summary: List my booking payments
+      tags:
+        - Payments
+      x-fundi-status: implemented
+  /payments/claims:
+    post:
+      operationId: PaymentsController_submitPaymentClaim
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentClaim'
+      responses:
+        '201':
+          description: A pending claim with pricing details; no booking payment is available until approval.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentClaim'
+        '400':
+          description: Invalid claim or amount does not match expectedAmount and pricingDetails.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentAmountMismatch'
+      security:
+        - bearerAuth: []
+      summary: Submit an offline payment claim
+      tags:
+        - Payments
+      x-fundi-status: implemented
+  /payments/claims/mine:
+    get:
+      operationId: PaymentsController_listMyPaymentClaims
+      responses:
+        '200':
+          description: Current user's payment claims, including payment ID after approval.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PaymentClaim'
+      security:
+        - bearerAuth: []
+      summary: List my payment claims
+      tags:
+        - Payments
+      x-fundi-status: implemented
+  /admin/payment-claims:
+    get:
+      operationId: PaymentsController_listPaymentClaimsForAdmin
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, APPROVED, REJECTED]
+      responses:
+        '200':
+          description: Payment claims with owner and review details.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PaymentClaim'
+      security:
+        - adminAccessToken: []
+      summary: List payment claims (admin)
+      tags:
+        - Payments
+      x-fundi-status: implemented
+  /admin/payment-claims/{claimId}:
+    get:
+      operationId: PaymentsController_getPaymentClaimForAdmin
+      parameters:
+        - $ref: '#/components/parameters/PaymentClaimId'
+      responses:
+        '200':
+          description: One payment claim.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentClaim'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - adminAccessToken: []
+      summary: Get payment claim (admin)
+      tags:
+        - Payments
+      x-fundi-status: implemented
+    delete:
+      operationId: PaymentsController_deletePaymentClaim
+      parameters:
+        - $ref: '#/components/parameters/PaymentClaimId'
+      responses:
+        '200':
+          description: Claim deleted; any issued booking payment remains active.
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - adminAccessToken: []
+      summary: Delete payment claim (admin)
+      tags:
+        - Payments
+      x-fundi-status: implemented
+  /admin/payment-claims/{claimId}/review:
+    patch:
+      operationId: PaymentsController_reviewPaymentClaim
+      parameters:
+        - $ref: '#/components/parameters/PaymentClaimId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewPaymentClaim'
+      responses:
+        '200':
+          description: Updated claim; approval creates and links a valid booking payment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentClaim'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          description: Payment signing keys are not configured.
+      security:
+        - adminAccessToken: []
+      summary: Approve or reject a payment claim (admin)
+      tags:
+        - Payments
+      x-fundi-status: implemented
+  /catalog/admin/services/{serviceCategoryId}/charges:
+    get:
+      operationId: CatalogController_listServiceCharges
+      parameters:
+        - name: serviceCategoryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Charges configured for the service.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceCharge'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - adminAccessToken: []
+      summary: List service charges (admin)
+      tags:
+        - Catalog
+      x-fundi-status: implemented
+    post:
+      operationId: CatalogController_createServiceCharge
+      parameters:
+        - name: serviceCategoryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceChargeWrite'
+      responses:
+        '201':
+          description: Created service charge.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceCharge'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - adminAccessToken: []
+      summary: Create service charge (admin)
+      tags:
+        - Catalog
+      x-fundi-status: implemented
+  /catalog/admin/services/{serviceCategoryId}/charges/{chargeId}:
+    patch:
+      operationId: CatalogController_updateServiceCharge
+      parameters:
+        - name: serviceCategoryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: chargeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceChargeUpdate'
+      responses:
+        '200':
+          description: Updated service charge.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceCharge'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - adminAccessToken: []
+      summary: Update service charge (admin)
+      tags:
+        - Catalog
+      x-fundi-status: implemented
+    delete:
+      operationId: CatalogController_deleteServiceCharge
+      parameters:
+        - name: serviceCategoryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: chargeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Deleted service charge.
+      security:
+        - adminAccessToken: []
+      summary: Delete service charge (admin)
+      tags:
+        - Catalog
+      x-fundi-status: implemented
+  /companies/mine:
+    get:
+      operationId: CompaniesController_getMine
+      responses:
+        '200':
+          description: The signed-in technician's company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Company'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - bearerAuth: []
+      summary: Read my company
+      tags:
+        - Companies
+      x-fundi-status: implemented
+    patch:
+      operationId: CompaniesController_updateMine
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyUpdate'
+      responses:
+        '200':
+          description: Updated company; owner edits are only allowed before approval.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Company'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      security:
+        - bearerAuth: []
+      summary: Update my pending company
+      tags:
+        - Companies
+      x-fundi-status: implemented
+  /admin/companies:
+    get:
+      operationId: CompaniesController_listForAdmin
+      parameters:
+        - name: verificationStatus
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, APPROVED, REJECTED]
+      responses:
+        '200':
+          description: Companies with technician ownership and verifier details.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Company'
+      security:
+        - adminAccessToken: []
+      summary: List companies (admin)
+      tags:
+        - Companies
+      x-fundi-status: implemented
+    post:
+      operationId: CompaniesController_createByAdmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCompanyWrite'
+      responses:
+        '201':
+          description: Created company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Company'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - adminAccessToken: []
+      summary: Create a company for a technician (admin)
+      tags:
+        - Companies
+      x-fundi-status: implemented
+  /admin/companies/{id}:
+    get:
+      operationId: CompaniesController_getForAdmin
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      responses:
+        '200':
+          description: Company and technician details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Company'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security:
+        - adminAccessToken: []
+      summary: Read a company (admin)
+      tags:
+        - Companies
+      x-fundi-status: implemented
+    patch:
+      operationId: CompaniesController_updateByAdmin
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyUpdate'
+      responses:
+        '200':
+          description: Updated company.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Company'
+      security:
+        - adminAccessToken: []
+      summary: Update a company (admin)
+      tags:
+        - Companies
+      x-fundi-status: implemented
+    delete:
+      operationId: CompaniesController_deleteByAdmin
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      responses:
+        '200':
+          description: Company deleted and technician business type reset.
+      security:
+        - adminAccessToken: []
+      summary: Delete a company (admin)
+      tags:
+        - Companies
+      x-fundi-status: implemented
+  /admin/companies/{id}/verification-status:
+    patch:
+      operationId: CompaniesController_updateVerification
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyVerificationUpdate'
+      responses:
+        '200':
+          description: Updated company verification status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Company'
+      security:
+        - adminAccessToken: []
+      summary: Verify or reject a company (admin)
+      tags:
+        - Companies
+      x-fundi-status: implemented
+  /users/me/technician-eligibility:
+    get:
+      operationId: UsersController_technicianEligibility
+      responses:
+        '200':
+          description: Technician profile registration and role-switch eligibility.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TechnicianEligibility'
+      security:
+        - bearerAuth: []
+      summary: Check technician eligibility
+      tags:
+        - Users
+      x-fundi-status: implemented
+  /users/me/role:
+    patch:
+      operationId: UsersController_switchRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwitchRole'
+      responses:
+        '200':
+          description: The resulting user role and whether it changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [role, changed]
+                properties:
+                  role:
+                    type: string
+                    enum: [CUSTOMER, TECHNICIAN]
+                  changed:
+                    type: boolean
+        '409':
+          $ref: '#/components/responses/Conflict'
+      security:
+        - bearerAuth: []
+      summary: Switch customer/technician mode
+      tags:
+        - Users
+      x-fundi-status: implemented
   /health:
     get:
       operationId: HealthController_check
@@ -4513,6 +5118,20 @@ components:
         format: uuid
     ServiceId:
       name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CompanyId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PaymentClaimId:
+      name: claimId
       in: path
       required: true
       schema:
@@ -4622,6 +5241,471 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
+    ServiceCharge:
+      type: object
+      required: [id, serviceCategoryId, name, chargeType, value, payer, sortOrder, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        serviceCategoryId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        chargeType:
+          type: string
+          enum: [FIXED, PERCENTAGE]
+        value:
+          type: number
+          description: Fixed RWF amount or percentage rate.
+        payer:
+          type: string
+          enum: [CUSTOMER, FUNDI]
+        sortOrder:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ServiceChargeWrite:
+      type: object
+      required: [name, chargeType, value, payer]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        chargeType:
+          type: string
+          enum: [FIXED, PERCENTAGE]
+        value:
+          type: number
+          minimum: 0.01
+          maximum: 2000000000
+        payer:
+          type: string
+          enum: [CUSTOMER, FUNDI]
+        sortOrder:
+          type: integer
+          minimum: 0
+    ServiceChargeUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        description:
+          type: [string, "null"]
+          maxLength: 500
+        chargeType:
+          type: string
+          enum: [FIXED, PERCENTAGE]
+        value:
+          type: number
+          minimum: 0.01
+          maximum: 2000000000
+        payer:
+          type: string
+          enum: [CUSTOMER, FUNDI]
+        sortOrder:
+          type: integer
+          minimum: 0
+    PaymentPricingQuote:
+      type: object
+      required: [serviceCategory, requestType, currency, baseFee, charges, customerTotal, fundiTotal, total]
+      properties:
+        serviceCategory:
+          type: object
+          required: [id, name]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+        requestType:
+          type: string
+          enum: [NORMAL, SOS]
+        currency:
+          type: string
+          enum: [RWF]
+        baseFee:
+          type: integer
+        charges:
+          type: array
+          items:
+            type: object
+            required: [id, name, chargeType, value, payer, amount]
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+              description:
+                type: string
+                nullable: true
+              chargeType:
+                type: string
+                enum: [FIXED, PERCENTAGE]
+              value:
+                type: number
+              payer:
+                type: string
+                enum: [CUSTOMER, FUNDI]
+              amount:
+                type: integer
+        customerTotal:
+          type: integer
+        fundiTotal:
+          type: integer
+        total:
+          type: integer
+    MockPaymentWrite:
+      type: object
+      required: [serviceCategoryId]
+      properties:
+        serviceCategoryId:
+          type: string
+          format: uuid
+        requestType:
+          type: string
+          enum: [NORMAL, SOS]
+          default: NORMAL
+        phoneNumber:
+          type: string
+          example: "+250788123456"
+    ProcessedPaymentWrite:
+      type: object
+      required: [serviceCategoryId, externalPaymentId, phoneNumber, amount, status, paidAt]
+      properties:
+        serviceCategoryId:
+          type: string
+          format: uuid
+        requestType:
+          type: string
+          enum: [NORMAL, SOS]
+          default: NORMAL
+        externalPaymentId:
+          type: string
+          minLength: 2
+          maxLength: 120
+        phoneNumber:
+          type: string
+          example: "+250788123456"
+        amount:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [SUCCESS]
+        paidAt:
+          type: string
+          format: date-time
+    PaymentReceipt:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        externalPaymentId:
+          type: string
+        status:
+          type: string
+        bookingStatus:
+          type: string
+          enum: [VALID, EXPIRED, PAUSED, RESUMED, COMPLETED]
+        requestType:
+          type: string
+          enum: [NORMAL, SOS]
+        amount:
+          type: integer
+        currency:
+          type: string
+          enum: [RWF]
+        pricingDetails:
+          $ref: '#/components/schemas/PaymentPricingQuote'
+        paidAt:
+          type: string
+          format: date-time
+        validUntil:
+          type: string
+          format: date-time
+        providerVerified:
+          type: boolean
+    PaymentAmountMismatch:
+      type: object
+      required: [message, expectedAmount, currency, pricingDetails]
+      properties:
+        message:
+          type: string
+        expectedAmount:
+          type: integer
+        currency:
+          type: string
+          enum: [RWF]
+        pricingDetails:
+          $ref: '#/components/schemas/PaymentPricingQuote'
+    CreatePaymentClaim:
+      type: object
+      required: [serviceCategoryId, amount, paymentMethod, paymentNumber]
+      properties:
+        serviceCategoryId:
+          type: string
+          format: uuid
+        requestType:
+          type: string
+          enum: [NORMAL, SOS]
+          default: NORMAL
+        amount:
+          type: integer
+          minimum: 1
+        paymentMethod:
+          type: string
+          enum: [MTN, AIRTEL, CREDIT_CARD]
+        paymentNumber:
+          type: string
+          minLength: 2
+          maxLength: 120
+          description: Transfer destination or provider reference; never a full card number or security code.
+    ReviewPaymentClaim:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [APPROVED, REJECTED]
+        reviewNote:
+          type: string
+          maxLength: 500
+    PaymentClaim:
+      type: object
+      required: [id, customerId, serviceCategoryId, requestType, amount, paymentMethod, paymentNumber, status, pricingDetails, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerId:
+          type: string
+          format: uuid
+        serviceCategoryId:
+          type: string
+          format: uuid
+        requestType:
+          type: string
+          enum: [NORMAL, SOS]
+        amount:
+          type: integer
+        paymentMethod:
+          type: string
+          enum: [MTN, AIRTEL, CREDIT_CARD]
+        paymentNumber:
+          type: string
+          description: Submitted transfer destination or payment reference.
+        status:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+        reviewNote:
+          type: string
+          nullable: true
+        reviewedById:
+          type: string
+          format: uuid
+          nullable: true
+        reviewedAt:
+          type: string
+          format: date-time
+          nullable: true
+        bookingPaymentId:
+          type: string
+          format: uuid
+          nullable: true
+        pricingDetails:
+          $ref: '#/components/schemas/PaymentPricingQuote'
+        bookingPayment:
+          oneOf:
+            - $ref: '#/components/schemas/ClaimBookingPayment'
+            - type: 'null'
+        customer:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            fullName:
+              type: string
+            phoneNumber:
+              type: string
+        serviceCategory:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            slug:
+              type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ClaimBookingPayment:
+      type: object
+      required: [id, amount, status, paidAt, validUntil]
+      properties:
+        id:
+          type: string
+          format: uuid
+        jobId:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          type: string
+          enum: [VALID, EXPIRED, PAUSED, RESUMED, COMPLETED]
+        amount:
+          type: integer
+        paidAt:
+          type: string
+          format: date-time
+        validUntil:
+          type: string
+          format: date-time
+    Company:
+      type: object
+      description: Company fields and verification status; owner/admin responses may include linked technician details.
+      properties:
+        id:
+          type: string
+          format: uuid
+        technicianId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        location:
+          type: string
+        email:
+          type: string
+          format: email
+        phoneNumber:
+          type: string
+        description:
+          type: string
+          nullable: true
+        verificationStatus:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+        verifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+        verifiedById:
+          type: string
+          format: uuid
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CompanyWrite:
+      type: object
+      required: [name, location, email, phoneNumber]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 160
+        location:
+          type: string
+          minLength: 2
+          maxLength: 255
+        email:
+          type: string
+          format: email
+        phoneNumber:
+          type: string
+          example: "+250788123456"
+        description:
+          type: string
+          maxLength: 2000
+    AdminCompanyWrite:
+      allOf:
+        - $ref: '#/components/schemas/CompanyWrite'
+        - type: object
+          required: [technicianId]
+          properties:
+            technicianId:
+              type: string
+              format: uuid
+    CompanyUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 160
+        location:
+          type: string
+          minLength: 2
+          maxLength: 255
+        email:
+          type: string
+          format: email
+        phoneNumber:
+          type: string
+          example: "+250788123456"
+        description:
+          type: [string, "null"]
+          maxLength: 2000
+    CompanyVerificationUpdate:
+      type: object
+      required: [verificationStatus]
+      properties:
+        verificationStatus:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+    SwitchRole:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [CUSTOMER, TECHNICIAN]
+    TechnicianEligibility:
+      type: object
+      required: [role, technicianRegistered, technicianVerificationStatus, technicianApproved, canSwitchToTechnician]
+      properties:
+        role:
+          type: string
+          enum: [CUSTOMER, TECHNICIAN]
+        technicianRegistered:
+          type: boolean
+        technicianVerificationStatus:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+          nullable: true
+        technicianApproved:
+          type: boolean
+        canSwitchToTechnician:
+          type: boolean
     Error:
       type: object
       required:
@@ -5361,6 +6445,9 @@ components:
           $ref: '#/components/schemas/VerificationStatus'
         availabilityStatus:
           $ref: '#/components/schemas/AvailabilityStatus'
+        businessType:
+          type: string
+          enum: [INDIVIDUAL, COMPANY]
         location:
           $ref: '#/components/schemas/TechnicianLocation'
         profilePictureUrl:
@@ -7359,6 +8446,58 @@ components:
     UpdateTechnicianProfileDto:
       type: object
       properties: {}
+    RegisterTechnicianProfileDto:
+      type: object
+      required: [gender, nationalIdNumber, paymentMethod, paymentNumber, serviceExperiences]
+      properties:
+        gender:
+          $ref: '#/components/schemas/Gender'
+        nationalIdNumber:
+          type: string
+        baseAddress:
+          type: string
+        publicLocationLabel:
+          type: string
+        baseLatitude:
+          type: number
+        baseLongitude:
+          type: number
+        paymentMethod:
+          $ref: '#/components/schemas/TechnicianPaymentMethod'
+        paymentNumber:
+          type: string
+        serviceExperiences:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ServiceExperience'
+        businessType:
+          type: string
+          enum: [INDIVIDUAL, COMPANY]
+          default: INDIVIDUAL
+        company:
+          $ref: '#/components/schemas/CompanyWrite'
+      description: Include company details when businessType is COMPANY; a supplied company object infers COMPANY if businessType is omitted.
+    RegisterTechnicianDto:
+      type: object
+      required: [user, profile]
+      properties:
+        user:
+          type: object
+          required: [fullName, phoneNumber]
+          properties:
+            fullName:
+              type: string
+              minLength: 2
+              maxLength: 120
+            phoneNumber:
+              type: string
+              example: "+250788123456"
+            email:
+              type: string
+              format: email
+        profile:
+          $ref: '#/components/schemas/RegisterTechnicianProfileDto'
     UpdateAvailabilityDto:
       type: object
       properties: {}

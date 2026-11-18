@@ -19,6 +19,10 @@ import {
 } from '../common/decorators/auth.decorator';
 import { CatalogService } from './catalog.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
+import {
+  CreateServiceChargeDto,
+  UpdateServiceChargeDto,
+} from './dto/service-charge.dto';
 import { CreateServiceDto, UpdateServiceDto } from './dto/service.dto';
 
 @ApiTags('Catalog')
@@ -156,6 +160,58 @@ export class CatalogController {
   @Auth(UserRole.ADMIN)
   getServiceById(@Param('id', ParseUUIDPipe) id: string) {
     return this.catalog.getServiceById(id);
+  }
+
+  @Get('admin/services/:serviceCategoryId/charges')
+  @Auth(UserRole.ADMIN)
+  listServiceCharges(
+    @Param('serviceCategoryId', ParseUUIDPipe) serviceCategoryId: string,
+  ) {
+    return this.catalog.listServiceCharges(serviceCategoryId);
+  }
+
+  @Post('admin/services/:serviceCategoryId/charges')
+  @Auth(UserRole.ADMIN)
+  createServiceCharge(
+    @Param('serviceCategoryId', ParseUUIDPipe) serviceCategoryId: string,
+    @Body() dto: CreateServiceChargeDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.catalog.createServiceCharge(
+      serviceCategoryId,
+      dto,
+      user.id,
+    );
+  }
+
+  @Patch('admin/services/:serviceCategoryId/charges/:chargeId')
+  @Auth(UserRole.ADMIN)
+  updateServiceCharge(
+    @Param('serviceCategoryId', ParseUUIDPipe) serviceCategoryId: string,
+    @Param('chargeId', ParseUUIDPipe) chargeId: string,
+    @Body() dto: UpdateServiceChargeDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.catalog.updateServiceCharge(
+      serviceCategoryId,
+      chargeId,
+      dto,
+      user.id,
+    );
+  }
+
+  @Delete('admin/services/:serviceCategoryId/charges/:chargeId')
+  @Auth(UserRole.ADMIN)
+  deleteServiceCharge(
+    @Param('serviceCategoryId', ParseUUIDPipe) serviceCategoryId: string,
+    @Param('chargeId', ParseUUIDPipe) chargeId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.catalog.deleteServiceCharge(
+      serviceCategoryId,
+      chargeId,
+      user.id,
+    );
   }
 
   @Post('services')

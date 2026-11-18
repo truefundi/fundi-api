@@ -337,6 +337,7 @@ describe('TechniciansService', () => {
       data: {
         verificationStatus: VerificationStatus.PENDING,
         availabilityStatus: TechnicianAvailability.OFFLINE,
+        rejectionReason: null,
       },
     });
     expect(audit.log).toHaveBeenCalledWith(
@@ -603,6 +604,79 @@ describe('TechniciansService', () => {
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
+  it('saves the admin reason with a rejection so the technician can read it', async () => {
+    const { service, transaction, audit } = createService();
+    await service.setVerificationStatus(
+      profileId,
+      VerificationStatus.REJECTED,
+      'admin-1',
+      '  Your ID photo is unreadable.  ',
+    );
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          verificationStatus: VerificationStatus.REJECTED,
+          rejectionReason: 'Your ID photo is unreadable.',
+        }),
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          reason: '  Your ID photo is unreadable.  ',
+        }),
+      }),
+      transaction,
+    );
+  });
+
+  it('refuses a rejection without a reason', async () => {
+    const { service, prisma } = createService();
+    for (const reason of [undefined, '   ']) {
+      await expect(
+        service.setVerificationStatus(
+          profileId,
+          VerificationStatus.REJECTED,
+          'admin-1',
+          reason,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    }
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('clears the old rejection reason when the application is approved', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUniqueOrThrow.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+      rejectionReason: 'Old reason',
+    });
+    await service.setVerificationStatus(
+      profileId,
+      VerificationStatus.APPROVED,
+      'admin-1',
+    );
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ rejectionReason: null }),
+      }),
+    );
+  });
+
+  it('shows the rejection reason to the technician who owns the profile', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+      rejectionReason: 'Your ID photo is unreadable.',
+    });
+    await expect(service.getMyProfile(userId)).resolves.toMatchObject({
+      verificationStatus: VerificationStatus.REJECTED,
+      rejectionReason: 'Your ID photo is unreadable.',
+    });
   });
 
   // ─── Account status ────────────────────────────────────────────────────

@@ -47,16 +47,21 @@ describe('AuthService phone OTP flow', () => {
       create: jest.fn().mockResolvedValue({}),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     };
+    const technicianProfile = {
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    };
     const transaction = {
       $queryRaw: jest.fn().mockResolvedValue([]),
       user,
       customerPhoneVerification,
       refreshToken,
+      technicianProfile,
     };
     const prisma = {
       user,
       customerPhoneVerification,
       refreshToken,
+      technicianProfile,
       $transaction: jest.fn(
         (work: (tx: typeof transaction) => Promise<unknown>) =>
           work(transaction),
@@ -259,6 +264,53 @@ describe('AuthService phone OTP flow', () => {
     await expect(
       service.requestCustomerJobOtp(activeUser.id),
     ).resolves.toMatchObject({ verificationId: 'verification-2' });
+  });
+
+  it('lets a technician verify a new number, which becomes their sign-in number', async () => {
+    const { service, prisma, sms, redisClient } = createService();
+    const technician = { ...activeUser, role: 'TECHNICIAN' };
+    prisma.user.findUnique
+      .mockResolvedValueOnce(technician)
+      .mockResolvedValueOnce(null);
+    prisma.customerPhoneVerification.create.mockResolvedValue({
+      id: 'verification-4',
+      expiresAt: new Date(Date.now() + 300_000),
+    });
+
+    await service.requestCustomerJobOtp(activeUser.id, '+250791234567');
+    expect(sms.sendOtp).toHaveBeenCalledWith(
+      '+250791234567',
+      expect.any(String),
+    );
+
+    prisma.customerPhoneVerification.findFirst.mockResolvedValue({
+      id: 'verification-4',
+      phoneNumber: '+250791234567',
+      expiresAt: new Date(Date.now() + 300_000),
+    });
+    prisma.customerPhoneVerification.updateMany.mockResolvedValue({ count: 1 });
+    prisma.user.findUnique.mockResolvedValue(technician);
+    redisClient.eval.mockResolvedValue(1);
+
+    await service.verifyCustomerJobOtp(
+      activeUser.id,
+      'verification-4',
+      '123456',
+    );
+    // Payouts to the old number move with the person, so the freed number carries none.
+    expect(prisma.technicianProfile.updateMany).toHaveBeenCalledWith({
+      where: { userId: activeUser.id, paymentNumber: activeUser.phoneNumber },
+      data: { paymentNumber: '+250791234567' },
+    });
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: activeUser.id },
+        data: {
+          phoneNumber: '+250791234567',
+          phoneVerifiedAt: expect.any(Date),
+        },
+      }),
+    );
   });
 
   it('sends a technician registration OTP for an already-created account', async () => {

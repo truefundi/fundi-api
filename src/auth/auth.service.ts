@@ -895,17 +895,10 @@ export class AuthService {
       throw new NotFoundException('Account not found.');
     }
     this.ensureActive(user.status);
+    // Customers and technicians may verify a different number; once the code
+    // is confirmed it becomes the account's sign-in number.
     const phoneNumber = requestedPhoneNumber?.trim() || user.phoneNumber;
-    if (user.role !== UserRole.CUSTOMER && phoneNumber !== user.phoneNumber) {
-      throw new BadRequestException(
-        'Only customer accounts can verify a different phone number.',
-      );
-    }
-    if (
-      user.role === UserRole.CUSTOMER &&
-      user.phoneVerifiedAt &&
-      phoneNumber === user.phoneNumber
-    ) {
+    if (user.phoneVerifiedAt && phoneNumber === user.phoneNumber) {
       return {
         verified: true,
         phoneNumber: user.phoneNumber,
@@ -1005,18 +998,29 @@ export class AuthService {
         }
         const user = await tx.user.findUnique({
           where: { id: customerId },
-          select: { role: true },
+          select: { role: true, phoneNumber: true },
         });
-        if (!user) throw new NotFoundException('Account not found.');
+        if (!user || user.role === UserRole.ADMIN) {
+          throw new NotFoundException('Account not found.');
+        }
+        // The verified number becomes the sign-in number for customers and
+        // technicians alike. The old number is released (phoneNumber is the only
+        // unique hold on it), so another person can register or verify it.
         await tx.user.update({
           where: { id: customerId },
           data: {
             phoneVerifiedAt: verifiedAt,
-            ...(user.role === UserRole.CUSTOMER
-              ? { phoneNumber: verification.phoneNumber }
-              : {}),
+            phoneNumber: verification.phoneNumber,
           },
         });
+        // Payouts that went to the old number follow the person, so they never
+        // reach whoever is given that number next.
+        if (user.phoneNumber !== verification.phoneNumber) {
+          await tx.technicianProfile.updateMany({
+            where: { userId: customerId, paymentNumber: user.phoneNumber },
+            data: { paymentNumber: verification.phoneNumber },
+          });
+        }
       });
     } catch (error) {
       if (this.isPrismaError(error, 'P2002')) {

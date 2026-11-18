@@ -124,9 +124,11 @@ export class TechniciansService {
       select: { phoneVerifiedAt: true, role: true },
     });
     if (!user) throw new NotFoundException('User account not found.');
-    if (user.role === UserRole.TECHNICIAN && !user.phoneVerifiedAt) {
+    // Applying needs a phone confirmed by SMS (signing in with a PIN does not
+    // confirm it). Verify via POST /api/v1/jobs/phone-verification/request.
+    if (!user.phoneVerifiedAt) {
       throw new ConflictException(
-        'Verify your phone number before completing a technician profile.',
+        'Verify your phone number with the SMS code before applying.',
       );
     }
     const profileDto = await this.resolveProfileCoordinates(dto);
@@ -161,10 +163,7 @@ export class TechniciansService {
         if (user.role === UserRole.CUSTOMER) {
           await tx.user.update({
             where: { id: userId },
-            data: {
-              role: UserRole.TECHNICIAN,
-              phoneVerifiedAt: user.phoneVerifiedAt ?? new Date(),
-            },
+            data: { role: UserRole.TECHNICIAN },
           });
         }
         const created = await tx.technicianProfile.create({

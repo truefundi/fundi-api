@@ -136,7 +136,7 @@ describe('TechniciansService', () => {
   // A complete, valid registration body matching the new required fields.
   const validRegistration = () => ({
     gender: TechnicianGender.FEMALE,
-    nationalIdNumber: '119900001234',
+    nationalIdNumber: '1199080012345678',
     baseAddress: 'Kigali, Rwanda',
     publicLocationLabel: 'Kigali, Rwanda',
     baseLatitude: -1.95,
@@ -183,24 +183,36 @@ describe('TechniciansService', () => {
     );
   });
 
-  it('lets a signed-in customer become a technician while retaining the same account', async () => {
+  it('lets a signed-in customer with an SMS-verified phone become a technician on the same account', async () => {
     const { service, transaction, prisma } = createService();
     prisma.user.findUnique.mockResolvedValue({
-      phoneVerifiedAt: null,
+      phoneVerifiedAt: now,
       role: 'CUSTOMER',
     });
     transaction.technicianProfile.findUnique.mockResolvedValue(null);
 
     await service.registerMyProfile(userId, validRegistration());
 
+    // The role changes; the phone's verification date is left exactly as it was.
     expect(transaction.user.update).toHaveBeenCalledWith({
       where: { id: userId },
-      data: {
-        role: 'TECHNICIAN',
-        phoneVerifiedAt: expect.any(Date),
-      },
+      data: { role: 'TECHNICIAN' },
     });
     expect(transaction.technicianProfile.create).toHaveBeenCalled();
+  });
+
+  it('refuses an application from a phone that was never verified by SMS', async () => {
+    const { service, transaction, prisma } = createService();
+    for (const role of ['CUSTOMER', 'TECHNICIAN']) {
+      prisma.user.findUnique.mockResolvedValue({ phoneVerifiedAt: null, role });
+      await expect(
+        service.registerMyProfile(userId, validRegistration()),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('Verify your phone number'),
+      });
+    }
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(transaction.user.update).not.toHaveBeenCalled();
   });
 
   it('registers a text-only profile without geocoding it', async () => {

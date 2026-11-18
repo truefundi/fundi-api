@@ -53,19 +53,18 @@ describe('Technician list endpoints (HTTP)', () => {
   // Stand-in for AuthGuard('jwt'): a request carries its role in a test header.
   const testAuthGuard = {
     canActivate: (context: ExecutionContext) => {
-      const req = context
-        .switchToHttp()
-        .getRequest<{
-          headers: Record<string, string>;
-          user?: unknown;
-          authMethod?: 'bearer' | 'cookie';
-        }>();
+      const req = context.switchToHttp().getRequest<{
+        headers: Record<string, string>;
+        user?: unknown;
+        authMethod?: 'bearer' | 'cookie';
+      }>();
       const role = req.headers['x-test-role'];
       if (!role) throw new UnauthorizedException();
       req.user = { userId: technicianId, role };
       // Mirrors JwtStrategy: the way the credential arrived is recorded so
       // RolesGuard can refuse a bearer token carrying the ADMIN role.
-      req.authMethod = req.headers['x-test-auth-method'] === 'bearer' ? 'bearer' : 'cookie';
+      req.authMethod =
+        req.headers['x-test-auth-method'] === 'bearer' ? 'bearer' : 'cookie';
       return true;
     },
   };
@@ -154,7 +153,7 @@ describe('Technician list endpoints (HTTP)', () => {
             },
             profile: {
               gender: 'FEMALE',
-              nationalIdNumber: 'ID123456',
+              nationalIdNumber: '1199080012345678',
               baseAddress: 'Kigali, Rwanda',
               publicLocationLabel: 'Kigali',
               baseLatitude: null,
@@ -171,7 +170,9 @@ describe('Technician list endpoints (HTTP)', () => {
           })
           .expect(201);
 
-        expect(techniciansService.registerPublicTechnician).toHaveBeenCalledWith(
+        expect(
+          techniciansService.registerPublicTechnician,
+        ).toHaveBeenCalledWith(
           expect.objectContaining({
             user: expect.objectContaining({
               phoneNumber: '+250788123456',
@@ -297,12 +298,39 @@ describe('Technician list endpoints (HTTP)', () => {
         await request(app.getHttpServer())
           .post('/api/v1/technicians/profile')
           .set('x-test-role', 'TECHNICIAN')
-          .send({ nationalIdNumber: 'ID123456' })
+          .send({ nationalIdNumber: '1199080012345678' })
           .expect(201);
 
         expect(techniciansService.registerMyProfile).toHaveBeenCalledWith(
           technicianId,
-          { nationalIdNumber: 'ID123456' },
+          { nationalIdNumber: '1199080012345678' },
+        );
+      });
+
+      it('rejects a national ID that is not exactly 16 digits', async () => {
+        for (const nationalIdNumber of [
+          'ID123456',
+          '119908001234567',
+          '11990800123456789',
+        ]) {
+          await request(app.getHttpServer())
+            .post('/api/v1/technicians/profile')
+            .set('x-test-role', 'TECHNICIAN')
+            .send({ nationalIdNumber })
+            .expect(400);
+        }
+        expect(techniciansService.registerMyProfile).not.toHaveBeenCalled();
+      });
+
+      it('accepts a 16-digit national ID typed with spaces or dashes', async () => {
+        await request(app.getHttpServer())
+          .post('/api/v1/technicians/profile')
+          .set('x-test-role', 'TECHNICIAN')
+          .send({ nationalIdNumber: '1 1990 8 0012345 6 78' })
+          .expect(201);
+        expect(techniciansService.registerMyProfile).toHaveBeenCalledWith(
+          technicianId,
+          { nationalIdNumber: '1199080012345678' },
         );
       });
 
@@ -310,12 +338,12 @@ describe('Technician list endpoints (HTTP)', () => {
         await request(app.getHttpServer())
           .post('/api/v1/technicians/profile')
           .set('x-test-role', 'CUSTOMER')
-          .send({ nationalIdNumber: 'ID123456' })
+          .send({ nationalIdNumber: '1199080012345678' })
           .expect(201);
 
         expect(techniciansService.registerMyProfile).toHaveBeenCalledWith(
           technicianId,
-          { nationalIdNumber: 'ID123456' },
+          { nationalIdNumber: '1199080012345678' },
         );
       });
 

@@ -309,6 +309,101 @@ describe('TechniciansService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
+  it('lets a rejected technician submit a brand-new application for review', async () => {
+    const { service, transaction, audit } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+
+    await service.registerMyProfile(userId, validRegistration());
+
+    expect(transaction.technicianProfile.create).not.toHaveBeenCalled();
+    expect(transaction.technicianCategory.createMany).toHaveBeenCalled();
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith({
+      where: { id: profileId },
+      data: {
+        verificationStatus: VerificationStatus.PENDING,
+        availabilityStatus: TechnicianAvailability.OFFLINE,
+      },
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'APPLICATION_RESUBMITTED',
+        fromStatus: VerificationStatus.REJECTED,
+        toStatus: VerificationStatus.PENDING,
+      }),
+      transaction,
+    );
+  });
+
+  it('reapplies even when the rejected profile was left online', async () => {
+    const { service, transaction } = createService();
+    const rejectedOnline = {
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+      availabilityStatus: TechnicianAvailability.ONLINE,
+    };
+    transaction.technicianProfile.findUnique.mockResolvedValue(rejectedOnline);
+    transaction.technicianProfile.findUniqueOrThrow.mockResolvedValue(
+      rejectedOnline,
+    );
+
+    await expect(
+      service.registerMyProfile(userId, validRegistration()),
+    ).resolves.toBeDefined();
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          availabilityStatus: TechnicianAvailability.OFFLINE,
+        }),
+      }),
+    );
+  });
+
+  it('keeps the ID number on file when a rejected technician reapplies without retyping it', async () => {
+    const { service, transaction, nationalIdCrypto } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    const { nationalIdNumber: _omitted, ...withoutId } = validRegistration();
+
+    await expect(
+      service.registerMyProfile(userId, withoutId),
+    ).resolves.toBeDefined();
+    expect(nationalIdCrypto.encrypt).not.toHaveBeenCalled();
+  });
+
+  it('still requires an ID number on reapplication when none is on file', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      nationalIdEncrypted: null,
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    const { nationalIdNumber: _omitted, ...withoutId } = validRegistration();
+
+    await expect(
+      service.registerMyProfile(userId, withoutId),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('nationalIdNumber'),
+    });
+    expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
+  it('checks every required field on a reapplication, as on a first one', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    await expect(
+      service.registerMyProfile(userId, { gender: TechnicianGender.FEMALE }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
   it('rejects a service that has both categoryId and customName', async () => {
     const { service, prisma } = createService();
     await expect(

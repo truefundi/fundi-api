@@ -79,6 +79,8 @@ export interface TechnicianResponse {
     yearsOfExperience: number;
   }>;
   verificationStatus: string;
+  /** Why the application was rejected; owner and admin views only. */
+  rejectionReason?: string | null;
   availabilityStatus: string;
   location: {
     address: string;
@@ -230,6 +232,7 @@ export class TechniciansService {
       data: {
         verificationStatus: VerificationStatus.PENDING,
         availabilityStatus: TechnicianAvailability.OFFLINE,
+        rejectionReason: null,
       },
     });
     await this.audit.log(
@@ -558,7 +561,7 @@ export class TechniciansService {
 
   async updateByAdmin(
     profileId: string,
-    dto: AdminUpdateTechnicianDto,
+    dto: AdminUpdateTechnicianDto & { rejectionReason?: string },
     actorId: string,
   ) {
     this.assertUpdateHasFields(dto);
@@ -587,8 +590,18 @@ export class TechniciansService {
     profileId: string,
     verificationStatus: VerificationStatus,
     actorId: string,
+    reason?: string,
   ) {
-    return this.updateByAdmin(profileId, { verificationStatus }, actorId);
+    if (verificationStatus === VerificationStatus.REJECTED && !reason?.trim()) {
+      throw new BadRequestException(
+        'Give a reason when rejecting an application.',
+      );
+    }
+    return this.updateByAdmin(
+      profileId,
+      { verificationStatus, rejectionReason: reason },
+      actorId,
+    );
   }
 
   async setAvailabilityByAdmin(
@@ -907,6 +920,7 @@ export class TechniciansService {
     profileId: string,
     dto: UpdateTechnicianProfileDto & {
       verificationStatus?: VerificationStatus;
+      rejectionReason?: string;
     },
     actorId: string,
     viewer: Viewer,
@@ -1007,6 +1021,15 @@ export class TechniciansService {
         ...(requestedVerification !== current.verificationStatus && {
           verificationStatus: requestedVerification,
         }),
+        // A rejection carries the admin's reason; any other decision clears it.
+        ...(viewer === 'admin' &&
+          (dto.verificationStatus !== undefined ||
+            dto.rejectionReason !== undefined) && {
+            rejectionReason:
+              requestedVerification === VerificationStatus.REJECTED
+                ? dto.rejectionReason?.trim() || current.rejectionReason || null
+                : null,
+          }),
         availabilityStatus: nextAvailability,
       },
     });
@@ -1030,7 +1053,10 @@ export class TechniciansService {
         fromStatus: current.verificationStatus,
         toStatus: requestedVerification,
         actorId,
-        metadata: { changedFields: Object.keys(dto) },
+        metadata: {
+          changedFields: Object.keys(dto),
+          ...(dto.rejectionReason ? { reason: dto.rejectionReason } : {}),
+        },
       },
       tx,
     );
@@ -1316,6 +1342,7 @@ export class TechniciansService {
         yearsOfExperience: totalYearsOfExperience,
         serviceExperiences,
         verificationStatus: profile.verificationStatus,
+        rejectionReason: profile.rejectionReason ?? null,
         availabilityStatus: profile.availabilityStatus,
         location: {
           address: profile.baseAddress,

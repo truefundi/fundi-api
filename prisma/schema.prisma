@@ -119,6 +119,8 @@ model TechnicianProfile {
   baseLatitude            Float?
   baseLongitude           Float?
   verificationStatus      VerificationStatus        @default(PENDING)
+  /// Why an admin rejected the application; shown to the technician, cleared when they reapply or are approved.
+  rejectionReason         String?
   createdAt               DateTime                  @default(now())
   updatedAt               DateTime                  @updatedAt
   gender                  TechnicianGender

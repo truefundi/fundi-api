@@ -4,8 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { JobRequestType, Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
+import {
+  calculatePaymentQuote,
+  type ServiceChargeForPricing,
+} from '../payments/payment-pricing';
 import { PrismaService } from '../database/prisma.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 import {
@@ -35,6 +39,18 @@ const SERVICE_SELECT = {
   isActive: true,
   createdAt: true,
   updatedAt: true,
+  serviceCharges: {
+    orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      chargeType: true,
+      value: true,
+      payer: true,
+      sortOrder: true,
+    },
+  },
   category: {
     select: {
       id: true,
@@ -47,9 +63,57 @@ const SERVICE_SELECT = {
   },
 } satisfies Prisma.ServiceCategorySelect;
 
-const toServiceResponse = <T extends { visitFee: number }>(service: T) => {
-  const { visitFee, ...rest } = service;
-  return { ...rest, bookingFee: visitFee };
+/**
+ * What a customer pays to book this service: the fee plus every charge the
+ * customer pays, priced exactly as a payment would be. Null when the fee is
+ * not set for that request type.
+ */
+const customerTotal = (
+  service: {
+    id: string;
+    name: string;
+    visitFee: number;
+    sosBookingFee: number | null;
+    serviceCharges: ServiceChargeForPricing[];
+  },
+  requestType: JobRequestType,
+): number | null => {
+  try {
+    return calculatePaymentQuote(service, requestType).customerTotal;
+  } catch {
+    return null;
+  }
+};
+
+const toServiceResponse = <
+  T extends {
+    id: string;
+    name: string;
+    visitFee: number;
+    sosBookingFee: number | null;
+    serviceCharges: ServiceChargeForPricing[];
+  },
+>(
+  service: T,
+) => {
+  // The charges themselves stay internal (some are paid by Fundi); clients get
+  // the totals, and GET /payments/quote for the itemised breakdown.
+  const { visitFee, serviceCharges: _charges, ...rest } = {
+    ...service,
+    serviceCharges: service.serviceCharges ?? [],
+  };
+  return {
+    ...rest,
+    bookingFee: visitFee,
+    customerBookingFee: customerTotal(
+      { ...service, serviceCharges: service.serviceCharges ?? [] },
+      JobRequestType.NORMAL,
+    ),
+    customerSosBookingFee: customerTotal(
+      { ...service, serviceCharges: service.serviceCharges ?? [] },
+      JobRequestType.SOS,
+    ),
+  };
 };
 
 @Injectable()

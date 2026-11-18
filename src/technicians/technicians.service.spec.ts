@@ -6,6 +6,7 @@ import {
 import {
   Prisma,
   TechnicianAvailability,
+  TechnicianBusinessType,
   TechnicianGender,
   UserStatus,
   VerificationStatus,
@@ -43,6 +44,7 @@ describe('TechniciansService', () => {
     profilePictureObjectKey: null as string | null,
     profilePictureMimeType: null as string | null,
     verificationStatus: VerificationStatus.PENDING,
+    businessType: TechnicianBusinessType.INDIVIDUAL,
     availabilityStatus: TechnicianAvailability.OFFLINE,
     createdAt: now,
     updatedAt: now,
@@ -84,6 +86,13 @@ describe('TechniciansService', () => {
         update: jest.fn().mockResolvedValue(baseProfile()),
         findUnique: jest.fn().mockResolvedValue(baseProfile()),
         findUniqueOrThrow: jest.fn().mockResolvedValue(baseProfile()),
+      },
+      company: {
+        create: jest.fn().mockResolvedValue({
+          id: 'company-id',
+          name: 'Example Company',
+          verificationStatus: VerificationStatus.PENDING,
+        }),
       },
       technicianCategory: {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -183,7 +192,7 @@ describe('TechniciansService', () => {
     );
   });
 
-  it('lets a signed-in customer become a technician while retaining the same account', async () => {
+  it('keeps a signed-in customer in customer mode while their technician profile is pending', async () => {
     const { service, transaction, prisma } = createService();
     prisma.user.findUnique.mockResolvedValue({
       phoneVerifiedAt: null,
@@ -193,14 +202,39 @@ describe('TechniciansService', () => {
 
     await service.registerMyProfile(userId, validRegistration());
 
-    expect(transaction.user.update).toHaveBeenCalledWith({
-      where: { id: userId },
-      data: {
-        role: 'TECHNICIAN',
-        phoneVerifiedAt: expect.any(Date),
+    expect(transaction.user.update).not.toHaveBeenCalled();
+    expect(transaction.technicianProfile.create).toHaveBeenCalled();
+  });
+
+  it('creates a pending company with a company-owner technician profile', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue(null);
+
+    await service.registerMyProfile(userId, {
+      ...validRegistration(),
+      businessType: TechnicianBusinessType.COMPANY,
+      company: {
+        name: 'Example Company',
+        location: 'Kigali, Rwanda',
+        email: 'info@example.com',
+        phoneNumber: '+250788123456',
       },
     });
-    expect(transaction.technicianProfile.create).toHaveBeenCalled();
+
+    expect(transaction.technicianProfile.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          businessType: TechnicianBusinessType.COMPANY,
+        }),
+      }),
+    );
+    expect(transaction.company.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        technicianId: profileId,
+        name: 'Example Company',
+        verificationStatus: VerificationStatus.PENDING,
+      }),
+    });
   });
 
   it('registers a text-only profile without geocoding it', async () => {

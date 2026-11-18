@@ -11,6 +11,7 @@ import {
   JobCooperationStatus,
   JobRequestType,
   JobStatus,
+  PaymentClaimStatus,
   Prisma,
 } from '@prisma/client';
 import { createHmac, randomUUID } from 'crypto';
@@ -21,8 +22,32 @@ import { ExtendPaymentDto } from './dto/extend-payment.dto';
 import { RecordProcessedPaymentDto } from './dto/record-processed-payment.dto';
 import { CreateCompletedPaymentDto } from './dto/create-completed-payment.dto';
 import { UpdateCompletedPaymentDto } from './dto/update-completed-payment.dto';
+import { PaymentQuoteDto } from './dto/payment-quote.dto';
+import { CreatePaymentClaimDto } from './dto/create-payment-claim.dto';
+import { ListPaymentClaimsDto } from './dto/list-payment-claims.dto';
+import { ReviewPaymentClaimDto } from './dto/review-payment-claim.dto';
+import {
+  calculatePaymentQuote,
+  PaymentPricingQuote,
+  ServiceForPricing,
+} from './payment-pricing';
 
 const BOOKING_VALIDITY_SECONDS = 7 * 24 * 60 * 60;
+const PAYMENT_CLAIM_INCLUDE = {
+  customer: { select: { id: true, fullName: true, phoneNumber: true } },
+  serviceCategory: { select: { id: true, name: true, slug: true } },
+  reviewedBy: { select: { id: true, fullName: true, email: true } },
+  bookingPayment: {
+    select: {
+      id: true,
+      jobId: true,
+      status: true,
+      amount: true,
+      paidAt: true,
+      validUntil: true,
+    },
+  },
+} satisfies Prisma.PaymentClaimInclude;
 
 @Injectable()
 export class PaymentsService {
@@ -33,18 +58,9 @@ export class PaymentsService {
   ) {}
 
   async createMockPayment(customerId: string, dto: CreateMockPaymentDto) {
-    const category = await this.prisma.serviceCategory.findFirst({
-      where: { id: dto.serviceCategoryId, isActive: true },
-      select: {
-        id: true,
-        name: true,
-        visitFee: true,
-        sosBookingFee: true,
-      },
-    });
-    if (!category) throw new NotFoundException('Service category not found.');
     const requestType = dto.requestType ?? JobRequestType.NORMAL;
-    const bookingFee = this.bookingFeeFor(category, requestType);
+    const category = await this.getServiceForPricing(dto.serviceCategoryId);
+    const pricing = calculatePaymentQuote(category, requestType);
 
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: customerId },
@@ -65,20 +81,18 @@ export class PaymentsService {
     const validUntil = new Date(
       paidAt.getTime() + BOOKING_VALIDITY_SECONDS * 1000,
     );
-    const signature = createHmac('sha256', secret)
-      .update(
-        [
-          id,
-          externalPaymentId,
-          customerId,
-          category.id,
-          requestType,
-          bookingFee,
-          phoneNumber,
-          paidAt.toISOString(),
-        ].join(':'),
-      )
-      .digest('hex');
+    const signature = this.signPayment(
+      secret,
+      id,
+      externalPaymentId,
+      customerId,
+      category.id,
+      pricing.customerTotal,
+      phoneNumber,
+      paidAt,
+      requestType,
+      pricing,
+    );
     const payment = await this.prisma.$transaction(async (tx) => {
       const created = await tx.bookingPayment.create({
         data: {
@@ -89,7 +103,8 @@ export class PaymentsService {
           paymentKeyId: key,
           signature,
           phoneNumber,
-          amount: bookingFee,
+          amount: pricing.customerTotal,
+          pricingSnapshot: pricing,
           requestType,
           paidAt,
           validUntil,
@@ -106,7 +121,7 @@ export class PaymentsService {
           metadata: {
             externalPaymentId,
             serviceCategoryId: category.id,
-            amount: bookingFee,
+            amount: pricing.customerTotal,
             phoneNumber,
             paidAt: paidAt.toISOString(),
           },
@@ -120,14 +135,302 @@ export class PaymentsService {
       externalPaymentId,
       status: 'SUCCESS',
       bookingStatus: payment.status,
-      serviceCategory: category,
+      serviceCategory: {
+        id: category.id,
+        name: category.name,
+        visitFee: category.visitFee,
+        sosBookingFee: category.sosBookingFee,
+      },
       requestType: payment.requestType,
       phoneNumber,
       amount: payment.amount,
       currency: 'RWF',
+      pricingDetails: pricing,
       paidAt: payment.paidAt,
       validUntil: payment.validUntil,
     };
+  }
+
+  async quote(dto: PaymentQuoteDto): Promise<PaymentPricingQuote> {
+    const category = await this.getServiceForPricing(dto.serviceCategoryId);
+    return calculatePaymentQuote(
+      category,
+      dto.requestType ?? JobRequestType.NORMAL,
+    );
+  }
+
+  async submitPaymentClaim(customerId: string, dto: CreatePaymentClaimDto) {
+    if (
+      dto.paymentMethod === 'CREDIT_CARD' &&
+      /^\d{12,19}$/.test(dto.paymentNumber.replace(/[\s-]/g, ''))
+    ) {
+      throw new BadRequestException(
+        'Do not submit a full card number. Use the payment provider transaction reference instead.',
+      );
+    }
+    const requestType = dto.requestType ?? JobRequestType.NORMAL;
+    const category = await this.getServiceForPricing(dto.serviceCategoryId);
+    const pricing = calculatePaymentQuote(category, requestType);
+    if (pricing.customerTotal !== dto.amount) {
+      throw new BadRequestException({
+        message: `The claimed amount (${dto.amount} RWF) does not match the expected customer total (${pricing.customerTotal} RWF).`,
+        expectedAmount: pricing.customerTotal,
+        currency: pricing.currency,
+        pricingDetails: pricing,
+      });
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const claim = await tx.paymentClaim.create({
+        data: {
+          customerId,
+          serviceCategoryId: category.id,
+          requestType,
+          amount: dto.amount,
+          paymentMethod: dto.paymentMethod,
+          paymentNumber: dto.paymentNumber,
+          pricingSnapshot: pricing,
+        },
+        include: PAYMENT_CLAIM_INCLUDE,
+      });
+      await this.audit.log(
+        {
+          entityType: 'PaymentClaim',
+          entityId: claim.id,
+          action: 'SUBMITTED',
+          actorId: customerId,
+          toStatus: PaymentClaimStatus.PENDING,
+          metadata: {
+            serviceCategoryId: category.id,
+            requestType,
+            amount: dto.amount,
+            paymentMethod: dto.paymentMethod,
+          },
+        },
+        tx,
+      );
+      return this.toPaymentClaimResponse(claim);
+    });
+  }
+
+  async listMyPaymentClaims(customerId: string) {
+    const claims = await this.prisma.paymentClaim.findMany({
+      where: { customerId },
+      include: PAYMENT_CLAIM_INCLUDE,
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+    });
+    return claims.map((claim) => this.toPaymentClaimResponse(claim));
+  }
+
+  async listPaymentClaimsForAdmin(query: ListPaymentClaimsDto) {
+    const claims = await this.prisma.paymentClaim.findMany({
+      where: query.status ? { status: query.status } : undefined,
+      include: PAYMENT_CLAIM_INCLUDE,
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+    });
+    return claims.map((claim) => this.toPaymentClaimResponse(claim));
+  }
+
+  async getPaymentClaimForAdmin(id: string) {
+    const claim = await this.prisma.paymentClaim.findUnique({
+      where: { id },
+      include: PAYMENT_CLAIM_INCLUDE,
+    });
+    if (!claim) throw new NotFoundException('Payment claim not found.');
+    return this.toPaymentClaimResponse(claim);
+  }
+
+  async reviewPaymentClaim(
+    id: string,
+    dto: ReviewPaymentClaimDto,
+    actorId: string,
+  ) {
+    const claimReference = await this.prisma.paymentClaim.findUnique({
+      where: { id },
+      select: { id: true, status: true },
+    });
+    if (!claimReference) throw new NotFoundException('Payment claim not found.');
+    if (claimReference.status !== PaymentClaimStatus.PENDING) {
+      throw new ConflictException(
+        'Only pending payment claims can be reviewed.',
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id" FROM "payment_claims"
+        WHERE "id" = ${id}
+        FOR UPDATE`;
+      const claim = await tx.paymentClaim.findUnique({
+        where: { id },
+        include: {
+          customer: { select: { id: true, fullName: true, phoneNumber: true } },
+          serviceCategory: { select: { id: true, name: true, slug: true } },
+          reviewedBy: { select: { id: true, fullName: true, email: true } },
+          bookingPayment: {
+            select: {
+              id: true,
+              jobId: true,
+              status: true,
+              amount: true,
+              paidAt: true,
+              validUntil: true,
+            },
+          },
+        },
+      });
+      if (!claim) throw new NotFoundException('Payment claim not found.');
+      if (claim.status !== PaymentClaimStatus.PENDING) {
+        throw new ConflictException(
+          'Only pending payment claims can be reviewed.',
+        );
+      }
+
+      const reviewedAt = new Date();
+      let bookingPayment = null;
+      if (dto.status === PaymentClaimStatus.APPROVED) {
+        const paymentKey = this.config.get<string>('mockPayment.key');
+        const paymentSecret = this.config.get<string>('mockPayment.secret');
+        if (!paymentKey || !paymentSecret) {
+          throw new ServiceUnavailableException(
+            'Payment recording is not configured. Set MOCK_PAYMENT_KEY and MOCK_PAYMENT_SECRET before approving claims.',
+          );
+        }
+        const paymentId = randomUUID();
+        const externalPaymentId = `claim_${claim.id}`;
+        const validUntil = new Date(
+          reviewedAt.getTime() + BOOKING_VALIDITY_SECONDS * 1000,
+        );
+        const signature = this.signPayment(
+          paymentSecret,
+          paymentId,
+          externalPaymentId,
+          claim.customerId,
+          claim.serviceCategoryId,
+          claim.amount,
+          claim.customer.phoneNumber,
+          reviewedAt,
+          claim.requestType,
+          claim.pricingSnapshot,
+        );
+        bookingPayment = await tx.bookingPayment.create({
+          data: {
+            id: paymentId,
+            customerId: claim.customerId,
+            serviceCategoryId: claim.serviceCategoryId,
+            externalPaymentId,
+            paymentKeyId: `claim:${paymentKey}`,
+            signature,
+            phoneNumber: claim.customer.phoneNumber,
+            amount: claim.amount,
+            pricingSnapshot:
+              claim.pricingSnapshot as Prisma.InputJsonValue,
+            requestType: claim.requestType,
+            status: BookingPaymentStatus.VALID,
+            paidAt: reviewedAt,
+            validUntil,
+          },
+          select: {
+            id: true,
+            jobId: true,
+            status: true,
+            amount: true,
+            paidAt: true,
+            validUntil: true,
+          },
+        });
+        await this.audit.log(
+          {
+            entityType: 'BookingPayment',
+            entityId: paymentId,
+            action: 'PAYMENT_CLAIM_APPROVED',
+            actorId,
+            toStatus: BookingPaymentStatus.VALID,
+            metadata: {
+              claimId: claim.id,
+              externalPaymentId,
+              amount: claim.amount,
+              serviceCategoryId: claim.serviceCategoryId,
+            },
+          },
+          tx,
+        );
+      }
+
+      const updated = await tx.paymentClaim.update({
+        where: { id },
+        data: {
+          status: dto.status,
+          reviewNote: dto.reviewNote || null,
+          reviewedById: actorId,
+          reviewedAt,
+          ...(bookingPayment ? { bookingPaymentId: bookingPayment.id } : {}),
+        },
+        include: PAYMENT_CLAIM_INCLUDE,
+      });
+      await this.audit.log(
+        {
+          entityType: 'PaymentClaim',
+          entityId: id,
+          action:
+            dto.status === PaymentClaimStatus.APPROVED
+              ? 'APPROVED'
+              : 'REJECTED',
+          actorId,
+          fromStatus: PaymentClaimStatus.PENDING,
+          toStatus: dto.status,
+          metadata: {
+            amount: claim.amount,
+            serviceCategoryId: claim.serviceCategoryId,
+            bookingPaymentId: bookingPayment?.id ?? null,
+            reviewNote: dto.reviewNote || null,
+          },
+        },
+        tx,
+      );
+      return this.toPaymentClaimResponse(updated);
+    });
+  }
+
+  async deletePaymentClaim(id: string, actorId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id" FROM "payment_claims"
+        WHERE "id" = ${id}
+        FOR UPDATE`;
+      const claim = await tx.paymentClaim.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          customerId: true,
+          serviceCategoryId: true,
+          amount: true,
+          paymentMethod: true,
+          status: true,
+          bookingPaymentId: true,
+        },
+      });
+      if (!claim) throw new NotFoundException('Payment claim not found.');
+      await this.audit.log(
+        {
+          entityType: 'PaymentClaim',
+          entityId: id,
+          action: 'DELETED',
+          actorId,
+          fromStatus: claim.status,
+          metadata: {
+            customerId: claim.customerId,
+            serviceCategoryId: claim.serviceCategoryId,
+            amount: claim.amount,
+            paymentMethod: claim.paymentMethod,
+            bookingPaymentId: claim.bookingPaymentId,
+          },
+        },
+        tx,
+      );
+      await tx.paymentClaim.delete({ where: { id } });
+      return { id, deleted: true };
+    });
   }
 
   async recordFrontendProcessedPayment(
@@ -143,22 +446,16 @@ export class PaymentsService {
         'Frontend-reported payments are disabled in production. Confirm payments through the payment provider on the server.',
       );
     }
-    const category = await this.prisma.serviceCategory.findFirst({
-      where: { id: dto.serviceCategoryId, isActive: true },
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-        visitFee: true,
-        sosBookingFee: true,
-      },
-    });
-    if (!category) throw new NotFoundException('Service category not found.');
     const requestType = dto.requestType ?? JobRequestType.NORMAL;
-    if (this.bookingFeeFor(category, requestType) !== dto.amount) {
-      throw new BadRequestException(
-        `The submitted amount must match the ${requestType} booking fee for this service category.`,
-      );
+    const category = await this.getServiceForPricing(dto.serviceCategoryId);
+    const pricing = calculatePaymentQuote(category, requestType);
+    if (pricing.customerTotal !== dto.amount) {
+      throw new BadRequestException({
+        message: `The submitted amount (${dto.amount} RWF) does not match the expected customer total (${pricing.customerTotal} RWF).`,
+        expectedAmount: pricing.customerTotal,
+        currency: pricing.currency,
+        pricingDetails: pricing,
+      });
     }
     const paidAt = this.parsePastDate(dto.paidAt);
     const key = this.config.get<string>('mockPayment.key');
@@ -186,6 +483,7 @@ export class PaymentsService {
       dto.phoneNumber,
       paidAt,
       requestType,
+      pricing,
     );
     try {
       const payment = await this.prisma.$transaction(async (tx) => {
@@ -199,6 +497,7 @@ export class PaymentsService {
             signature,
             phoneNumber: dto.phoneNumber,
             amount: dto.amount,
+            pricingSnapshot: pricing,
             requestType,
             paidAt,
             validUntil,
@@ -230,11 +529,16 @@ export class PaymentsService {
         externalPaymentId: payment.externalPaymentId,
         status: dto.status,
         bookingStatus: payment.status,
-        serviceCategory: category,
+        serviceCategory: {
+          id: category.id,
+          name: category.name,
+          slug: category.slug,
+        },
         requestType: payment.requestType,
         phoneNumber: payment.phoneNumber,
         amount: payment.amount,
         currency: 'RWF',
+        pricingDetails: pricing,
         paidAt: payment.paidAt,
         validUntil: payment.validUntil,
         providerVerified: false,
@@ -300,10 +604,8 @@ export class PaymentsService {
       },
       orderBy: [{ paidAt: 'desc' }, { id: 'asc' }],
     });
-    return payments.map(
-      ({ signature: _signature, paymentKeyId: _key, ...payment }) => ({
-        ...payment,
-        currency: 'RWF',
+    return payments.map((payment) => ({
+        ...this.toSafePayment(payment),
         service: payment.serviceCategory.name,
         job: payment.job
           ? {
@@ -333,8 +635,7 @@ export class PaymentsService {
               ),
             }
           : null,
-      }),
-    );
+      }));
   }
 
   async listAll() {
@@ -375,12 +676,7 @@ export class PaymentsService {
       },
       orderBy: [{ paidAt: 'desc' }, { id: 'asc' }],
     });
-    return rows.map(
-      ({ signature: _signature, paymentKeyId: _key, ...payment }) => ({
-        ...payment,
-        currency: 'RWF',
-      }),
-    );
+    return rows.map((payment) => this.toSafePayment(payment));
   }
 
   async listCompletedPayments() {
@@ -438,7 +734,25 @@ export class PaymentsService {
       where: { id: dto.jobId },
       include: {
         serviceCategory: {
-          select: { id: true, visitFee: true, sosBookingFee: true },
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            visitFee: true,
+            sosBookingFee: true,
+            serviceCharges: {
+              orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+              select: {
+                id: true,
+                name: true,
+                description: true,
+                chargeType: true,
+                value: true,
+                payer: true,
+                sortOrder: true,
+              },
+            },
+          },
         },
         bookingPayment: { select: { id: true } },
       },
@@ -454,7 +768,8 @@ export class PaymentsService {
       );
     }
     const category = job.serviceCategory;
-    const amount = this.bookingFeeFor(category, job.requestType);
+    const pricing = calculatePaymentQuote(category, job.requestType);
+    const amount = pricing.customerTotal;
     if (job.bookingPayment) {
       throw new ConflictException(
         'This completed job already has a booking payment.',
@@ -478,6 +793,7 @@ export class PaymentsService {
       dto.phoneNumber,
       paidAt,
       job.requestType,
+      pricing,
     );
     try {
       const payment = await this.prisma.$transaction(async (tx) => {
@@ -492,6 +808,7 @@ export class PaymentsService {
             signature,
             phoneNumber: dto.phoneNumber,
             amount,
+            pricingSnapshot: pricing,
             requestType: job.requestType,
             paidAt,
             validUntil: new Date(
@@ -566,6 +883,7 @@ export class PaymentsService {
       phoneNumber,
       paidAt,
       payment.requestType,
+      payment.pricingSnapshot,
     );
     try {
       const updated = await this.prisma.$transaction(async (tx) => {
@@ -665,20 +983,37 @@ export class PaymentsService {
     return date;
   }
 
-  private bookingFeeFor(
-    category: { visitFee: number; sosBookingFee: number | null },
-    requestType: JobRequestType,
-  ) {
-    const amount =
-      requestType === JobRequestType.SOS
-        ? category.sosBookingFee
-        : category.visitFee;
-    if (amount === null || amount <= 0) {
-      throw new BadRequestException(
-        `This service category does not have a valid ${requestType} booking fee configured.`,
-      );
-    }
-    return amount;
+  private async getServiceForPricing(
+    serviceCategoryId: string,
+  ): Promise<ServiceForPricing> {
+    const category = await this.prisma.serviceCategory.findFirst({
+      where: {
+        id: serviceCategoryId,
+        isActive: true,
+        category: { isActive: true },
+      },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        visitFee: true,
+        sosBookingFee: true,
+        serviceCharges: {
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          select: {
+            id: true,
+            name: true,
+            description: true,
+            chargeType: true,
+            value: true,
+            payer: true,
+            sortOrder: true,
+          },
+        },
+      },
+    });
+    if (!category) throw new NotFoundException('Service category not found.');
+    return category;
   }
 
   private signPayment(
@@ -691,6 +1026,7 @@ export class PaymentsService {
     phoneNumber: string,
     paidAt: Date,
     requestType: JobRequestType,
+    pricingSnapshot: unknown = null,
   ) {
     return createHmac('sha256', secret)
       .update(
@@ -703,16 +1039,40 @@ export class PaymentsService {
           amount,
           phoneNumber,
           paidAt.toISOString(),
+          JSON.stringify(pricingSnapshot),
         ].join(':'),
       )
       .digest('hex');
   }
 
-  private toSafePayment<T extends { signature: string; paymentKeyId: string }>(
-    payment: T,
+  private toSafePayment<
+    T extends {
+      signature: string;
+      paymentKeyId: string;
+      pricingSnapshot?: unknown;
+    },
+  >(payment: T) {
+    const {
+      signature: _signature,
+      paymentKeyId: _key,
+      pricingSnapshot,
+      ...safe
+    } = payment;
+    return {
+      ...safe,
+      pricingDetails: pricingSnapshot ?? null,
+      currency: 'RWF',
+    };
+  }
+
+  private toPaymentClaimResponse<T extends { pricingSnapshot: unknown }>(
+    claim: T,
   ) {
-    const { signature: _signature, paymentKeyId: _key, ...safe } = payment;
-    return { ...safe, currency: 'RWF' };
+    const { pricingSnapshot, ...safe } = claim;
+    return {
+      ...safe,
+      pricingDetails: pricingSnapshot,
+    };
   }
 
   async extend(id: string, dto: ExtendPaymentDto, actorId: string) {

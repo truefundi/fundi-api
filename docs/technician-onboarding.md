@@ -28,7 +28,8 @@ Every route below requires a Bearer access token unless marked **Public**.
 | --- | --- |
 | **Public** (no auth) | `POST /api/v1/technicians/register` |
 | `CUSTOMER` or `TECHNICIAN` | `POST /api/v1/technicians/profile` |
-| `TECHNICIAN` | `GET`/`PUT /api/v1/technicians/profile`, `/api/v1/technicians/availability` |
+| `CUSTOMER` or `TECHNICIAN` | `GET`/`PUT /api/v1/technicians/profile`, `/api/v1/technicians/profile/*` document and picture routes |
+| `TECHNICIAN` | `/api/v1/technicians/availability` |
 | Any signed-in role (`CUSTOMER`, `TECHNICIAN`, `ADMIN`) | `/api/v1/technicians`, `/api/v1/technicians/approved`, `/api/v1/technicians/available/:id`, `/api/v1/technicians/approved/:id` |
 | **Public** (no auth) | `/api/v1/public/technicians*` |
 | `ADMIN` | `/api/v1/admin/technicians*` |
@@ -144,12 +145,22 @@ The following fields are **required** and their absence produces a single
 
 Account identity (`fullName`, `phoneNumber`, and `email`) comes from the
 signed-in user and is not accepted as profile data. When a signed-in customer
-creates a technician profile, the existing account is upgraded to the
-`TECHNICIAN` role; the user ID and account are retained.
+creates a technician profile, the existing account stays in the `CUSTOMER`
+role while the profile is pending. The user ID and account are retained.
+After an administrator approves the profile, the user can switch to technician
+mode with `PATCH /api/v1/users/me/role`.
+
+An application may include `businessType: "COMPANY"` and a `company` object to
+register a company owned by the technician. `businessType` defaults to
+`INDIVIDUAL`; when it is `COMPANY`, all of `name`, `location`, `email`, and
+`phoneNumber` are required in `company`, while `description` is optional.
+Company verification starts at `PENDING`. See
+[`companies.md`](./companies.md) for owner/admin operations.
 
 Technician accounts must verify the registration phone OTP first. A signed-in
-customer has already authenticated by OTP and can become a technician by
-completing this profile. Profile picture upload is a **separate** call — see
+customer can apply in customer mode without an immediate role change. Customers
+must complete phone verification as required by the job and technician
+verification flows. Profile picture upload is a **separate** call — see
 [`technician-documents.md`](./technician-documents.md).
 The `nationalIdNumber` is encrypted at rest; responses expose only its final
 four digits. The National ID card file is uploaded separately and must be
@@ -171,6 +182,14 @@ omit them. Numeric coordinates may also be sent with the text labels.
   "baseLongitude": 30.06,
   "paymentMethod": "MOMO",
   "paymentNumber": "+250788123456",
+  "businessType": "COMPANY",
+  "company": {
+    "name": "Amina Plumbing Ltd",
+    "location": "Kigali, Rwanda",
+    "email": "amina@example.com",
+    "phoneNumber": "+250788123456",
+    "description": "Residential plumbing services"
+  },
   "serviceExperiences": [
     { "categoryId": "e5a4f4d7-0b21-46d8-9a4b-98765d332100", "yearsOfExperience": 5 },
     { "customName": "Solar panel install", "yearsOfExperience": 2 }
@@ -202,7 +221,9 @@ A full technician object with `verificationStatus: "PENDING"` and
 
 Returns the signed-in technician's profile.
 
-Auth: **`TECHNICIAN`**.
+Auth: **`CUSTOMER`** or **`TECHNICIAN`**. A customer who has a pending
+technician application can access and complete their own profile and
+verification documents.
 
 No request body.
 
@@ -214,14 +235,14 @@ No request body.
 | Status | When |
 | --- | --- |
 | `401` | Missing or invalid token |
-| `403` | Caller is not a `TECHNICIAN` |
+| `403` | Caller is not a `CUSTOMER` or `TECHNICIAN` |
 | `404` | No profile registered yet — register first with `POST` |
 
 ### `PUT /api/v1/technicians/profile`
 
 Updates the signed-in technician's profile.
 
-Auth: **`TECHNICIAN`**.
+Auth: **`CUSTOMER`** or **`TECHNICIAN`**.
 
 Send only the fields you want to change. At least one field is required.
 

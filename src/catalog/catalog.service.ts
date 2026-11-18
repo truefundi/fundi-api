@@ -8,6 +8,10 @@ import { Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
+import {
+  CreateServiceChargeDto,
+  UpdateServiceChargeDto,
+} from './dto/service-charge.dto';
 import { CreateServiceDto, UpdateServiceDto } from './dto/service.dto';
 
 const slugify = (value: string) =>
@@ -251,6 +255,156 @@ export class CatalogService {
     return toServiceResponse(service);
   }
 
+  async listServiceCharges(serviceCategoryId: string) {
+    await this.getServiceById(serviceCategoryId);
+    const charges = await this.prisma.serviceCharge.findMany({
+      where: { serviceCategoryId },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    });
+    return charges.map((charge) => ({
+      ...charge,
+      value: Number(charge.value),
+    }));
+  }
+
+  async createServiceCharge(
+    serviceCategoryId: string,
+    dto: CreateServiceChargeDto,
+    actorId: string,
+  ) {
+    this.assertServiceChargeValue(dto.chargeType, dto.value);
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const service = await tx.serviceCategory.findUnique({
+          where: { id: serviceCategoryId },
+          select: { id: true },
+        });
+        if (!service) throw new NotFoundException('Service not found.');
+        const charge = await tx.serviceCharge.create({
+          data: {
+            serviceCategoryId,
+            name: dto.name.trim(),
+            description: dto.description?.trim() || null,
+            chargeType: dto.chargeType,
+            value: dto.value,
+            payer: dto.payer,
+            sortOrder: dto.sortOrder ?? 0,
+          },
+        });
+        await this.audit.log(
+          {
+            entityType: 'ServiceCharge',
+            entityId: charge.id,
+            action: 'CREATED',
+            actorId,
+            metadata: {
+              serviceCategoryId,
+              name: charge.name,
+              chargeType: charge.chargeType,
+              value: Number(charge.value),
+              payer: charge.payer,
+            },
+          },
+          tx,
+        );
+        return { ...charge, value: Number(charge.value) };
+      });
+    } catch (error) {
+      this.rethrow(error);
+    }
+  }
+
+  async updateServiceCharge(
+    serviceCategoryId: string,
+    chargeId: string,
+    dto: UpdateServiceChargeDto,
+    actorId: string,
+  ) {
+    if (
+      dto.name === undefined &&
+      dto.description === undefined &&
+      dto.chargeType === undefined &&
+      dto.value === undefined &&
+      dto.payer === undefined &&
+      dto.sortOrder === undefined
+    ) {
+      throw new BadRequestException('Provide a service charge field to update.');
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.serviceCharge.findFirst({
+        where: { id: chargeId, serviceCategoryId },
+      });
+      if (!current) throw new NotFoundException('Service charge not found.');
+      const chargeType = dto.chargeType ?? current.chargeType;
+      const value = dto.value ?? Number(current.value);
+      this.assertServiceChargeValue(chargeType, value);
+      const updated = await tx.serviceCharge.update({
+        where: { id: chargeId },
+        data: {
+          name: dto.name?.trim(),
+          description:
+            dto.description === undefined
+              ? undefined
+              : dto.description?.trim() || null,
+          chargeType: dto.chargeType,
+          value: dto.value,
+          payer: dto.payer,
+          sortOrder: dto.sortOrder,
+        },
+      });
+      await this.audit.log(
+        {
+          entityType: 'ServiceCharge',
+          entityId: chargeId,
+          action: 'UPDATED',
+          actorId,
+          metadata: {
+            serviceCategoryId,
+            ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+            ...(dto.chargeType !== undefined
+              ? { chargeType: dto.chargeType }
+              : {}),
+            ...(dto.value !== undefined ? { value: dto.value } : {}),
+            ...(dto.payer !== undefined ? { payer: dto.payer } : {}),
+          },
+        },
+        tx,
+      );
+      return { ...updated, value: Number(updated.value) };
+    });
+  }
+
+  async deleteServiceCharge(
+    serviceCategoryId: string,
+    chargeId: string,
+    actorId: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const charge = await tx.serviceCharge.findFirst({
+        where: { id: chargeId, serviceCategoryId },
+      });
+      if (!charge) throw new NotFoundException('Service charge not found.');
+      await this.audit.log(
+        {
+          entityType: 'ServiceCharge',
+          entityId: charge.id,
+          action: 'DELETED',
+          actorId,
+          metadata: {
+            serviceCategoryId,
+            name: charge.name,
+            chargeType: charge.chargeType,
+            value: Number(charge.value),
+            payer: charge.payer,
+          },
+        },
+        tx,
+      );
+      await tx.serviceCharge.delete({ where: { id: chargeId } });
+      return { id: chargeId, deleted: true };
+    });
+  }
+
   async createService(dto: CreateServiceDto, actorId: string) {
     const name = dto.name.trim();
     const slug = slugify(name);
@@ -454,6 +608,26 @@ export class CatalogService {
     ) {
       throw new BadRequestException(
         'The SOS booking fee must be higher than the normal booking fee.',
+      );
+    }
+
+  }
+
+  private assertServiceChargeValue(
+    chargeType: CreateServiceChargeDto['chargeType'],
+    value: number,
+  ) {
+    if (
+      !Number.isFinite(value) ||
+      value <= 0 ||
+      value > 2_000_000_000 ||
+      (chargeType === 'PERCENTAGE' && value > 100) ||
+      (chargeType === 'FIXED' && !Number.isInteger(value))
+    ) {
+      throw new BadRequestException(
+        chargeType === 'PERCENTAGE'
+          ? 'Percentage service charges must be greater than 0 and no more than 100.'
+          : 'Fixed service charges must be a positive whole amount in RWF.',
       );
     }
   }

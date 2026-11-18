@@ -31,6 +31,17 @@ export class HttpExceptionFilter implements ExceptionFilter {
       typeof exceptionResponse === 'object' && exceptionResponse.message
         ? exceptionResponse.message
         : exceptionResponse;
+    const details =
+      typeof exceptionResponse === 'object' &&
+      exceptionResponse !== null &&
+      !Array.isArray(exceptionResponse)
+        ? Object.fromEntries(
+            Object.entries(exceptionResponse).filter(
+              ([key]) =>
+                !['statusCode', 'timestamp', 'path', 'message'].includes(key),
+            ),
+          )
+        : {};
 
     this.logger.error(
       `${request.method} ${request.url} - Status: ${status} - Error: ${JSON.stringify(message)}`,
@@ -42,6 +53,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       path: request.url,
       message,
+      ...details,
     });
   }
 }

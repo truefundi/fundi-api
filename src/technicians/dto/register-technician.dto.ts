@@ -9,7 +9,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { UpdateTechnicianProfileDto } from './update-technician-profile.dto';
+import { RegisterTechnicianProfileDto } from './register-technician-profile.dto';
 import {
   normalizeRwandaPhoneNumber,
   RWANDA_PHONE_NUMBER_PATTERN,
@@ -50,6 +50,6 @@ export class RegisterTechnicianDto {
 
   @IsDefined()
   @ValidateNested()
-  @Type(() => UpdateTechnicianProfileDto)
-  profile!: UpdateTechnicianProfileDto;
+  @Type(() => RegisterTechnicianProfileDto)
+  profile!: RegisterTechnicianProfileDto;
 }

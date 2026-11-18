@@ -2,6 +2,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CatalogService } from './catalog.service';
+import { ServiceChargePayer, ServiceChargeType } from '@prisma/client';
 
 describe('CatalogService', () => {
   const category = {
@@ -28,6 +29,18 @@ describe('CatalogService', () => {
     updatedAt: category.updatedAt,
     category,
   };
+  const serviceCharge = {
+    id: 'charge-1',
+    serviceCategoryId: serviceRecord.id,
+    name: 'Tax',
+    description: null,
+    chargeType: ServiceChargeType.PERCENTAGE,
+    value: 10,
+    payer: ServiceChargePayer.CUSTOMER,
+    sortOrder: 0,
+    createdAt: category.createdAt,
+    updatedAt: category.updatedAt,
+  };
 
   const createService = () => {
     const transaction = {
@@ -42,6 +55,13 @@ describe('CatalogService', () => {
         update: jest.fn().mockResolvedValue(serviceRecord),
         findUnique: jest.fn().mockResolvedValue(serviceRecord),
       },
+      serviceCharge: {
+        findMany: jest.fn().mockResolvedValue([serviceCharge]),
+        create: jest.fn().mockResolvedValue(serviceCharge),
+        findFirst: jest.fn().mockResolvedValue(serviceCharge),
+        update: jest.fn().mockResolvedValue(serviceCharge),
+        delete: jest.fn().mockResolvedValue(serviceCharge),
+      },
     };
     const prisma = {
       catalogCategory: {
@@ -53,6 +73,13 @@ describe('CatalogService', () => {
         findMany: jest.fn().mockResolvedValue([serviceRecord]),
         findFirst: jest.fn().mockResolvedValue(serviceRecord),
         findUnique: jest.fn().mockResolvedValue(serviceRecord),
+      },
+      serviceCharge: {
+        findMany: jest.fn().mockResolvedValue([serviceCharge]),
+        create: jest.fn().mockResolvedValue(serviceCharge),
+        findFirst: jest.fn().mockResolvedValue(serviceCharge),
+        update: jest.fn().mockResolvedValue(serviceCharge),
+        delete: jest.fn().mockResolvedValue(serviceCharge),
       },
       $transaction: jest.fn(
         (callback: (tx: typeof transaction) => Promise<unknown>) =>
@@ -254,6 +281,64 @@ describe('CatalogService', () => {
         select: expect.any(Object),
       }),
     );
+  });
+
+  it('creates an audited percentage charge for a service', async () => {
+    const { service, transaction, audit } = createService();
+    await service.createServiceCharge(
+      serviceRecord.id,
+      {
+        name: ' Tax ',
+        chargeType: ServiceChargeType.PERCENTAGE,
+        value: 10,
+        payer: ServiceChargePayer.CUSTOMER,
+      },
+      'admin-1',
+    );
+
+    expect(transaction.serviceCharge.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        serviceCategoryId: serviceRecord.id,
+        name: 'Tax',
+        chargeType: ServiceChargeType.PERCENTAGE,
+        value: 10,
+        payer: ServiceChargePayer.CUSTOMER,
+      }),
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityType: 'ServiceCharge',
+        action: 'CREATED',
+        actorId: 'admin-1',
+      }),
+      transaction,
+    );
+  });
+
+  it('rejects percentage charges above 100 percent', async () => {
+    const { service, transaction } = createService();
+    await expect(
+      service.createServiceCharge(
+        serviceRecord.id,
+        {
+          name: 'Invalid percentage',
+          chargeType: ServiceChargeType.PERCENTAGE,
+          value: 100.01,
+          payer: ServiceChargePayer.FUNDI,
+        },
+        'admin-1',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.serviceCharge.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects deleting a charge that is not attached to the service', async () => {
+    const { service, transaction } = createService();
+    transaction.serviceCharge.findFirst.mockResolvedValue(null);
+    await expect(
+      service.deleteServiceCharge(serviceRecord.id, 'other-charge', 'admin-1'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(transaction.serviceCharge.delete).not.toHaveBeenCalled();
   });
 
   it('allows clearing the SOS fee when increasing the normal fee', async () => {

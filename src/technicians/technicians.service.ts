@@ -136,9 +136,23 @@ export class TechniciansService {
       const profile = await this.runSerializable(async (tx) => {
         const existing = await tx.technicianProfile.findUnique({
           where: { userId },
-          select: { id: true },
+          select: {
+            id: true,
+            verificationStatus: true,
+            nationalIdEncrypted: true,
+          },
         });
         if (existing) {
+          // A rejected applicant starts over: the same full application as a
+          // first-timer, sent back to review. Anyone else edits with PUT.
+          if (existing.verificationStatus === VerificationStatus.REJECTED) {
+            return this.resubmitRejectedApplication(
+              tx,
+              existing,
+              profileDto,
+              userId,
+            );
+          }
           throw new ConflictException(
             'A technician profile already exists. Use PUT to update it.',
           );
@@ -182,6 +196,59 @@ export class TechniciansService {
     } catch (error) {
       this.throwWriteError(error);
     }
+  }
+
+  /**
+   * Turns a rejected application into a new one: every required field is
+   * checked as on a first application (the ID number on file may be kept),
+   * the details and trades are replaced, and it goes back to PENDING review.
+   */
+  private async resubmitRejectedApplication(
+    tx: Prisma.TransactionClient,
+    existing: { id: string; nationalIdEncrypted: string | null },
+    dto: UpdateTechnicianProfileDto,
+    userId: string,
+  ) {
+    this.assertRequiredProfileFieldsForCreate(dto, {
+      nationalIdOnFile: !!existing.nationalIdEncrypted,
+    });
+    if (dto.availabilityStatus === TechnicianAvailability.ONLINE) {
+      throw new BadRequestException(
+        'A new application must be submitted offline.',
+      );
+    }
+    await this.lockProfile(tx, existing.id);
+    // Under review again, so off duty, whatever availability was left behind.
+    await this.saveProfileFields(
+      tx,
+      existing.id,
+      { ...dto, availabilityStatus: TechnicianAvailability.OFFLINE },
+      userId,
+      'owner',
+    );
+    await tx.technicianProfile.update({
+      where: { id: existing.id },
+      data: {
+        verificationStatus: VerificationStatus.PENDING,
+        availabilityStatus: TechnicianAvailability.OFFLINE,
+      },
+    });
+    await this.audit.log(
+      {
+        entityType: 'TechnicianProfile',
+        entityId: existing.id,
+        action: 'APPLICATION_RESUBMITTED',
+        actorId: userId,
+        fromStatus: VerificationStatus.REJECTED,
+        toStatus: VerificationStatus.PENDING,
+        metadata: { keptNationalId: !dto.nationalIdNumber },
+      },
+      tx,
+    );
+    return tx.technicianProfile.findUniqueOrThrow({
+      where: { id: existing.id },
+      include: PROFILE_INCLUDE,
+    });
   }
 
   async registerPublicTechnician(dto: RegisterTechnicianDto) {
@@ -952,12 +1019,7 @@ export class TechniciansService {
         dto.serviceExperiences,
       );
     }
-    await this.writePostgisLocation(
-      tx,
-      current.id,
-      dto,
-      clearCoordinates,
-    );
+    await this.writePostgisLocation(tx, current.id, dto, clearCoordinates);
     await this.audit.log(
       {
         entityType: 'TechnicianProfile',
@@ -1071,10 +1133,13 @@ export class TechniciansService {
 
   private assertRequiredProfileFieldsForCreate(
     dto: UpdateTechnicianProfileDto,
+    options: { nationalIdOnFile?: boolean } = {},
   ) {
     const missing: string[] = [];
     if (!dto.gender) missing.push('gender');
-    if (!dto.nationalIdNumber) missing.push('nationalIdNumber');
+    if (!dto.nationalIdNumber && !options.nationalIdOnFile) {
+      missing.push('nationalIdNumber');
+    }
     const hasCoordinates =
       typeof dto.baseLatitude === 'number' &&
       typeof dto.baseLongitude === 'number';
@@ -1151,10 +1216,7 @@ export class TechniciansService {
         'baseLatitude and baseLongitude must be provided together.',
       );
     }
-    if (
-      (dto.baseLatitude === null) !==
-      (dto.baseLongitude === null)
-    ) {
+    if ((dto.baseLatitude === null) !== (dto.baseLongitude === null)) {
       throw new BadRequestException(
         'Set both coordinates to null when location coordinates are unavailable.',
       );
@@ -1182,10 +1244,7 @@ export class TechniciansService {
     dto: Pick<UpdateTechnicianProfileDto, 'baseLatitude' | 'baseLongitude'>,
     clearWhenMissing = false,
   ) {
-    if (
-      dto.baseLatitude === null &&
-      dto.baseLongitude === null
-    ) {
+    if (dto.baseLatitude === null && dto.baseLongitude === null) {
       await tx.$executeRaw`
         UPDATE "technician_profiles"
         SET "baseLocation" = NULL

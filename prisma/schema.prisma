@@ -206,6 +206,8 @@ model Company {
   phoneNumber        String
   description        String?
   verificationStatus VerificationStatus @default(PENDING)
+  /// The admin's note when rejecting the company, shown to its owner.
+  rejectionReason    String?
   verifiedAt         DateTime?
   verifiedById       String?
   createdAt          DateTime           @default(now())

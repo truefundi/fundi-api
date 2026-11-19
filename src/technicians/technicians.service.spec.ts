@@ -93,6 +93,13 @@ describe('TechniciansService', () => {
           name: 'Example Company',
           verificationStatus: VerificationStatus.PENDING,
         }),
+        findUnique: jest.fn().mockResolvedValue(null),
+        update: jest.fn().mockResolvedValue({
+          id: 'company-id',
+          name: 'Example Company',
+          verificationStatus: VerificationStatus.PENDING,
+        }),
+        delete: jest.fn().mockResolvedValue({ id: 'company-id' }),
       },
       technicianCategory: {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -374,6 +381,7 @@ describe('TechniciansService', () => {
         verificationStatus: VerificationStatus.PENDING,
         availabilityStatus: TechnicianAvailability.OFFLINE,
         rejectionReason: null,
+        businessType: TechnicianBusinessType.INDIVIDUAL,
       },
     });
     expect(audit.log).toHaveBeenCalledWith(
@@ -384,6 +392,88 @@ describe('TechniciansService', () => {
       }),
       transaction,
     );
+  });
+
+  it('creates the company when a rejected technician re-applies as a company', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+
+    await service.registerMyProfile(userId, {
+      ...validRegistration(),
+      businessType: TechnicianBusinessType.COMPANY,
+      company: {
+        name: 'Example Company',
+        location: 'Kigali, Rwanda',
+        email: 'info@example.com',
+        phoneNumber: '+250788123456',
+      },
+    });
+
+    expect(transaction.company.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        technicianId: profileId,
+        name: 'Example Company',
+        verificationStatus: VerificationStatus.PENDING,
+      }),
+    });
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ businessType: TechnicianBusinessType.COMPANY }),
+      }),
+    );
+  });
+
+  it('sends a rejected company back for review with its new details', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    transaction.company.findUnique.mockResolvedValue({
+      id: 'company-id',
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+
+    await service.registerMyProfile(userId, {
+      ...validRegistration(),
+      businessType: TechnicianBusinessType.COMPANY,
+      company: {
+        name: 'Renamed Company',
+        location: 'Kigali, Rwanda',
+        email: 'Info@Example.com',
+        phoneNumber: '+250788123456',
+      },
+    });
+
+    expect(transaction.company.create).not.toHaveBeenCalled();
+    expect(transaction.company.update).toHaveBeenCalledWith({
+      where: { id: 'company-id' },
+      data: expect.objectContaining({
+        name: 'Renamed Company',
+        email: 'info@example.com',
+        verificationStatus: VerificationStatus.PENDING,
+        verifiedAt: null,
+      }),
+    });
+  });
+
+  it('removes an unapproved company when a rejected technician re-applies alone', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    transaction.company.findUnique.mockResolvedValue({
+      id: 'company-id',
+      verificationStatus: VerificationStatus.PENDING,
+    });
+
+    await service.registerMyProfile(userId, validRegistration());
+
+    expect(transaction.company.delete).toHaveBeenCalledWith({ where: { id: 'company-id' } });
   });
 
   it('reapplies even when the rejected profile was left online', async () => {

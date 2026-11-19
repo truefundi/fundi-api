@@ -161,6 +161,8 @@ export class TechniciansService {
               existing,
               profileDto,
               userId,
+              businessType,
+              company,
             );
           }
           throw new ConflictException(
@@ -217,6 +219,8 @@ export class TechniciansService {
     existing: { id: string; nationalIdEncrypted: string | null },
     dto: UpdateTechnicianProfileDto,
     userId: string,
+    businessType: TechnicianBusinessType,
+    company?: CompanyDetailsDto,
   ) {
     this.assertRequiredProfileFieldsForCreate(dto, {
       nationalIdOnFile: !!existing.nationalIdEncrypted,
@@ -241,8 +245,16 @@ export class TechniciansService {
         verificationStatus: VerificationStatus.PENDING,
         availabilityStatus: TechnicianAvailability.OFFLINE,
         rejectionReason: null,
+        businessType,
       },
     });
+    await this.syncResubmittedCompany(
+      tx,
+      existing.id,
+      businessType,
+      company,
+      userId,
+    );
     await this.audit.log(
       {
         entityType: 'TechnicianProfile',
@@ -336,6 +348,72 @@ export class TechniciansService {
       );
     }
     return businessType;
+  }
+
+  /**
+   * A rejected applicant re-applying may change how they work. A company in
+   * the new application is created, or its details replaced and sent back for
+   * review; applying as an individual removes a company that was never approved.
+   */
+  private async syncResubmittedCompany(
+    tx: Prisma.TransactionClient,
+    technicianId: string,
+    businessType: TechnicianBusinessType,
+    details: CompanyDetailsDto | undefined,
+    actorId: string,
+  ) {
+    const current = await tx.company.findUnique({ where: { technicianId } });
+    if (businessType === TechnicianBusinessType.COMPANY && details) {
+      if (!current) {
+        await this.createRegisteredCompany(tx, technicianId, details, actorId);
+        return;
+      }
+      const updated = await tx.company.update({
+        where: { id: current.id },
+        data: {
+          name: details.name.trim(),
+          location: details.location.trim(),
+          email: details.email.trim().toLowerCase(),
+          phoneNumber: details.phoneNumber,
+          description: details.description?.trim() || null,
+          verificationStatus: VerificationStatus.PENDING,
+          rejectionReason: null,
+          verifiedAt: null,
+          verifiedById: null,
+        },
+      });
+      await this.audit.log(
+        {
+          entityType: 'Company',
+          entityId: updated.id,
+          action: 'RESUBMITTED',
+          actorId,
+          fromStatus: current.verificationStatus,
+          toStatus: VerificationStatus.PENDING,
+          metadata: { technicianId, name: updated.name },
+        },
+        tx,
+      );
+      return;
+    }
+    if (
+      businessType === TechnicianBusinessType.INDIVIDUAL &&
+      current &&
+      current.verificationStatus !== VerificationStatus.APPROVED
+    ) {
+      await tx.company.delete({ where: { id: current.id } });
+      await this.audit.log(
+        {
+          entityType: 'Company',
+          entityId: current.id,
+          action: 'REMOVED',
+          actorId,
+          fromStatus: current.verificationStatus,
+          metadata: { technicianId, reason: 'Re-applied as an individual.' },
+        },
+        tx,
+      );
+    }
   }
 
   private async createRegisteredCompany(

@@ -5,9 +5,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  ChatRoomStatus,
   ConversationMessageType,
   ConversationSender,
   ConversationStatus,
+  JobStatus,
   NotificationType,
   Prisma,
   PriceOfferStatus,
@@ -37,6 +39,7 @@ const CONVERSATION_INCLUDE = {
   job: {
     select: {
       id: true,
+      status: true,
       customerId: true,
       technicianId: true,
       description: true,
@@ -289,6 +292,8 @@ export class ConversationsService {
     const conversation = await this.find(conversationId);
     const role = this.assertParticipant(conversation, userId);
     this.assertNegotiating(conversation.status);
+    this.assertAssignmentActive(conversation);
+    await this.assertChatNotDisabled(conversation.job.id);
 
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
@@ -341,6 +346,7 @@ export class ConversationsService {
     await this.expireStaleOffers(conversationId);
     const current = await this.find(conversationId);
     this.assertNegotiating(current.status);
+    this.assertAssignmentActive(current);
 
     const pending = this.pendingOffer(current);
     if (pending && pending.amount === dto.amount) {
@@ -428,6 +434,7 @@ export class ConversationsService {
     await this.expireStaleOffers(conversationId);
     const current = await this.find(conversationId);
     this.assertNegotiating(current.status);
+    this.assertAssignmentActive(current);
 
     const offer = this.requireOffer(current, offerId);
     if (offer.status !== PriceOfferStatus.PENDING) {
@@ -526,6 +533,7 @@ export class ConversationsService {
     await this.expireStaleOffers(conversationId);
     const current = await this.find(conversationId);
     this.assertNegotiating(current.status);
+    this.assertAssignmentActive(current);
 
     const offer = this.requireOffer(current, offerId);
     if (offer.status !== PriceOfferStatus.PENDING) {
@@ -848,6 +856,42 @@ export class ConversationsService {
     }
     if (status !== ConversationStatus.NEGOTIATING) {
       throw new ConflictException('This negotiation is already closed.');
+    }
+  }
+
+  /**
+   * Negotiating needs someone to negotiate with: a technician assigned to a
+   * job that is still running. After a pull-out the job is open again and the
+   * negotiation is read-only until the next technician accepts.
+   */
+  private assertAssignmentActive(conversation: ConversationWithDetails): void {
+    const { job } = conversation;
+    if (
+      !job.technicianId ||
+      (job.status !== JobStatus.ASSIGNED && job.status !== JobStatus.PAUSED)
+    ) {
+      throw new ConflictException(
+        'This negotiation is closed: no technician is assigned to the job.',
+      );
+    }
+  }
+
+  /**
+   * Text sent here must respect the same moderation as the job chat: when an
+   * administrator disabled the current assignment's chat room, both channels
+   * are read-only.
+   */
+  private async assertChatNotDisabled(jobId: string): Promise<void> {
+    const disabled = await this.prisma.chatRoom.findFirst({
+      where: {
+        jobId,
+        status: ChatRoomStatus.DISABLED,
+        assignmentHistory: { is: { endedAt: null } },
+      },
+      select: { id: true },
+    });
+    if (disabled) {
+      throw new ConflictException('This chat has been closed.');
     }
   }
 

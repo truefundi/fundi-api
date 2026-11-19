@@ -4,9 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  ChatRoomStatus,
   ConversationMessageType,
   ConversationSender,
   ConversationStatus,
+  JobStatus,
   PriceOfferStatus,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
@@ -53,6 +55,7 @@ function buildConversation(overrides: AnyRecord = {}): AnyRecord {
     closedAt: null,
     job: {
       id: 'job1',
+      status: JobStatus.ASSIGNED,
       customerId: CUSTOMER_USER,
       technicianId: 'tech1',
       description: 'Air conditioner makes a loud noise',
@@ -140,6 +143,7 @@ function createService(initialConversation: AnyRecord | null) {
       }),
     },
     conversationMessage: { create: jest.fn().mockResolvedValue({ id: 'msg' }) },
+    chatRoom: { findFirst: jest.fn().mockResolvedValue(null) },
     priceOffer: {
       create: jest.fn().mockResolvedValue({ id: 'offer-new' }),
       update: jest.fn().mockResolvedValue({}),
@@ -277,6 +281,40 @@ describe('ConversationsService', () => {
       await expect(
         service.postMessage(CUSTOMER_USER, 'conv1', { text: 'Hello' }),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('refuses messages once nobody is assigned to the job', async () => {
+      const conversation = buildConversation();
+      conversation.job = {
+        ...conversation.job,
+        status: JobStatus.OPEN,
+        technicianId: null,
+        technician: null,
+      };
+      const { service, prisma } = createService(conversation);
+
+      await expect(
+        service.postMessage(CUSTOMER_USER, 'conv1', { text: 'Hello?' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.conversationMessage.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses messages while an administrator has disabled the chat', async () => {
+      const { service, prisma } = createService(buildConversation());
+      prisma.chatRoom.findFirst.mockResolvedValue({ id: 'room1' });
+
+      await expect(
+        service.postMessage(CUSTOMER_USER, 'conv1', { text: 'Hello' }),
+      ).rejects.toThrow('This chat has been closed.');
+      expect(prisma.chatRoom.findFirst).toHaveBeenCalledWith({
+        where: {
+          jobId: 'job1',
+          status: ChatRoomStatus.DISABLED,
+          assignmentHistory: { is: { endedAt: null } },
+        },
+        select: { id: true },
+      });
+      expect(prisma.conversationMessage.create).not.toHaveBeenCalled();
     });
   });
 
@@ -446,6 +484,17 @@ describe('ConversationsService', () => {
   });
 
   describe('createOffer', () => {
+    it('refuses offers on a completed job', async () => {
+      const conversation = buildConversation();
+      conversation.job = { ...conversation.job, status: JobStatus.COMPLETED };
+      const { service, prisma } = createService(conversation);
+
+      await expect(
+        service.createOffer(CUSTOMER_USER, 'conv1', { amount: 30000 }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.priceOffer.create).not.toHaveBeenCalled();
+    });
+
     it('supersedes the outstanding offer and records the new one', async () => {
       const conversation = buildConversation({
         offerCount: 1,

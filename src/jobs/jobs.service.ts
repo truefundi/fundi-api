@@ -4100,6 +4100,29 @@ export class JobsService {
     }
     const confirmedCooperation =
       job.cooperationStatus === JobCooperationStatus.CONFIRMED;
+    // The price negotiation belonged to this assignment: close it so nobody can
+    // keep messaging or offering into it while the job has no technician. The
+    // next technician's acceptance reopens it with fresh offer limits.
+    await tx.priceOffer.updateMany({
+      where: {
+        conversation: { is: { jobId: job.id } },
+        status: PriceOfferStatus.PENDING,
+      },
+      data: { status: PriceOfferStatus.SUPERSEDED, respondedAt: now },
+    });
+    await tx.conversation.updateMany({
+      where: {
+        jobId: job.id,
+        status: {
+          in: [ConversationStatus.PENDING, ConversationStatus.NEGOTIATING],
+        },
+      },
+      data: {
+        status: ConversationStatus.DECLINED,
+        declineReason: reason,
+        closedAt: now,
+      },
+    });
     await tx.job.update({
       where: { id: job.id },
       data: {

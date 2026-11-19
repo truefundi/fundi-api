@@ -901,6 +901,65 @@ describe('JobsService normal technician requests', () => {
   const customerId = 'customer-1';
   const technicianId = 'technician-1';
 
+  it('refuses a technician who already has another open request from this client', async () => {
+    const now = new Date();
+    const job = {
+      id: jobId,
+      customerId,
+      customerHiddenAt: null,
+      status: JobStatus.OPEN,
+      technicianId: null,
+      serviceCategoryId: 'category-1',
+      otherServiceName: null,
+      latitude: -1.95,
+      longitude: 30.06,
+      dispatchRound: 0,
+      requestType: JobRequestType.NORMAL,
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      bookingPayment: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'payment-1',
+          validUntil: new Date(now.getTime() + 60 * 60 * 1000),
+        }),
+        update: jest.fn(),
+      },
+      technicianProfile: {
+        findFirst: jest.fn().mockResolvedValue({ id: technicianId, userId: 'technician-user-1' }),
+      },
+      job: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'other-job', reference: 'FD-1126009' }),
+        updateMany: jest.fn(),
+      },
+      jobOffer: { create: jest.fn(), updateMany: jest.fn() },
+    };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue(job) },
+      $queryRaw: jest.fn().mockResolvedValue([
+        { technicianId, distanceMeters: 500, rejectionCount: 0, cancellationCount: 0 },
+      ]),
+      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) => work(tx)),
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      { log: jest.fn().mockResolvedValue(undefined) } as never,
+      { notifyTechnician: jest.fn() } as never,
+      { create: jest.fn() } as never,
+      { add: jest.fn() } as never,
+      undefined as never,
+    );
+
+    await expect(
+      service.proposeTechnician(customerId, jobId, { technicianId }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ existingJobId: 'other-job' }),
+    });
+    expect(tx.job.updateMany).not.toHaveBeenCalled();
+    expect(tx.jobOffer.create).not.toHaveBeenCalled();
+  });
+
   it('schedules a normal technician request to expire after two minutes', async () => {
     const now = new Date();
     const job = {
@@ -932,6 +991,7 @@ describe('JobsService normal technician requests', () => {
         }),
       },
       job: {
+        findFirst: jest.fn().mockResolvedValue(null),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       jobOffer: {

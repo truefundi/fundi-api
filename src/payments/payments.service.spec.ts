@@ -76,6 +76,7 @@ describe('PaymentsService mock booking payments', () => {
       $queryRaw: jest.fn().mockResolvedValue([]),
       bookingPayment: { create: paymentCreate },
       paymentClaim: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: claimCreate,
         findMany: claimFindMany,
         findUnique: claimFindUnique,
@@ -689,6 +690,33 @@ describe('PaymentsService mock booking payments', () => {
       expect.objectContaining({ action: 'SUBMITTED' }),
       tx,
     );
+  });
+
+  it('returns the claim already waiting instead of queueing the same payment twice', async () => {
+    const { service, claimCreate, tx } = createService();
+    (tx.paymentClaim.findFirst as jest.Mock).mockResolvedValue({ id: 'claim-waiting' });
+
+    await expect(
+      service.submitPaymentClaim('customer-1', {
+        serviceCategoryId: 'category-1',
+        amount: 1000,
+        paymentMethod: PaymentClaimMethod.MTN,
+        paymentNumber: '+250788123456',
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ existingClaimId: 'claim-waiting' }),
+    });
+    expect(tx.paymentClaim.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        customerId: 'customer-1',
+        serviceCategoryId: 'category-1',
+        paymentMethod: PaymentClaimMethod.MTN,
+        paymentNumber: '+250788123456',
+        status: PaymentClaimStatus.PENDING,
+      }),
+      select: { id: true },
+    });
+    expect(claimCreate).not.toHaveBeenCalled();
   });
 
   it('rejects a claim amount that differs from the current customer total', async () => {

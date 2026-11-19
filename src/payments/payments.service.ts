@@ -181,6 +181,26 @@ export class PaymentsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // Reporting the same payment twice (a retry or a double tap) returns the
+      // claim already waiting for review instead of queueing a second one.
+      const pending = await tx.paymentClaim.findFirst({
+        where: {
+          customerId,
+          serviceCategoryId: category.id,
+          requestType,
+          paymentMethod: dto.paymentMethod,
+          paymentNumber: dto.paymentNumber,
+          status: PaymentClaimStatus.PENDING,
+        },
+        select: { id: true },
+      });
+      if (pending) {
+        throw new ConflictException({
+          message:
+            'You already reported this payment. Fundi is checking it; you will be notified once it is confirmed.',
+          existingClaimId: pending.id,
+        });
+      }
       const claim = await tx.paymentClaim.create({
         data: {
           customerId,

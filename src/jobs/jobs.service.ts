@@ -465,6 +465,31 @@ export class JobsService {
             'A priced service category is required for booking payments.',
           );
         }
+        // A request is created once. Sending the same request again (a retry, a
+        // double tap, a second copy on the phone) must not open a second job.
+        const duplicate = await tx.job.findFirst({
+          where: {
+            customerId,
+            customerHiddenAt: null,
+            requestType,
+            serviceCategoryId: selection.serviceCategoryId,
+            status: {
+              in: [JobStatus.OPEN, JobStatus.ASSIGNED, JobStatus.PAUSED],
+            },
+            description: { equals: dto.description.trim(), mode: 'insensitive' },
+            locationAddress: {
+              equals: dto.locationAddress.trim(),
+              mode: 'insensitive',
+            },
+          },
+          select: { id: true, reference: true },
+        });
+        if (duplicate) {
+          throw new ConflictException({
+            message: `You already have this request open (${duplicate.reference}). Continue it instead of sending it again.`,
+            existingJobId: duplicate.id,
+          });
+        }
         const now = new Date();
         const payment = await tx.bookingPayment.findFirst({
           where: {
@@ -1058,6 +1083,37 @@ export class JobsService {
         throw new ConflictException(
           'The selected technician is no longer available.',
         );
+      }
+      // The same technician must not receive a second request from this client
+      // while the first is still waiting for them or being worked on.
+      const alreadyWithTechnician = await tx.job.findFirst({
+        where: {
+          id: { not: jobId },
+          customerId,
+          customerHiddenAt: null,
+          status: {
+            in: [JobStatus.OPEN, JobStatus.ASSIGNED, JobStatus.PAUSED],
+          },
+          OR: [
+            { technicianId: selectedTechnician.id },
+            {
+              offers: {
+                some: {
+                  technicianId: selectedTechnician.id,
+                  status: JobOfferStatus.OFFERED,
+                  expiresAt: { gt: now },
+                },
+              },
+            },
+          ],
+        },
+        select: { id: true, reference: true },
+      });
+      if (alreadyWithTechnician) {
+        throw new ConflictException({
+          message: `This technician already has your request ${alreadyWithTechnician.reference}. Continue that request instead.`,
+          existingJobId: alreadyWithTechnician.id,
+        });
       }
       if (job.requestType === JobRequestType.SOS) {
         await tx.jobOffer.updateMany({

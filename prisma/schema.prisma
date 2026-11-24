@@ -483,6 +483,8 @@ model Ad {
   imageContentType String?
   imageAlt         String?
   callToAction     String?
+  /// Where tapping the ad leads (the advertiser's https page).
+  targetUrl        String?
   badge            AdBadge     @default(LIVE)
   placement        AdPlacement @default(LANDING_PRODUCT)
   audience         AdAudience  @default(ALL)

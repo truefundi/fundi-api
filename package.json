@@ -25,6 +25,7 @@
     "prisma:seed-test-data": "ts-node prisma/seed-test-data.ts",
     "prisma:seed-journey": "ts-node prisma/seed-journey.ts",
     "prisma:seed-empty-tables": "ts-node prisma/seed-empty-tables.ts",
+    "prisma:seed-ads": "ts-node prisma/seed-ads.ts",
     "prisma:studio": "prisma studio"
   },
   "dependencies": {

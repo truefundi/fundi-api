@@ -20,6 +20,7 @@ const baseAd: Ad = {
   imageContentType: null,
   imageAlt: null,
   callToAction: null,
+  targetUrl: null,
   badge: AdBadge.LIVE,
   placement: AdPlacement.LANDING_PRODUCT,
   audience: AdAudience.ALL,

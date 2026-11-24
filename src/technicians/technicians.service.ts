@@ -93,12 +93,27 @@ export interface TechnicianResponse {
     longitude: number | null;
   };
   profilePictureUrl: string | null;
+  /** From customers' ratings and finished jobs; never estimated. */
+  stats: TechnicianStats;
   paymentMethod: string | null;
   paymentNumber: string | null;
   nationalIdNumber?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface TechnicianStats {
+  /** Mean of every rating score (1-5), one decimal; null until the first rating. */
+  averageRating: number | null;
+  ratingCount: number;
+  jobsCompleted: number;
+}
+
+const NO_STATS: TechnicianStats = {
+  averageRating: null,
+  ratingCount: 0,
+  jobsCompleted: 0,
+};
 
 // Envelope shared by every technician list endpoint: one page of profiles
 // plus pagination metadata — the same shape GET /users returns.
@@ -852,8 +867,9 @@ export class TechniciansService {
         take: limit,
       }),
     ]);
+    const stats = await this.loadStats(profiles.map((p) => p.id));
     const data = await Promise.all(
-      profiles.map((p) => this.toResponse(p, viewer)),
+      profiles.map((p) => this.toResponse(p, viewer, stats.get(p.id))),
     );
     return {
       data,
@@ -1480,10 +1496,62 @@ export class TechniciansService {
     return this.storage.getDownloadUrl(profile.profilePictureObjectKey);
   }
 
+  /** Ratings and completed jobs per technician, for a page of profiles at once. */
+  private async loadStats(
+    profileIds: string[],
+  ): Promise<Map<string, TechnicianStats>> {
+    const stats = new Map<string, TechnicianStats>();
+    if (!profileIds.length) return stats;
+    const [ratings, completed] = await Promise.all([
+      this.prisma.$queryRaw<
+        Array<{
+          technicianId: string;
+          ratingCount: number;
+          averageScore: number | null;
+        }>
+      >`
+        SELECT jr."technicianId",
+               COUNT(DISTINCT jr."id")::int AS "ratingCount",
+               AVG(rr."score")::float AS "averageScore"
+        FROM "job_ratings" jr
+        LEFT JOIN "rating_responses" rr ON rr."jobRatingId" = jr."id"
+        WHERE jr."technicianId" IN (${Prisma.join(profileIds)})
+        GROUP BY jr."technicianId"`,
+      this.prisma.job.groupBy({
+        by: ['technicianId'],
+        where: {
+          technicianId: { in: profileIds },
+          status: JobStatus.COMPLETED,
+        },
+        _count: { _all: true },
+      }),
+    ]);
+    for (const id of profileIds) stats.set(id, { ...NO_STATS });
+    for (const row of ratings) {
+      const entry = stats.get(row.technicianId);
+      if (!entry) continue;
+      entry.ratingCount = Number(row.ratingCount);
+      entry.averageRating =
+        row.averageScore === null
+          ? null
+          : Math.round(Number(row.averageScore) * 10) / 10;
+    }
+    for (const row of completed) {
+      const entry = row.technicianId ? stats.get(row.technicianId) : undefined;
+      if (entry) entry.jobsCompleted = row._count._all;
+    }
+    return stats;
+  }
+
   private async toResponse(
     profile: ProfileWithDetails,
     viewer: Viewer,
+    knownStats?: TechnicianStats,
   ): Promise<TechnicianResponse> {
+    const stats =
+      knownStats ??
+      (await this.loadStats([profile.id])).get(profile.id) ??
+      NO_STATS;
     const isOwner = viewer === 'owner';
     const isAdmin = viewer === 'admin';
 
@@ -1531,6 +1599,7 @@ export class TechniciansService {
           longitude: profile.baseLongitude,
         },
         profilePictureUrl,
+        stats,
         paymentMethod: profile.paymentMethod,
         paymentNumber: profile.paymentNumber,
         createdAt: profile.createdAt,
@@ -1565,6 +1634,7 @@ export class TechniciansService {
           longitude: profile.baseLongitude,
         },
         profilePictureUrl,
+        stats,
         paymentMethod: null,
         paymentNumber: null,
         createdAt: profile.createdAt,
@@ -1599,6 +1669,7 @@ export class TechniciansService {
         longitude: profile.baseLongitude,
       },
       profilePictureUrl,
+      stats,
       paymentMethod: null,
       paymentNumber: null,
       createdAt: profile.createdAt,

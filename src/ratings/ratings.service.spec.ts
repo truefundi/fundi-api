@@ -115,6 +115,7 @@ describe('RatingsService', () => {
           id: technicianId,
           user: { fullName: 'Technician One' },
         }),
+        findFirst: jest.fn().mockResolvedValue({ id: technicianId }),
       },
       ratingResponse: {
         aggregate: jest.fn().mockResolvedValue({
@@ -402,5 +403,44 @@ describe('RatingsService', () => {
       { itemId: item1.id, item: item1.name, score: 5 },
       { itemId: item2.id, item: item2.name, score: 4 },
     ]);
+  });
+
+  it('shows public reviews with the reviewer first name and initial only', async () => {
+    const { service, prisma } = setup();
+    prisma.jobRating.findMany.mockResolvedValueOnce([
+      {
+        id: 'rating-public',
+        comment: 'Quick and tidy.',
+        submittedAt: new Date('2026-11-20T10:00:00Z'),
+        customer: { fullName: 'Alice Mukamana Uwimana' },
+        responses: [{ score: 5 }, { score: 4 }],
+        job: { serviceCategory: { name: 'Plumbing' } },
+      },
+    ]);
+    const result = await service.listPublicTechnicianReviews(technicianId, {});
+    expect(result.summary).toEqual({ ratingCount: 1, averageScore: 4.5 });
+    expect(result.data).toEqual([
+      {
+        id: 'rating-public',
+        reviewerName: 'Alice U.',
+        score: 4.5,
+        comment: 'Quick and tidy.',
+        service: 'Plumbing',
+        submittedAt: new Date('2026-11-20T10:00:00Z'),
+      },
+    ]);
+    expect(prisma.technicianProfile.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ verificationStatus: 'APPROVED' }),
+      }),
+    );
+  });
+
+  it('has no public reviews for a technician who is not approved', async () => {
+    const { service, prisma } = setup();
+    prisma.technicianProfile.findFirst.mockResolvedValueOnce(null);
+    await expect(
+      service.listPublicTechnicianReviews(technicianId, {}),
+    ).rejects.toThrow('Technician not found.');
   });
 });

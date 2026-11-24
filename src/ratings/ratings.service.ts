@@ -5,7 +5,14 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { JobStatus, NotificationType, Prisma } from '@prisma/client';
+import {
+  JobStatus,
+  NotificationType,
+  Prisma,
+  UserRole,
+  UserStatus,
+  VerificationStatus,
+} from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import {
   DEFAULT_PAGE,
@@ -418,6 +425,81 @@ export class RatingsService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  /**
+   * What customers said about an approved technician, newest first. Shows the
+   * reviewer's first name and initial only; nothing else about them.
+   */
+  async listPublicTechnicianReviews(
+    technicianId: string,
+    query: PagedQueryDto,
+  ) {
+    const technician = await this.prisma.technicianProfile.findFirst({
+      where: {
+        id: technicianId,
+        verificationStatus: VerificationStatus.APPROVED,
+        user: { is: { status: UserStatus.ACTIVE, role: UserRole.TECHNICIAN } },
+      },
+      select: { id: true },
+    });
+    if (!technician) {
+      throw new NotFoundException('Technician not found.');
+    }
+    const page = query.page ?? DEFAULT_PAGE;
+    const limit = query.limit ?? DEFAULT_PAGE_LIMIT;
+    const where = { technicianId };
+    const [total, average, ratings] = await Promise.all([
+      this.prisma.jobRating.count({ where }),
+      this.prisma.ratingResponse.aggregate({
+        where: { jobRating: { technicianId } },
+        _avg: { score: true },
+      }),
+      this.prisma.jobRating.findMany({
+        where,
+        orderBy: { submittedAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          responses: { select: { score: true } },
+          customer: { select: { fullName: true } },
+          job: { select: { serviceCategory: { select: { name: true } } } },
+        },
+      }),
+    ]);
+    return {
+      summary: {
+        ratingCount: total,
+        averageScore: this.roundOne(average._avg.score),
+      },
+      data: ratings.map((rating) => {
+        const scores = rating.responses.map((response) => response.score);
+        return {
+          id: rating.id,
+          reviewerName: this.shortName(rating.customer.fullName),
+          score: this.roundOne(
+            scores.length
+              ? scores.reduce((sum, value) => sum + value, 0) / scores.length
+              : null,
+          ),
+          comment: rating.comment,
+          service: rating.job?.serviceCategory?.name ?? null,
+          submittedAt: rating.submittedAt,
+        };
+      }),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /** "Alice Uwimana" -> "Alice U." */
+  private shortName(fullName: string) {
+    const [first, ...rest] = fullName.trim().split(/\s+/);
+    const last = rest.pop();
+    return last ? `${first} ${last[0].toUpperCase()}.` : first || 'Customer';
+  }
+
+  private roundOne(value: number | null) {
+    return value === null ? null : Math.round(value * 10) / 10;
   }
 
   async listMyTechnicianRatings(userId: string, query: PagedQueryDto) {

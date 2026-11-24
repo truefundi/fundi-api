@@ -117,6 +117,9 @@ describe('TechniciansService', () => {
         findFirst: jest.fn().mockResolvedValue(baseProfile()),
         findUnique: jest.fn().mockResolvedValue(baseProfile()),
       },
+      // Ratings and completed jobs behind each profile's stats.
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      job: { groupBy: jest.fn().mockResolvedValue([]) },
       $transaction: jest.fn(
         (callback: (tx: typeof transaction) => Promise<unknown>) =>
           callback(transaction),
@@ -952,6 +955,29 @@ describe('TechniciansService', () => {
         }),
       }),
     );
+  });
+
+  it('shows real rating and job counts, and none for an unrated technician', async () => {
+    const { service, prisma } = createService();
+    prisma.$queryRaw.mockResolvedValueOnce([
+      { technicianId: profileId, ratingCount: 3, averageScore: 4.333 },
+    ]);
+    prisma.job.groupBy.mockResolvedValueOnce([
+      { technicianId: profileId, _count: { _all: 5 } },
+    ]);
+    const rated = await service.listAvailable({}, 'anonymous');
+    expect(rated.data[0].stats).toEqual({
+      averageRating: 4.3,
+      ratingCount: 3,
+      jobsCompleted: 5,
+    });
+
+    const unrated = await service.listAvailable({}, 'anonymous');
+    expect(unrated.data[0].stats).toEqual({
+      averageRating: null,
+      ratingCount: 0,
+      jobsCompleted: 0,
+    });
   });
 
   it('filters discovery by category when categoryId is supplied', async () => {

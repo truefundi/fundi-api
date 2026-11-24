@@ -6,6 +6,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { AdminJobRatingsController } from './admin-job-ratings.controller';
 import { AdminTechnicianRatingsController } from './admin-technician-ratings.controller';
 import { JobRatingsController } from './job-ratings.controller';
+import { PublicTechnicianReviewsController } from './public-technician-reviews.controller';
 import { RatingItemsAdminController } from './rating-items-admin.controller';
 import { RatingsService } from './ratings.service';
 import { TechnicianRatingsController } from './technician-ratings.controller';
@@ -18,6 +19,7 @@ import { TechnicianRatingsController } from './technician-ratings.controller';
     AdminJobRatingsController,
     AdminTechnicianRatingsController,
     TechnicianRatingsController,
+    PublicTechnicianReviewsController,
   ],
   providers: [RatingsService],
 })

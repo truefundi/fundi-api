@@ -77,10 +77,15 @@ export interface TechnicianResponse {
   businessType: string;
   yearsOfExperience: number;
   serviceExperiences: Array<{
+    id: string;
     categoryId: string | null;
     category: { id: string; name: string; slug: string } | null;
     customName: string | null;
     yearsOfExperience: number;
+    /** Owner and admin views only: where this service's review stands. */
+    status?: VerificationStatus;
+    reviewNote?: string | null;
+    reviewedAt?: Date | null;
   }>;
   verificationStatus: string;
   /** Why the application was rejected; owner and admin views only. */
@@ -929,7 +934,14 @@ export class TechniciansService {
     this.assertTextFiltersAreValid(dto);
     const filters: Prisma.TechnicianProfileWhereInput[] = [];
     if (dto.categoryId) {
-      filters.push({ categories: { some: { categoryId: dto.categoryId } } });
+      filters.push({
+        categories: {
+          some: {
+            categoryId: dto.categoryId,
+            status: VerificationStatus.APPROVED,
+          },
+        },
+      });
     }
     const category = dto.category?.trim();
     if (category) {
@@ -981,7 +993,14 @@ export class TechniciansService {
       filters.push({ availabilityStatus: query.availabilityStatus });
     }
     if (query.categoryId) {
-      filters.push({ categories: { some: { categoryId: query.categoryId } } });
+      filters.push({
+        categories: {
+          some: {
+            categoryId: query.categoryId,
+            status: VerificationStatus.APPROVED,
+          },
+        },
+      });
     }
     const category = query.category?.trim();
     if (category) {
@@ -1195,11 +1214,40 @@ export class TechniciansService {
     });
 
     if (dto.serviceExperiences !== undefined) {
+      // Once approved, services are added and reviewed one at a time
+      // (POST /technicians/profile/services), so approved ones are never reset.
+      if (
+        viewer === 'owner' &&
+        current.verificationStatus === VerificationStatus.APPROVED
+      ) {
+        throw new BadRequestException(
+          'Your services are reviewed one at a time now: add or change them from your services list.',
+        );
+      }
       await this.replaceServiceExperiences(
         tx,
         current.id,
         dto.serviceExperiences,
+        viewer === 'admin' &&
+          requestedVerification === VerificationStatus.APPROVED
+          ? { status: VerificationStatus.APPROVED, reviewedById: actorId }
+          : undefined,
       );
+    }
+    if (
+      viewer === 'admin' &&
+      requestedVerification === VerificationStatus.APPROVED &&
+      current.verificationStatus !== VerificationStatus.APPROVED
+    ) {
+      await tx.technicianCategory.updateMany({
+        where: { technicianId: current.id, status: VerificationStatus.PENDING },
+        data: {
+          status: VerificationStatus.APPROVED,
+          reviewNote: null,
+          reviewedById: actorId,
+          reviewedAt: new Date(),
+        },
+      });
     }
     await this.writePostgisLocation(tx, current.id, dto, clearCoordinates);
     await this.audit.log(
@@ -1226,7 +1274,7 @@ export class TechniciansService {
    * A service typed by name that is in the catalog is saved as that catalog
    * service, so jobs for it (matched by category id) reach the technician.
    */
-  private async linkCatalogNames(
+  async linkCatalogNames(
     tx: Prisma.TransactionClient,
     items: ServiceExperienceDto[],
   ): Promise<ServiceExperienceDto[]> {
@@ -1257,6 +1305,8 @@ export class TechniciansService {
     tx: Prisma.TransactionClient,
     profileId: string,
     requested: ServiceExperienceDto[],
+    /** Admin edits of an approved profile save the services as approved. */
+    review?: { status: VerificationStatus; reviewedById: string },
   ) {
     if (requested.length > 10) {
       throw new BadRequestException(
@@ -1323,7 +1373,16 @@ export class TechniciansService {
       };
     });
 
-    await tx.technicianCategory.createMany({ data });
+    await tx.technicianCategory.createMany({
+      data: review
+        ? data.map((row) => ({
+            ...row,
+            status: review.status,
+            reviewedById: review.reviewedById,
+            reviewedAt: new Date(),
+          }))
+        : data,
+    });
   }
 
   private buildProfileCreateData(
@@ -1555,15 +1614,31 @@ export class TechniciansService {
     const isOwner = viewer === 'owner';
     const isAdmin = viewer === 'admin';
 
-    const serviceExperiences = profile.categories.map((row) => ({
+    // Customers only see services Fundi approved; the owner and admins see
+    // every service with where its review stands.
+    const shownServices =
+      isOwner || isAdmin
+        ? profile.categories
+        : profile.categories.filter(
+            (row) => row.status === VerificationStatus.APPROVED,
+          );
+    const serviceExperiences = shownServices.map((row) => ({
+      id: row.id,
       categoryId: row.categoryId,
       category: row.category,
       customName: row.customName,
       yearsOfExperience: row.yearsOfExperience,
+      ...(isOwner || isAdmin
+        ? {
+            status: row.status,
+            reviewNote: row.reviewNote,
+            reviewedAt: row.reviewedAt,
+          }
+        : {}),
     }));
 
-    const totalYearsOfExperience = profile.categories.length
-      ? Math.max(...profile.categories.map((c) => c.yearsOfExperience))
+    const totalYearsOfExperience = shownServices.length
+      ? Math.max(...shownServices.map((c) => c.yearsOfExperience))
       : 0;
 
     const profilePictureUrl = await this.profilePictureUrl(profile);

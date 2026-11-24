@@ -94,6 +94,7 @@ const JOB_INCLUDE = {
     include: {
       user: { select: { id: true, fullName: true } },
       categories: {
+        where: { status: VerificationStatus.APPROVED },
         include: {
           category: { select: { id: true, name: true, slug: true } },
         },
@@ -476,7 +477,10 @@ export class JobsService {
             status: {
               in: [JobStatus.OPEN, JobStatus.ASSIGNED, JobStatus.PAUSED],
             },
-            description: { equals: dto.description.trim(), mode: 'insensitive' },
+            description: {
+              equals: dto.description.trim(),
+              mode: 'insensitive',
+            },
             locationAddress: {
               equals: dto.locationAddress.trim(),
               mode: 'insensitive',
@@ -841,7 +845,12 @@ export class JobsService {
           user: {
             is: { status: UserStatus.ACTIVE, role: UserRole.TECHNICIAN },
           },
-          categories: { some: { categoryId: category.id } },
+          categories: {
+            some: {
+              categoryId: category.id,
+              status: VerificationStatus.APPROVED,
+            },
+          },
           OR: dto.locations.flatMap((location) => [
             { baseAddress: { contains: location, mode: 'insensitive' } },
             {
@@ -952,6 +961,7 @@ export class JobsService {
       include: {
         user: { select: { fullName: true } },
         categories: {
+          where: { status: VerificationStatus.APPROVED },
           include: {
             category: { select: { id: true, name: true, slug: true } },
           },
@@ -3706,6 +3716,7 @@ export class JobsService {
         AND tp."baseLocation" IS NOT NULL
         AND u."status" = 'ACTIVE'
         AND u."role" = 'TECHNICIAN'
+        AND tc."status" = 'APPROVED'
         AND (tc."categoryId" IS NULL OR sc."isActive" = TRUE)
         AND ST_DWithin(
           tp."baseLocation",

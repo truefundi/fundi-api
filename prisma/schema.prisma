@@ -227,11 +227,20 @@ model TechnicianCategory {
   customNameNormalized String            @default("")
   id                   String            @id @default(uuid())
   yearsOfExperience    Int
+  /// Each service is reviewed on its own: only APPROVED services get jobs.
+  status               VerificationStatus @default(PENDING)
+  /// The admin's reason when the service was rejected; cleared on resubmit.
+  reviewNote           String?
+  reviewedById         String?
+  reviewedAt           DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @default(now()) @updatedAt
   category             ServiceCategory?  @relation(fields: [categoryId], references: [id])
   technician           TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([categoryId])
   @@index([technicianId])
+  @@index([status, createdAt])
   @@map("technician_categories")
 }
 

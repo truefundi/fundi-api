@@ -104,6 +104,7 @@ describe('TechniciansService', () => {
       technicianCategory: {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
         createMany: jest.fn().mockResolvedValue({ count: 1 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
     };
     const prisma = {
@@ -980,13 +981,50 @@ describe('TechniciansService', () => {
     });
   });
 
+  it('approves the services waiting with an application when it is approved', async () => {
+    const { service, transaction } = createService();
+    await service.setVerificationStatus(
+      profileId,
+      VerificationStatus.APPROVED,
+      'admin-1',
+    );
+    expect(transaction.technicianCategory.updateMany).toHaveBeenCalledWith({
+      where: { technicianId: profileId, status: VerificationStatus.PENDING },
+      data: expect.objectContaining({
+        status: VerificationStatus.APPROVED,
+        reviewedById: 'admin-1',
+      }),
+    });
+  });
+
+  it('keeps an approved technician from replacing their services in one go', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUniqueOrThrow.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.APPROVED,
+    });
+    await expect(
+      service.updateMyProfile(userId, {
+        serviceExperiences: [{ categoryId, yearsOfExperience: 2 }],
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.technicianCategory.deleteMany).not.toHaveBeenCalled();
+  });
+
   it('filters discovery by category when categoryId is supplied', async () => {
     const { service, prisma } = createService();
     await service.listAvailable({ categoryId }, 'authenticated');
     expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          AND: [{ categories: { some: { categoryId } } }],
+          // Only services an admin approved get a technician found.
+          AND: [
+            {
+              categories: {
+                some: { categoryId, status: VerificationStatus.APPROVED },
+              },
+            },
+          ],
         }),
       }),
     );

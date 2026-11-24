@@ -421,7 +421,9 @@ describe('TechniciansService', () => {
     });
     expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ businessType: TechnicianBusinessType.COMPANY }),
+        data: expect.objectContaining({
+          businessType: TechnicianBusinessType.COMPANY,
+        }),
       }),
     );
   });
@@ -473,7 +475,9 @@ describe('TechniciansService', () => {
 
     await service.registerMyProfile(userId, validRegistration());
 
-    expect(transaction.company.delete).toHaveBeenCalledWith({ where: { id: 'company-id' } });
+    expect(transaction.company.delete).toHaveBeenCalledWith({
+      where: { id: 'company-id' },
+    });
   });
 
   it('reapplies even when the rejected profile was left online', async () => {
@@ -642,6 +646,47 @@ describe('TechniciansService', () => {
         },
       ],
     });
+  });
+
+  it('saves a typed catalog service name as that catalog service', async () => {
+    const { service, transaction } = createService();
+    transaction.$queryRaw
+      .mockReset()
+      .mockResolvedValueOnce([{ id: profileId }])
+      .mockResolvedValueOnce([{ id: categoryId, key: 'plumbing' }])
+      .mockResolvedValueOnce([{ id: categoryId }]);
+    await service.updateMyProfile(userId, {
+      serviceExperiences: [{ customName: ' Plumbing ', yearsOfExperience: 4 }],
+    });
+    expect(transaction.technicianCategory.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          technicianId: profileId,
+          categoryId,
+          customName: null,
+          customNameNormalized: '',
+          yearsOfExperience: 4,
+        },
+      ],
+    });
+  });
+
+  it('reports a service listed by id and by name as a duplicate', async () => {
+    const { service, transaction } = createService();
+    transaction.$queryRaw
+      .mockReset()
+      .mockResolvedValueOnce([{ id: profileId }])
+      .mockResolvedValueOnce([{ id: categoryId, key: 'plumbing' }])
+      .mockResolvedValueOnce([{ id: categoryId }]);
+    await expect(
+      service.updateMyProfile(userId, {
+        serviceExperiences: [
+          { categoryId, yearsOfExperience: 4 },
+          { customName: 'plumbing', yearsOfExperience: 2 },
+        ],
+      }),
+    ).rejects.toThrow('Duplicate service category');
+    expect(transaction.technicianCategory.createMany).not.toHaveBeenCalled();
   });
 
   it('rejects duplicate custom names in the same request', async () => {

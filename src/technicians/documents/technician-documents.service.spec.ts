@@ -72,6 +72,9 @@ describe('TechnicianDocumentsService', () => {
           .mockResolvedValue(null),
         count: jest.fn().mockResolvedValue(0),
       },
+      serviceCategory: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
       $transaction: jest.fn(
         (callback: (tx: typeof transaction) => Promise<unknown>) =>
           callback(transaction),
@@ -102,6 +105,51 @@ describe('TechnicianDocumentsService', () => {
     originalname: 'replacement.png',
     size: 8,
   };
+
+  describe('certificate service', () => {
+    const resolve = (
+      service: TechnicianDocumentsService,
+      customCategoryName: string,
+    ) =>
+      (
+        service as unknown as {
+          resolveCertificateCategory: (dto: object) => Promise<unknown>;
+        }
+      ).resolveCertificateCategory({
+        type: 'CERTIFICATE',
+        title: 'Certificate 1',
+        certificateType: 'TVET_CERTIFICATE',
+        customCategoryName,
+      });
+
+    it('links a typed catalog service name to that service', async () => {
+      const { service, prisma } = createService();
+      prisma.serviceCategory.findFirst.mockResolvedValue({
+        id: 'cat-plumbing',
+      });
+      await expect(resolve(service, ' plumbing ')).resolves.toEqual({
+        categoryId: 'cat-plumbing',
+        customCategoryName: null,
+        customCategoryNormalized: null,
+      });
+      expect(prisma.serviceCategory.findFirst).toHaveBeenCalledWith({
+        where: {
+          isActive: true,
+          name: { equals: 'plumbing', mode: 'insensitive' },
+        },
+        select: { id: true },
+      });
+    });
+
+    it('keeps a name that is not in the catalog', async () => {
+      const { service } = createService();
+      await expect(resolve(service, 'Solar Panels')).resolves.toEqual({
+        categoryId: null,
+        customCategoryName: 'Solar Panels',
+        customCategoryNormalized: 'solar panels',
+      });
+    });
+  });
 
   it('replaces a denied document and resubmits the same record', async () => {
     const { service, transaction, audit, storage } = createService();

@@ -696,6 +696,18 @@ export class TechnicianDocumentsService {
       };
     }
     const trimmed = dto.customCategoryName!.trim();
+    // A catalog service typed by name is linked to that service.
+    const named = await this.prisma.serviceCategory.findFirst({
+      where: { isActive: true, name: { equals: trimmed, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    if (named) {
+      return {
+        categoryId: named.id,
+        customCategoryName: null,
+        customCategoryNormalized: null,
+      };
+    }
     return {
       categoryId: null,
       customCategoryName: trimmed,

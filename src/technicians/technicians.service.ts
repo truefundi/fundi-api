@@ -1206,12 +1206,43 @@ export class TechniciansService {
     );
   }
 
+  /**
+   * A service typed by name that is in the catalog is saved as that catalog
+   * service, so jobs for it (matched by category id) reach the technician.
+   */
+  private async linkCatalogNames(
+    tx: Prisma.TransactionClient,
+    items: ServiceExperienceDto[],
+  ): Promise<ServiceExperienceDto[]> {
+    const names = [
+      ...new Set(
+        items
+          .filter((item) => !item.categoryId && item.customName?.trim())
+          .map((item) => item.customName!.trim().toLowerCase()),
+      ),
+    ];
+    if (!names.length) return items;
+    const rows = await tx.$queryRaw<Array<{ id: string; key: string }>>`
+      SELECT "id", LOWER(BTRIM("name")) AS "key" FROM "service_categories"
+      WHERE "isActive" = TRUE AND LOWER(BTRIM("name")) IN (${Prisma.join(names)})`;
+    const byName = new Map(rows.map((row) => [row.key, row.id]));
+    return items.map((item) => {
+      const id =
+        !item.categoryId && item.customName
+          ? byName.get(item.customName.trim().toLowerCase())
+          : undefined;
+      return id
+        ? { categoryId: id, yearsOfExperience: item.yearsOfExperience }
+        : item;
+    });
+  }
+
   private async replaceServiceExperiences(
     tx: Prisma.TransactionClient,
     profileId: string,
-    items: ServiceExperienceDto[],
+    requested: ServiceExperienceDto[],
   ) {
-    if (items.length > 10) {
+    if (requested.length > 10) {
       throw new BadRequestException(
         'A technician can list at most 10 services.',
       );
@@ -1220,11 +1251,15 @@ export class TechniciansService {
     await tx.technicianCategory.deleteMany({
       where: { technicianId: profileId },
     });
-    if (!items.length) return;
+    if (!requested.length) return;
 
-    const realCategoryIds = items
-      .map((i) => i.categoryId)
-      .filter((id): id is string => !!id);
+    const items = await this.linkCatalogNames(tx, requested);
+    // Distinct ids: a repeated service is reported as a duplicate below.
+    const realCategoryIds = [
+      ...new Set(
+        items.map((i) => i.categoryId).filter((id): id is string => !!id),
+      ),
+    ];
 
     if (realCategoryIds.length) {
       const rows = await tx.$queryRaw<Array<{ id: string }>>`

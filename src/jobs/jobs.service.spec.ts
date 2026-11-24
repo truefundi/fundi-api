@@ -754,6 +754,153 @@ describe('JobsService automatic re-routing', () => {
 });
 
 describe('JobsService SOS technician dispatch', () => {
+  describe('SOS retry rounds', () => {
+    const roundStart = new Date('2026-11-25T10:00:00Z');
+    const setup = (
+      offers: Array<{ technicianId: string; status: string; offeredAt: Date }>,
+    ) => {
+      const job = {
+        id: 'sos-round-job',
+        customerId: 'customer-1',
+        serviceCategoryId: 'category-1',
+        otherServiceName: null,
+        requestType: JobRequestType.SOS,
+        status: JobStatus.OPEN,
+        technicianId: null,
+        dispatchStatus: JobDispatchStatus.EXHAUSTED,
+        dispatchRound: 4,
+        latitude: -1.95,
+        longitude: 30.06,
+        customerHiddenAt: null,
+        sosRoundStartedAt: roundStart,
+      };
+      const tx = {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        job: {
+          findUnique: jest.fn().mockResolvedValue(job),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          update: jest.fn().mockResolvedValue(job),
+        },
+        bookingPayment: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'payment-1',
+            status: BookingPaymentStatus.VALID,
+            validUntil: new Date(Date.now() + 60_000),
+          }),
+          update: jest.fn(),
+        },
+        jobOffer: {
+          findMany: jest.fn().mockResolvedValue(offers),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          create: jest.fn().mockImplementation(({ data }) =>
+            Promise.resolve({
+              id: 'offer-5',
+              jobId: job.id,
+              round: 5,
+              matchScore: 90,
+              distanceMeters: 500,
+              expiresAt: data.expiresAt,
+              technician: { userId: 'technician-user' },
+              job: {
+                priority: 'URGENT',
+                description: 'Locked out of the house.',
+                locationAddress: 'Kigali',
+                offeredAmount: 5_000,
+                currency: 'RWF',
+                otherServiceName: null,
+                serviceCategory: { name: 'Locksmith' },
+                customer: { id: 'customer-1', fullName: 'Aline Uwase' },
+              },
+            }),
+          ),
+        },
+        technicianProfile: {
+          findFirst: jest.fn(({ where }: { where: { id: string } }) =>
+            Promise.resolve({ id: where.id, userId: `${where.id}-user` }),
+          ),
+        },
+      };
+      const prisma = {
+        job: {
+          findUnique: jest.fn().mockResolvedValue(job),
+          update: jest.fn().mockResolvedValue(job),
+        },
+        jobOffer: {},
+        $queryRaw: jest.fn().mockResolvedValue([
+          {
+            technicianId: 'declined',
+            matchScore: 99,
+            distanceMeters: 100,
+            rejectionCount: 0,
+            cancellationCount: 0,
+          },
+          {
+            technicianId: 'missed',
+            matchScore: 95,
+            distanceMeters: 300,
+            rejectionCount: 0,
+            cancellationCount: 0,
+          },
+        ]),
+        $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+          work(tx),
+        ),
+      };
+      const service = new JobsService(
+        prisma as unknown as PrismaService,
+        undefined as never,
+        { log: jest.fn().mockResolvedValue(undefined) } as never,
+        { notifyTechnician: jest.fn() } as never,
+        undefined as never,
+        { add: jest.fn().mockResolvedValue(undefined) } as never,
+        undefined as never,
+      );
+      jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as never);
+      return { service, prisma, tx, job };
+    };
+
+    it('starts a new round on retry and asks a technician who only missed an earlier offer', async () => {
+      const earlier = new Date(roundStart.getTime() - 60_000);
+      const { service, prisma, tx, job } = setup([
+        { technicianId: 'declined', status: 'REJECTED', offeredAt: earlier },
+        { technicianId: 'missed', status: 'EXPIRED', offeredAt: earlier },
+      ]);
+
+      await service.retryDispatch('customer-1', job.id);
+
+      expect(prisma.job.update).toHaveBeenCalledWith({
+        where: { id: job.id },
+        data: { sosRoundStartedAt: expect.any(Date) },
+      });
+      // The one who declined is never asked again; the one who missed is.
+      expect(tx.jobOffer.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ technicianId: 'missed' }),
+        }),
+      );
+    });
+
+    it('does not ask anyone twice within the same round', async () => {
+      const later = new Date(roundStart.getTime() + 60_000);
+      const { service, tx, job } = setup([
+        { technicianId: 'declined', status: 'REJECTED', offeredAt: later },
+        { technicianId: 'missed', status: 'EXPIRED', offeredAt: later },
+      ]);
+      // Dispatch inside the round (no new retry): still exhausted.
+      await (
+        service as unknown as {
+          dispatchNextSosTechnician: (id: string) => Promise<void>;
+        }
+      ).dispatchNextSosTechnician(job.id);
+      expect(tx.jobOffer.create).not.toHaveBeenCalled();
+      expect(tx.job.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { dispatchStatus: JobDispatchStatus.EXHAUSTED },
+        }),
+      );
+    });
+  });
+
   it('offers the next best match and does not rotate to a technician already offered automatically', async () => {
     const job = {
       id: 'sos-job-1',
@@ -817,7 +964,10 @@ describe('JobsService SOS technician dispatch', () => {
       },
     };
     const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue(job) },
+      job: {
+        findUnique: jest.fn().mockResolvedValue(job),
+        update: jest.fn().mockResolvedValue(job),
+      },
       jobOffer: {},
       $queryRaw: jest.fn().mockResolvedValue([
         {
@@ -926,20 +1076,33 @@ describe('JobsService normal technician requests', () => {
         update: jest.fn(),
       },
       technicianProfile: {
-        findFirst: jest.fn().mockResolvedValue({ id: technicianId, userId: 'technician-user-1' }),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: technicianId, userId: 'technician-user-1' }),
       },
       job: {
-        findFirst: jest.fn().mockResolvedValue({ id: 'other-job', reference: 'FD-1126009' }),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'other-job', reference: 'FD-1126009' }),
         updateMany: jest.fn(),
       },
       jobOffer: { create: jest.fn(), updateMany: jest.fn() },
     };
     const prisma = {
       job: { findUnique: jest.fn().mockResolvedValue(job) },
-      $queryRaw: jest.fn().mockResolvedValue([
-        { technicianId, distanceMeters: 500, rejectionCount: 0, cancellationCount: 0 },
-      ]),
-      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) => work(tx)),
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValue([
+          {
+            technicianId,
+            distanceMeters: 500,
+            rejectionCount: 0,
+            cancellationCount: 0,
+          },
+        ]),
+      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+        work(tx),
+      ),
     };
     const service = new JobsService(
       prisma as unknown as PrismaService,

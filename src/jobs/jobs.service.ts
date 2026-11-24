@@ -1649,6 +1649,17 @@ export class JobsService {
     this.assertCustomerOwnsJob(job, customerId);
     this.assertEditable(job);
     if (job.requestType === JobRequestType.SOS) {
+      // Everyone was asked and nobody accepted: start a new round.
+      if (
+        job.status === JobStatus.OPEN &&
+        !job.technicianId &&
+        job.dispatchStatus === JobDispatchStatus.EXHAUSTED
+      ) {
+        await this.prisma.job.update({
+          where: { id: jobId },
+          data: { sosRoundStartedAt: new Date() },
+        });
+      }
       await this.dispatchNextSosTechnician(jobId);
       return this.getCustomerJob(customerId, jobId);
     }
@@ -3516,10 +3527,23 @@ export class JobsService {
 
       const previousOffers = await tx.jobOffer.findMany({
         where: { jobId },
-        select: { technicianId: true },
+        select: { technicianId: true, status: true, offeredAt: true },
       });
+      // Within a round nobody is asked twice. A technician who declined or
+      // dropped the job is never asked again; one who only let an offer from
+      // an earlier round expire can be asked again after the customer retries.
+      const roundStart = current.sosRoundStartedAt;
       const previouslyOffered = new Set(
-        previousOffers.map((previous) => previous.technicianId),
+        previousOffers
+          .filter(
+            (previous) =>
+              !roundStart ||
+              previous.status === JobOfferStatus.REJECTED ||
+              previous.status === JobOfferStatus.DROPPED ||
+              previous.status === JobOfferStatus.ACCEPTED ||
+              (previous.offeredAt ?? roundStart) >= roundStart,
+          )
+          .map((previous) => previous.technicianId),
       );
       let candidate: MatchCandidate | undefined;
       let selectedTechnician: { id: string; userId: string } | null = null;

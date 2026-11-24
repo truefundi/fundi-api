@@ -294,6 +294,9 @@ model Job {
   cooperationStatus           JobCooperationStatus       @default(PENDING)
   dispatchStatus              JobDispatchStatus          @default(PENDING)
   dispatchRound               Int                        @default(1)
+  /// SOS: when the customer started the current round of offers. A technician
+  /// who only let an earlier offer expire may be asked again in a new round.
+  sosRoundStartedAt           DateTime?
   customerProgress            JobProgressStatus          @default(PENDING)
   technicianProgress          JobProgressStatus          @default(PENDING)
   customerConfirmedAt         DateTime?

@@ -20,6 +20,7 @@ import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { JobsService } from '../jobs/jobs.service';
+import { JobWorkStatusDto } from '../jobs/dto/job-action.dto';
 import { StorageService } from '../storage/storage.service';
 import { ChatRealtimeService } from './chat-realtime.service';
 import { CHAT_MEDIA_DOWNLOAD_TTL_SECONDS } from './chat.constants';
@@ -37,6 +38,9 @@ const CHAT_ROOM_INCLUDE = {
       technicianId: true,
       status: true,
       cooperationStatus: true,
+      workStatus: true,
+      workStatusReason: true,
+      completionConfirmationDueAt: true,
       description: true,
       serviceCategory: { select: { name: true } },
       otherServiceName: true,
@@ -740,6 +744,22 @@ export class ChatService {
     return result;
   }
 
+  async updateWorkStatus(
+    userId: string,
+    roomId: string,
+    dto: JobWorkStatusDto,
+  ) {
+    const { room, member } = await this.getCurrentMember(userId, roomId);
+    const result = await this.jobs.updateWorkStatus(
+      userId,
+      room.jobId,
+      this.side(member.role),
+      dto,
+    );
+    this.realtime.publish(roomId, 'chat:job:updated', result);
+    return result;
+  }
+
   async requestPause(userId: string, roomId: string) {
     const { room, member } = await this.getCurrentMember(userId, roomId);
     const result = await this.jobs.requestPause(
@@ -932,6 +952,9 @@ export class ChatService {
       job: {
         id: room.job.id,
         status: room.job.status,
+        workStatus: room.job.workStatus,
+        workStatusReason: room.job.workStatusReason,
+        completionConfirmationDueAt: room.job.completionConfirmationDueAt,
         cooperationStatus: room.job.cooperationStatus,
         description: room.job.description,
         service: room.job.serviceCategory?.name ?? room.job.otherServiceName,

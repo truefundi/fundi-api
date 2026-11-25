@@ -1,4 +1,4 @@
-import { JobProgressStatus } from '@prisma/client';
+import { JobProgressStatus, JobWorkStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsEnum,
@@ -11,6 +11,17 @@ import {
 export class JobProgressDto {
   @IsEnum(JobProgressStatus)
   status!: JobProgressStatus;
+}
+
+export class JobWorkStatusDto {
+  @IsEnum(JobWorkStatus)
+  status!: JobWorkStatus;
+
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MaxLength(1000)
+  reason?: string;
 }
 
 export class RejectJobOfferDto {

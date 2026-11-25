@@ -5,6 +5,8 @@ import {
   JobOfferStatus,
   JobRequestType,
   JobStatus,
+  JobWorkStatus,
+  TechnicianAvailability,
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { JOB_PIPELINE_STAGE_MAP, JobPipelineStage } from './job-pipeline';
@@ -768,104 +770,123 @@ describe('JobsService normal technician requests', () => {
   const customerId = 'customer-1';
   const technicianId = 'technician-1';
 
-  it('schedules a normal technician request to expire after two minutes', async () => {
-    const now = new Date();
-    const job = {
-      id: jobId,
-      customerId,
-      customerHiddenAt: null,
-      status: JobStatus.OPEN,
-      technicianId: null,
-      serviceCategoryId: 'category-1',
-      otherServiceName: null,
-      latitude: -1.95,
-      longitude: 30.06,
-      dispatchRound: 0,
-      requestType: JobRequestType.NORMAL,
-    };
-    const tx = {
-      $queryRaw: jest.fn().mockResolvedValue([]),
-      bookingPayment: {
-        findFirst: jest.fn().mockResolvedValue({
-          id: 'payment-1',
-          validUntil: new Date(now.getTime() + 60 * 60 * 1000),
-        }),
-        update: jest.fn(),
-      },
-      technicianProfile: {
-        findFirst: jest.fn().mockResolvedValue({
-          id: technicianId,
-          userId: 'technician-user-1',
-        }),
-      },
-      job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-      },
-      jobOffer: {
-        create: jest.fn().mockImplementation(({ data }) =>
-          Promise.resolve({
-            id: 'offer-1',
-            jobId,
-            ...data,
-            technician: { userId: 'technician-user-1' },
-            job: {
-              priority: 'NORMAL',
-              description: 'Repair a leaking pipe.',
-              locationAddress: 'Kigali',
-              offeredAmount: 20_000,
-              currency: 'RWF',
-              otherServiceName: null,
-              serviceCategory: { name: 'Plumbing' },
-            },
+  it.each([
+    {
+      availability: TechnicianAvailability.ONLINE,
+      responseTimeMs: 120_000,
+      request: 'normal',
+    },
+    {
+      availability: TechnicianAvailability.OFFLINE,
+      responseTimeMs: 7_200_000,
+      request: 'offline',
+    },
+  ])(
+    'schedules a $request technician request to expire after its response window',
+    async ({ availability, responseTimeMs }) => {
+      const now = new Date();
+      const job = {
+        id: jobId,
+        customerId,
+        customerHiddenAt: null,
+        status: JobStatus.OPEN,
+        technicianId: null,
+        serviceCategoryId: 'category-1',
+        otherServiceName: null,
+        latitude: -1.95,
+        longitude: 30.06,
+        dispatchRound: 0,
+        requestType: JobRequestType.NORMAL,
+      };
+      const tx = {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        bookingPayment: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 'payment-1',
+            validUntil: new Date(now.getTime() + 60 * 60 * 1000),
           }),
-        ),
-      },
-    };
-    const queue = { add: jest.fn().mockResolvedValue(undefined) };
-    const events = { notifyTechnician: jest.fn() };
-    const notifications = { create: jest.fn().mockResolvedValue(undefined) };
-    const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue(job) },
-      $queryRaw: jest.fn().mockResolvedValue([
-        {
-          technicianId,
-          distanceMeters: 500,
-          rejectionCount: 0,
-          cancellationCount: 0,
+          update: jest.fn(),
         },
-      ]),
-      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
-        work(tx),
-      ),
-    };
-    const service = new JobsService(
-      prisma as unknown as PrismaService,
-      undefined as never,
-      { log: jest.fn().mockResolvedValue(undefined) } as never,
-      events as never,
-      notifications as never,
-      queue as never,
-      undefined as never,
-    );
-    jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as never);
+        technicianProfile: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: technicianId,
+            userId: 'technician-user-1',
+            availabilityStatus: availability,
+          }),
+        },
+        job: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+        jobOffer: {
+          create: jest.fn().mockImplementation(({ data }) =>
+            Promise.resolve({
+              id: 'offer-1',
+              jobId,
+              ...data,
+              technician: { userId: 'technician-user-1' },
+              job: {
+                priority: 'NORMAL',
+                description: 'Repair a leaking pipe.',
+                locationAddress: 'Kigali',
+                offeredAmount: 20_000,
+                currency: 'RWF',
+                otherServiceName: null,
+                serviceCategory: { name: 'Plumbing' },
+              },
+            }),
+          ),
+        },
+      };
+      const queue = { add: jest.fn().mockResolvedValue(undefined) };
+      const events = { notifyTechnician: jest.fn() };
+      const notifications = { create: jest.fn().mockResolvedValue(undefined) };
+      const prisma = {
+        job: { findUnique: jest.fn().mockResolvedValue(job) },
+        $queryRaw: jest.fn().mockResolvedValue([
+          {
+            technicianId,
+            distanceMeters: 500,
+            rejectionCount: 0,
+            cancellationCount: 0,
+          },
+        ]),
+        $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+          work(tx),
+        ),
+      };
+      const service = new JobsService(
+        prisma as unknown as PrismaService,
+        undefined as never,
+        { log: jest.fn().mockResolvedValue(undefined) } as never,
+        events as never,
+        notifications as never,
+        queue as never,
+        undefined as never,
+      );
+      jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as never);
 
-    await service.proposeTechnician(customerId, jobId, {
-      technicianId,
-    });
+      const propose =
+        availability === TechnicianAvailability.OFFLINE
+          ? service.proposeOfflineTechnician.bind(service)
+          : service.proposeTechnician.bind(service);
+      await propose(customerId, jobId, { technicianId });
 
-    const offerData = tx.jobOffer.create.mock.calls[0][0].data as {
-      expiresAt: Date;
-    };
-    expect(offerData.expiresAt.getTime() - Date.now()).toBeGreaterThan(119_000);
-    expect(offerData.expiresAt.getTime() - Date.now()).toBeLessThanOrEqual(
-      120_000,
-    );
-    expect(queue.add).toHaveBeenCalledWith(
-      'expire-offer',
-      { offerId: 'offer-1' },
-      expect.objectContaining({ delay: 120_000 }),
-    );
-  });
+      const offerData = tx.jobOffer.create.mock.calls[0][0].data as {
+        expiresAt: Date;
+      };
+      expect(offerData.expiresAt.getTime() - Date.now()).toBeGreaterThan(
+        responseTimeMs - 1_000,
+      );
+      expect(offerData.expiresAt.getTime() - Date.now()).toBeLessThanOrEqual(
+        responseTimeMs,
+      );
+      expect(queue.add).toHaveBeenCalledWith(
+        'expire-offer',
+        { offerId: 'offer-1' },
+        expect.objectContaining({ delay: responseTimeMs }),
+      );
+    },
+  );
 
   it('expires a normal offer and leaves the job open for the creator to choose again', async () => {
     const offer = {
@@ -924,6 +945,111 @@ describe('JobsService normal technician requests', () => {
       }),
     );
     expect(prisma.job.findUnique).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsService shared work status', () => {
+  it('starts a ten-minute customer confirmation window when the technician completes', async () => {
+    const job = {
+      id: 'job-1',
+      customerId: 'customer-1',
+      technicianId: 'technician-1',
+      status: JobStatus.ASSIGNED,
+      cooperationStatus: JobCooperationStatus.CONFIRMED,
+      workStatus: JobWorkStatus.PENDING,
+      workStatusReason: null,
+      completionConfirmationDueAt: null,
+      completionConfirmedAt: null,
+      customerProgress: 'STARTED',
+      technicianProgress: 'STARTED',
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      job: {
+        findFirst: jest.fn().mockResolvedValue(job),
+        update: jest.fn().mockResolvedValue(job),
+      },
+    };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue(job) },
+      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+        work(tx),
+      ),
+    };
+    const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      { log: jest.fn().mockResolvedValue(undefined) } as never,
+      undefined as never,
+      undefined as never,
+      queue as never,
+      undefined as never,
+    );
+    jest
+      .spyOn(service as unknown as { toResponse: jest.Mock }, 'toResponse')
+      .mockResolvedValue({});
+
+    await service.updateWorkStatus('technician-user-1', job.id, 'technician', {
+      status: JobWorkStatus.COMPLETED,
+    });
+
+    const updated = tx.job.update.mock.calls[0][0].data;
+    expect(updated.completionConfirmationDueAt).toBeInstanceOf(Date);
+    expect(
+      updated.completionConfirmationDueAt.getTime() - Date.now(),
+    ).toBeGreaterThan(599_000);
+    expect(
+      updated.completionConfirmationDueAt.getTime() - Date.now(),
+    ).toBeLessThanOrEqual(600_000);
+    expect(queue.add).toHaveBeenCalledWith(
+      'auto-complete-job',
+      expect.objectContaining({ jobId: job.id }),
+      expect.objectContaining({ delay: 600_000 }),
+    );
+  });
+
+  it('does not auto-complete a job while a dispute is unresolved', async () => {
+    const dueAt = new Date(Date.now() - 1_000);
+    const job = {
+      id: 'job-1',
+      customerId: 'customer-1',
+      technicianId: 'technician-1',
+      status: JobStatus.ASSIGNED,
+      workStatus: JobWorkStatus.COMPLETED,
+      completionConfirmationDueAt: dueAt,
+      technician: { userId: 'technician-user-1' },
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      job: {
+        findUnique: jest.fn().mockResolvedValue(job),
+        update: jest.fn(),
+      },
+      dispute: { findFirst: jest.fn().mockResolvedValue({ id: 'dispute-1' }) },
+    };
+    const prisma = {
+      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+        work(tx),
+      ),
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      undefined as never,
+      { notifyUser: jest.fn() } as never,
+      { create: jest.fn() } as never,
+      undefined as never,
+      undefined as never,
+    );
+
+    await service.autoCompleteAfterConfirmation(job.id, dueAt.toISOString());
+
+    expect(tx.dispute.findFirst).toHaveBeenCalledWith({
+      where: { jobId: job.id, resolvedAt: null },
+      select: { id: true },
+    });
+    expect(tx.job.update).not.toHaveBeenCalled();
   });
 });
 

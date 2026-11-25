@@ -251,18 +251,12 @@ export class TechniciansService {
       (dto.company
         ? TechnicianBusinessType.COMPANY
         : TechnicianBusinessType.INDIVIDUAL);
-    if (
-      businessType === TechnicianBusinessType.COMPANY &&
-      !dto.company
-    ) {
+    if (businessType === TechnicianBusinessType.COMPANY && !dto.company) {
       throw new BadRequestException(
         'Company details are required when registering as a company owner.',
       );
     }
-    if (
-      businessType === TechnicianBusinessType.INDIVIDUAL &&
-      dto.company
-    ) {
+    if (businessType === TechnicianBusinessType.INDIVIDUAL && dto.company) {
       throw new BadRequestException(
         'Company details can only be supplied when businessType is COMPANY.',
       );
@@ -323,7 +317,7 @@ export class TechniciansService {
       const profile = await this.runSerializable(async (tx) => {
         const saved = await tx.technicianProfile.findUnique({
           where: { userId },
-          select: { id: true },
+          select: { id: true, businessType: true },
         });
         if (!saved) {
           throw new NotFoundException(
@@ -348,6 +342,94 @@ export class TechniciansService {
     availabilityStatus: TechnicianAvailability,
   ) {
     return this.updateMyProfile(userId, { availabilityStatus });
+  }
+
+  async addServiceExperience(userId: string, dto: ServiceExperienceDto) {
+    this.assertServiceExperiences([dto]);
+    try {
+      const profile = await this.runSerializable(async (tx) => {
+        const current = await tx.technicianProfile.findUnique({
+          where: { userId },
+          select: { id: true },
+        });
+        if (!current) {
+          throw new NotFoundException('Technician profile not found.');
+        }
+        await this.lockProfile(tx, current.id);
+        const existing = await tx.technicianCategory.findMany({
+          where: { technicianId: current.id },
+          select: { categoryId: true, customNameNormalized: true },
+        });
+        if (existing.length >= 10) {
+          throw new BadRequestException(
+            'A technician can list at most 10 services.',
+          );
+        }
+
+        let data: Prisma.TechnicianCategoryCreateInput;
+        if (dto.categoryId) {
+          const category = await tx.serviceCategory.findFirst({
+            where: { id: dto.categoryId, isActive: true },
+            select: { id: true },
+          });
+          if (!category) {
+            throw new BadRequestException(
+              'The selected service category is invalid or inactive.',
+            );
+          }
+          if (existing.some((item) => item.categoryId === category.id)) {
+            throw new ConflictException(
+              'This service category is already listed for the technician.',
+            );
+          }
+          data = {
+            technician: { connect: { id: current.id } },
+            category: { connect: { id: category.id } },
+            yearsOfExperience: dto.yearsOfExperience,
+            customName: null,
+            customNameNormalized: '',
+          };
+        } else {
+          const customName = dto.customName!.trim();
+          const normalized = customName.toLowerCase();
+          if (
+            existing.some((item) => item.customNameNormalized === normalized)
+          ) {
+            throw new ConflictException(
+              'This custom service is already listed for the technician.',
+            );
+          }
+          data = {
+            technician: { connect: { id: current.id } },
+            yearsOfExperience: dto.yearsOfExperience,
+            customName,
+            customNameNormalized: normalized,
+          };
+        }
+
+        await tx.technicianCategory.create({ data });
+        await this.audit.log(
+          {
+            entityType: 'TechnicianProfile',
+            entityId: current.id,
+            action: 'SERVICE_EXPERIENCE_ADDED',
+            actorId: userId,
+            metadata: {
+              categoryId: dto.categoryId ?? null,
+              customName: dto.customName?.trim() ?? null,
+            },
+          },
+          tx,
+        );
+        return tx.technicianProfile.findUniqueOrThrow({
+          where: { id: current.id },
+          include: PROFILE_INCLUDE,
+        });
+      });
+      return this.toResponse(profile, 'owner');
+    } catch (error) {
+      this.throwWriteError(error);
+    }
   }
 
   // ─── Discovery (authenticated + anonymous) ─────────────────────────────
@@ -945,16 +1027,19 @@ export class TechniciansService {
         'Only active, approved technicians can be online.',
       );
     }
-    if (nextAvailability === TechnicianAvailability.ONLINE) {
+    if (
+      nextAvailability === TechnicianAvailability.ONLINE &&
+      current.businessType === TechnicianBusinessType.INDIVIDUAL
+    ) {
       const activeJobs = await tx.job.count({
         where: {
           technicianId: current.id,
-          status: JobStatus.ASSIGNED,
+          status: { in: [JobStatus.ASSIGNED, JobStatus.PAUSED] },
         },
       });
-      if (activeJobs) {
+      if (activeJobs >= 3) {
         throw new ConflictException(
-          'A technician with an active job cannot be marked online.',
+          'A technician with three active jobs cannot go online.',
         );
       }
     }
@@ -1009,6 +1094,9 @@ export class TechniciansService {
           verificationStatus: requestedVerification,
         }),
         availabilityStatus: nextAvailability,
+        ...(dto.availabilityStatus !== undefined && {
+          capacityAutoOffline: false,
+        }),
       },
     });
 
@@ -1019,12 +1107,7 @@ export class TechniciansService {
         dto.serviceExperiences,
       );
     }
-    await this.writePostgisLocation(
-      tx,
-      current.id,
-      dto,
-      clearCoordinates,
-    );
+    await this.writePostgisLocation(tx, current.id, dto, clearCoordinates);
     await this.audit.log(
       {
         entityType: 'TechnicianProfile',
@@ -1218,10 +1301,7 @@ export class TechniciansService {
         'baseLatitude and baseLongitude must be provided together.',
       );
     }
-    if (
-      (dto.baseLatitude === null) !==
-      (dto.baseLongitude === null)
-    ) {
+    if ((dto.baseLatitude === null) !== (dto.baseLongitude === null)) {
       throw new BadRequestException(
         'Set both coordinates to null when location coordinates are unavailable.',
       );
@@ -1249,10 +1329,7 @@ export class TechniciansService {
     dto: Pick<UpdateTechnicianProfileDto, 'baseLatitude' | 'baseLongitude'>,
     clearWhenMissing = false,
   ) {
-    if (
-      dto.baseLatitude === null &&
-      dto.baseLongitude === null
-    ) {
+    if (dto.baseLatitude === null && dto.baseLongitude === null) {
       await tx.$executeRaw`
         UPDATE "technician_profiles"
         SET "baseLocation" = NULL

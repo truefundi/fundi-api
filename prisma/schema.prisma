@@ -3,6 +3,15 @@ generator client {
   previewFeatures = ["postgresqlExtensions"]
 }
 
+enum JobWorkStatus {
+  PENDING
+  HEADING_TO_LOCATION
+  ARRIVED
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+}
+
 enum TechnicianBusinessType {
   INDIVIDUAL
   COMPANY
@@ -131,6 +140,7 @@ model ServiceCategory {
   jobs              Job[]                @relation("JobServiceCategory")
   technicians       TechnicianCategory[]
   documents         TechnicianDocument[]
+  technicianDocuments TechnicianDocumentService[]
   bookingPayments   BookingPayment[]
   serviceCharges    ServiceCharge[]
   paymentClaims     PaymentClaim[]
@@ -173,6 +183,7 @@ model TechnicianProfile {
   gender                  TechnicianGender
   profilePictureMimeType  String?
   availabilityStatus      TechnicianAvailability    @default(OFFLINE)
+  capacityAutoOffline     Boolean                   @default(false)
   rejectionCount          Int                       @default(0)
   cancellationCount       Int                       @default(0)
   baseLocation            Unsupported("geography")?
@@ -209,6 +220,7 @@ model Company {
   updatedAt          DateTime           @updatedAt
   technician         TechnicianProfile  @relation(fields: [technicianId], references: [id], onDelete: Cascade)
   verifiedBy         User?              @relation("CompanyVerifiedBy", fields: [verifiedById], references: [id], onDelete: SetNull)
+  jobs               Job[]
 
   @@index([verificationStatus, createdAt])
   @@index([name])
@@ -251,6 +263,7 @@ model TechnicianDocument {
   customCategoryNormalized String?
   type                     DocumentType
   category                 ServiceCategory?  @relation(fields: [categoryId], references: [id])
+  serviceCategories         TechnicianDocumentService[]
   technician               TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([technicianId, status])
@@ -260,11 +273,24 @@ model TechnicianDocument {
   @@map("technician_documents")
 }
 
+model TechnicianDocumentService {
+  documentId        String
+  serviceCategoryId String
+  createdAt         DateTime           @default(now())
+  document          TechnicianDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  serviceCategory   ServiceCategory    @relation(fields: [serviceCategoryId], references: [id], onDelete: Cascade)
+
+  @@id([documentId, serviceCategoryId])
+  @@index([serviceCategoryId])
+  @@map("technician_document_services")
+}
+
 model Job {
   id                          String                     @id @default(uuid())
   reference                   String                     @unique
   customerId                  String
   technicianId                String?
+  companyId                   String?
   serviceCategoryId           String?
   otherServiceName            String?
   description                 String
@@ -282,6 +308,11 @@ model Job {
   dispatchRound               Int                        @default(1)
   customerProgress            JobProgressStatus          @default(PENDING)
   technicianProgress          JobProgressStatus          @default(PENDING)
+  workStatus                  JobWorkStatus             @default(PENDING)
+  workStatusReason            String?
+  completionConfirmationDueAt DateTime?
+  completionConfirmedAt       DateTime?
+  completionAutoCompletedAt   DateTime?
   customerConfirmedAt         DateTime?
   technicianConfirmedAt       DateTime?
   customerHiddenAt            DateTime?
@@ -314,6 +345,7 @@ model Job {
   customer                    User                       @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
   serviceCategory             ServiceCategory?           @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id])
   technician                  TechnicianProfile?         @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
+  company                     Company?                   @relation(fields: [companyId], references: [id], onDelete: SetNull)
   dispute                     Dispute?
   chatRooms                   ChatRoom[]
   customerRating              JobRating?
@@ -322,6 +354,7 @@ model Job {
   @@index([technicianId, status, updatedAt])
   @@index([status, dispatchStatus, priority, createdAt])
   @@index([serviceCategoryId])
+  @@index([companyId])
   @@index([customerId, customerHiddenAt, createdAt])
   @@index([technicianId, technicianHiddenAt, updatedAt])
   @@map("jobs")

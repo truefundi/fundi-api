@@ -30,6 +30,17 @@ enum PaymentClaimStatus {
   REJECTED
 }
 
+enum MobilePaymentProvider {
+  MTN
+  AIRTEL
+}
+
+enum PaymentTransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
 datasource db {
   provider   = "postgresql"
   url        = env("DATABASE_URL")
@@ -37,36 +48,37 @@ datasource db {
 }
 
 model User {
-  id                 String                      @id @default(uuid())
-  email              String?                     @unique
-  phoneNumber        String                      @unique
-  fullName           String
-  role               UserRole                    @default(CUSTOMER)
-  status             UserStatus                  @default(ACTIVE)
-  phoneVerifiedAt    DateTime?
-  createdAt          DateTime                    @default(now())
-  updatedAt          DateTime                    @updatedAt
-  passwordHash       String?
-  pinHash            String?
-  totpSecret         String?
-  totpEnabledAt      DateTime?
-  customerJobs       Job[]                       @relation("JobCustomer")
-  refreshTokens      RefreshToken[]
-  technicianProfile  TechnicianProfile?
-  bookingPayments    BookingPayment[]
-  phoneVerifications CustomerPhoneVerification[]
-  chatMemberships    ChatRoomMember[]
-  chatMessageReads   ChatMessageRead[]
-  resolvedDisputes   Dispute[]                   @relation("DisputeResolver")
-  notifications      Notification[]
-  createdAds         Ad[]                        @relation("AdCreatedBy")
-  createdBroadcasts  Broadcast[]                 @relation("BroadcastCreatedBy")
-  passkeyCredentials PasskeyCredential[]
-  submittedRatings   JobRating[]                 @relation("JobRatingSubmittedBy")
-  customerRatings    JobRating[]                 @relation("JobRatingCustomer")
-  verifiedCompanies  Company[]                   @relation("CompanyVerifiedBy")
-  paymentClaims      PaymentClaim[]              @relation("PaymentClaimCustomer")
-  reviewedClaims     PaymentClaim[]              @relation("PaymentClaimReviewer")
+  id                  String                      @id @default(uuid())
+  email               String?                     @unique
+  phoneNumber         String                      @unique
+  fullName            String
+  role                UserRole                    @default(CUSTOMER)
+  status              UserStatus                  @default(ACTIVE)
+  phoneVerifiedAt     DateTime?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  passwordHash        String?
+  pinHash             String?
+  totpSecret          String?
+  totpEnabledAt       DateTime?
+  customerJobs        Job[]                       @relation("JobCustomer")
+  refreshTokens       RefreshToken[]
+  technicianProfile   TechnicianProfile?
+  bookingPayments     BookingPayment[]
+  phoneVerifications  CustomerPhoneVerification[]
+  chatMemberships     ChatRoomMember[]
+  chatMessageReads    ChatMessageRead[]
+  resolvedDisputes    Dispute[]                   @relation("DisputeResolver")
+  notifications       Notification[]
+  createdAds          Ad[]                        @relation("AdCreatedBy")
+  createdBroadcasts   Broadcast[]                 @relation("BroadcastCreatedBy")
+  passkeyCredentials  PasskeyCredential[]
+  submittedRatings    JobRating[]                 @relation("JobRatingSubmittedBy")
+  customerRatings     JobRating[]                 @relation("JobRatingCustomer")
+  verifiedCompanies   Company[]                   @relation("CompanyVerifiedBy")
+  paymentClaims       PaymentClaim[]              @relation("PaymentClaimCustomer")
+  reviewedClaims      PaymentClaim[]              @relation("PaymentClaimReviewer")
+  paymentTransactions PaymentTransaction[]
 
   @@map("users")
 }
@@ -111,30 +123,31 @@ model CatalogCategory {
 }
 
 model ServiceCategory {
-  id                String               @id @default(uuid())
-  categoryId        String
-  name              String               @unique
-  slug              String               @unique
-  description       String               @default("")
+  id                  String               @id @default(uuid())
+  categoryId          String
+  name                String               @unique
+  slug                String               @unique
+  description         String               @default("")
   /// Optional extra words customers can use to find this service.
-  keywords          String               @default("")
+  keywords            String               @default("")
   /// Booking (visit/diagnostic) fee charged for this service, in RWF.
-  visitFee          Int                  @default(0)
+  visitFee            Int                  @default(0)
   /// Booking fee used when the customer marks the request as an emergency, in RWF.
-  emergencyVisitFee Int                  @default(0)
+  emergencyVisitFee   Int                  @default(0)
   /// Booking fee charged for an SOS request, in RWF.
-  sosBookingFee     Int?
-  icon              String?
-  isActive          Boolean              @default(true)
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  jobs              Job[]                @relation("JobServiceCategory")
-  technicians       TechnicianCategory[]
-  documents         TechnicianDocument[]
-  bookingPayments   BookingPayment[]
-  serviceCharges    ServiceCharge[]
-  paymentClaims     PaymentClaim[]
-  category          CatalogCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  sosBookingFee       Int?
+  icon                String?
+  isActive            Boolean              @default(true)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  jobs                Job[]                @relation("JobServiceCategory")
+  technicians         TechnicianCategory[]
+  documents           TechnicianDocument[]
+  bookingPayments     BookingPayment[]
+  serviceCharges      ServiceCharge[]
+  paymentClaims       PaymentClaim[]
+  paymentTransactions PaymentTransaction[]
+  category            CatalogCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
 
   @@index([categoryId])
   @@map("service_categories")
@@ -432,10 +445,48 @@ model BookingPayment {
   serviceCategory          ServiceCategory      @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
   job                      Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
   paymentClaim             PaymentClaim?
+  paymentTransaction       PaymentTransaction?
 
   @@index([customerId, paidAt])
   @@index([status, validUntil])
   @@map("booking_payments")
+}
+
+/// One independent dashboard toggle per mobile money provider. Off means manual review.
+model PaymentProviderSetting {
+  provider   MobilePaymentProvider @id
+  apiEnabled Boolean               @default(false)
+  updatedAt  DateTime              @updatedAt
+
+  @@map("payment_provider_settings")
+}
+
+/// Collection status is independent of a booking payment's validity/job lifecycle.
+model PaymentTransaction {
+  id                String                   @id @default(uuid())
+  customerId        String
+  serviceCategoryId String
+  provider          MobilePaymentProvider
+  requestType       JobRequestType           @default(NORMAL)
+  phoneNumber       String
+  amount            Int
+  currency          String                   @default("RWF")
+  pricingSnapshot   Json
+  status            PaymentTransactionStatus @default(PENDING)
+  simulated         Boolean                  @default(false)
+  idempotencyKey    String
+  externalPaymentId String                   @unique
+  bookingPaymentId  String?                  @unique
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  customer          User                     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory   ServiceCategory          @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
+  bookingPayment    BookingPayment?          @relation(fields: [bookingPaymentId], references: [id], onDelete: SetNull)
+
+  @@unique([customerId, idempotencyKey])
+  @@index([customerId, createdAt])
+  @@index([provider, status, createdAt])
+  @@map("payment_transactions")
 }
 
 model PaymentClaim {

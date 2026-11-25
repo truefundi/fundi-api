@@ -12,11 +12,9 @@ import { Server, Socket } from 'socket.io';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../database/prisma.service';
+import { ADMIN_ACCESS_COOKIE } from '../auth/admin-cookies';
 
 @WebSocketGateway({
-  cors: {
-    origin: '*',
-  },
   namespace: '/events',
 })
 export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -33,19 +31,22 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   async handleConnection(client: Socket) {
     this.logger.log(`Client connected: ${client.id}`);
+    const cookieToken = this.adminAccessCookie(client.handshake.headers.cookie);
     const token =
+      cookieToken ??
       client.handshake.auth?.accessToken ??
       this.bearerToken(client.handshake.headers.authorization);
     if (typeof token !== 'string' || !token) return;
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: string; sid: string; typ?: string }>(
-        token,
-        {
-          secret:
-            this.config.get<string>('jwt.accessSecret') ||
-            'default_dev_access_secret_32chars',
-        },
-      );
+      const payload = await this.jwt.verifyAsync<{
+        sub: string;
+        sid: string;
+        typ?: string;
+      }>(token, {
+        secret:
+          this.config.get<string>('jwt.accessSecret') ||
+          'default_dev_access_secret_32chars',
+      });
       // Only access tokens are accepted here, never a refresh token presented as one.
       if (!payload.sub || !payload.sid || payload.typ !== 'access') return;
       const session = await this.prisma.refreshToken.findUnique({
@@ -66,6 +67,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!user || user.status !== 'ACTIVE') {
         return;
       }
+      if (user.role === 'ADMIN' && !cookieToken) return;
       await client.join(this.userRoom(user.id));
       if (user.role === 'TECHNICIAN') {
         await client.join(this.technicianRoom(user.id));
@@ -86,7 +88,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('ping')
   handlePing(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: any,
+    @MessageBody() data: unknown,
   ): string {
     this.logger.log(`Ping received from ${client.id}: ${JSON.stringify(data)}`);
     return 'pong';
@@ -123,5 +125,21 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private bearerToken(authorization?: string) {
     const match = /^Bearer\s+(.+)$/i.exec(authorization ?? '');
     return match?.[1];
+  }
+
+  private adminAccessCookie(header?: string) {
+    const cookie = header
+      ?.split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${ADMIN_ACCESS_COOKIE}=`));
+    if (!cookie) return undefined;
+    try {
+      return (
+        decodeURIComponent(cookie.slice(ADMIN_ACCESS_COOKIE.length + 1)) ||
+        undefined
+      );
+    } catch {
+      return undefined;
+    }
   }
 }

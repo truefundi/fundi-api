@@ -370,6 +370,72 @@ describe('JobsService location matching', () => {
     );
   });
 
+  it('lists offline technicians and companies when asked, with how to reach each', async () => {
+    const categoryId = 'b6b1f0b4-2c55-4d5e-9b3c-0d6f6d7f4a11';
+    const prisma = {
+      serviceCategory: {
+        findFirst: jest.fn().mockResolvedValue({ id: categoryId }),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([
+        { technicianId: 'tech-offline', distanceMeters: 800, rejectionCount: 0, cancellationCount: 0 },
+        { technicianId: 'tech-company', distanceMeters: 1_200, rejectionCount: 0, cancellationCount: 0 },
+      ]),
+      technicianProfile: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'tech-offline',
+            gender: 'FEMALE',
+            publicLocationLabel: 'Kacyiru',
+            availabilityStatus: 'OFFLINE',
+            businessType: 'INDIVIDUAL',
+            company: null,
+            user: { fullName: 'Offline Tech' },
+            categories: [],
+          },
+          {
+            id: 'tech-company',
+            gender: 'MALE',
+            publicLocationLabel: 'Remera',
+            availabilityStatus: 'ONLINE',
+            businessType: 'COMPANY',
+            company: { id: 'company-1', name: 'Pipe Pros Ltd', verificationStatus: 'APPROVED' },
+            user: { fullName: 'Company Owner' },
+            categories: [],
+          },
+        ]),
+      },
+    };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+
+    const matches = await service.previewMatchingTechnicians({
+      serviceCategoryId: categoryId,
+      latitude: -1.94,
+      longitude: 30.06,
+      includeOffline: true,
+    });
+
+    // The offline flag reaches the SQL filter.
+    expect(
+      (prisma.$queryRaw.mock.calls[0] as unknown[]).slice(1),
+    ).toContain(true);
+    expect(matches).toEqual([
+      expect.objectContaining({ technicianId: 'tech-offline', availabilityStatus: 'OFFLINE', company: null }),
+      expect.objectContaining({
+        technicianId: 'tech-company',
+        availabilityStatus: 'ONLINE',
+        company: { id: 'company-1', name: 'Pipe Pros Ltd' },
+      }),
+    ]);
+  });
+
   it('ranks candidates using distance and incident counters, not job outcomes or ratings', async () => {
     const jobForMatching = {
       id: 'job-kigali-plumbing-follow-up',

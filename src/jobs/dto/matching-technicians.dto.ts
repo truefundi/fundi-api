@@ -1,5 +1,6 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsNumber,
   IsOptional,
   IsString,
@@ -32,6 +33,15 @@ export class MatchingTechniciansDto {
   @Min(-180)
   @Max(180)
   longitude!: number;
+
+  /**
+   * Also list approved technicians who are offline. They can still be sent a
+   * request (POST /jobs/mine/:jobId/offline-requests) and have two hours to reply.
+   */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  includeOffline?: boolean;
 }
 
 export class ProposeTechnicianDto {

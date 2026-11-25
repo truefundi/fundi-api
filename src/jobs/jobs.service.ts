@@ -758,11 +758,14 @@ export class JobsService {
       dto.serviceCategoryId,
       dto.otherServiceName,
     );
-    const candidates = await this.findMatches({
-      ...selection,
-      latitude: dto.latitude,
-      longitude: dto.longitude,
-    });
+    const candidates = await this.findMatches(
+      {
+        ...selection,
+        latitude: dto.latitude,
+        longitude: dto.longitude,
+      },
+      dto.includeOffline === true,
+    );
     return this.toMatchingTechnicianResponses(candidates);
   }
 
@@ -996,6 +999,9 @@ export class JobsService {
       },
       include: {
         user: { select: { fullName: true } },
+        company: {
+          select: { id: true, name: true, verificationStatus: true },
+        },
         categories: {
           where: { status: VerificationStatus.APPROVED },
           include: {
@@ -1047,6 +1053,14 @@ export class JobsService {
         })),
         publicLocationLabel: profile.publicLocationLabel,
         profilePictureUrl: profilePictureUrls.get(profile.id) ?? null,
+        // ONLINE technicians get a normal request; OFFLINE ones the two-hour one.
+        availabilityStatus: profile.availabilityStatus,
+        // An approved company is requested through POST /jobs/mine/:jobId/company-requests.
+        company:
+          profile.businessType === TechnicianBusinessType.COMPANY &&
+          profile.company?.verificationStatus === VerificationStatus.APPROVED
+            ? { id: profile.company.id, name: profile.company.name }
+            : null,
       };
     });
   }

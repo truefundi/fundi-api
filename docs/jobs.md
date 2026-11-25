@@ -152,6 +152,16 @@ For an unlisted service, replace `serviceCategoryId` with
 selector. This endpoint returns eligible technicians and their match scores;
 it does not require payment and does not send an offer.
 
+Add `includeOffline=true` to also list approved technicians who are offline.
+Each result says how to reach it:
+
+- `availabilityStatus: "ONLINE"`: send a normal request
+  (`POST /jobs/mine/{{jobId}}/requests`).
+- `availabilityStatus: "OFFLINE"`: send the two-hour request
+  (`POST /jobs/mine/{{jobId}}/offline-requests`).
+- `company` (`{ "id", "name" }`, approved companies only): send it to the
+  company (`POST /jobs/mine/{{jobId}}/company-requests` with `companyId`).
+
 Example response:
 
 ```json
@@ -175,7 +185,9 @@ Example response:
         "yearsOfExperience": 8
       }
     ],
-    "publicLocationLabel": "Kigali"
+    "publicLocationLabel": "Kigali",
+    "availabilityStatus": "ONLINE",
+    "company": null
   }
 ]
 ```

@@ -18,6 +18,7 @@ import {
 import {
   DropJobDto,
   JobProgressDto,
+  JobWorkStatusDto,
   RejectJobOfferDto,
 } from './dto/job-action.dto';
 import { JobsService } from './jobs.service';
@@ -78,6 +79,15 @@ export class TechnicianJobsController {
     @Body() dto: JobProgressDto,
   ) {
     return this.jobs.updateProgress(user.id, jobId, 'technician', dto);
+  }
+
+  @Patch('mine/:jobId/status')
+  updateWorkStatus(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: JobWorkStatusDto,
+  ) {
+    return this.jobs.updateWorkStatus(user.id, jobId, 'technician', dto);
   }
 
   @Post('mine/:jobId/drop')

@@ -20,7 +20,7 @@ import {
   CurrentUser,
 } from '../common/decorators/auth.decorator';
 import { JOB_MAX_VIDEO_BYTES } from './job.constants';
-import { JobProgressDto } from './dto/job-action.dto';
+import { JobProgressDto, JobWorkStatusDto } from './dto/job-action.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobUpload } from './job-media.util';
@@ -35,6 +35,7 @@ import {
   ProposeTechnicianDto,
 } from './dto/matching-technicians.dto';
 import { MatchingTechniciansByLocationDto } from './dto/matching-technicians-by-location.dto';
+import { CompanyJobRequestDto } from './dto/company-job-request.dto';
 
 const JOB_MEDIA_INTERCEPTOR = FileFieldsInterceptor(
   [
@@ -227,6 +228,24 @@ export class JobsController {
     return this.jobs.proposeTechnician(user.id, jobId, dto);
   }
 
+  @Post('mine/:jobId/offline-requests')
+  proposeOfflineTechnician(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: ProposeTechnicianDto,
+  ) {
+    return this.jobs.proposeOfflineTechnician(user.id, jobId, dto);
+  }
+
+  @Post('mine/:jobId/company-requests')
+  proposeCompany(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: CompanyJobRequestDto,
+  ) {
+    return this.jobs.proposeCompany(user.id, jobId, dto.companyId);
+  }
+
   @Post('mine/:jobId/confirm-cooperation')
   confirmCooperation(
     @CurrentUser() user: AuthUser,
@@ -251,6 +270,15 @@ export class JobsController {
     @Body() dto: JobProgressDto,
   ) {
     return this.jobs.updateProgress(user.id, jobId, 'customer', dto);
+  }
+
+  @Patch('mine/:jobId/status')
+  updateWorkStatus(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: JobWorkStatusDto,
+  ) {
+    return this.jobs.updateWorkStatus(user.id, jobId, 'customer', dto);
   }
 
   @Post('mine/:jobId/retry-dispatch')

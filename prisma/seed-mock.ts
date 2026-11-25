@@ -1,4 +1,21 @@
-import { PrismaClient, UserRole, UserStatus, TechnicianGender, VerificationStatus, TechnicianAvailability, PaymentMethod, DocumentType, CertificateType, DocumentStatus, JobStatus, JobPriority, JobDispatchStatus, JobProgressStatus, JobOfferStatus } from '@prisma/client';
+import {
+  PrismaClient,
+  UserRole,
+  UserStatus,
+  TechnicianGender,
+  VerificationStatus,
+  TechnicianAvailability,
+  PaymentMethod,
+  DocumentType,
+  CertificateType,
+  DocumentStatus,
+  JobStatus,
+  JobPriority,
+  JobDispatchStatus,
+  JobProgressStatus,
+  JobOfferStatus,
+  JobWorkStatus,
+} from '@prisma/client';
 import { randomUUID } from 'crypto';
 
 const prisma = new PrismaClient();
@@ -91,6 +108,8 @@ async function main() {
   for (let i = 0; i < 10; i++) {
     const customer = customers[i % customers.length];
     const cat = categories[i % categories.length];
+    const status = [JobStatus.OPEN, JobStatus.ASSIGNED, JobStatus.COMPLETED][i % 3];
+    const completedAt = status === JobStatus.COMPLETED ? new Date() : null;
     const job = await prisma.job.create({
       data: {
         id: randomUUID(),
@@ -104,10 +123,17 @@ async function main() {
         offeredAmount: 10000 + (i * 5000),
         currency: 'RWF',
         priority: [JobPriority.LOW, JobPriority.NORMAL, JobPriority.HIGH][i % 3],
-        status: [JobStatus.OPEN, JobStatus.ASSIGNED, JobStatus.COMPLETED][i % 3],
+        status,
         dispatchStatus: JobDispatchStatus.PENDING,
-        customerProgress: JobProgressStatus.PENDING,
-        technicianProgress: JobProgressStatus.PENDING,
+        workStatus: completedAt ? JobWorkStatus.COMPLETED : JobWorkStatus.PENDING,
+        customerProgress: completedAt
+          ? JobProgressStatus.COMPLETED
+          : JobProgressStatus.PENDING,
+        technicianProgress: completedAt
+          ? JobProgressStatus.COMPLETED
+          : JobProgressStatus.PENDING,
+        completedAt,
+        completionConfirmedAt: completedAt,
       },
     });
     jobs.push(job);

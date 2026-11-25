@@ -23,6 +23,7 @@ import {
 import { TechniciansService } from '../technicians.service';
 import { UploadDocumentDto } from './dto/upload-document.dto';
 import { UpdateDeniedDocumentDto } from './dto/update-denied-document.dto';
+import { ReuseDocumentServiceDto } from './dto/reuse-document-service.dto';
 import {
   MAX_UPLOAD_BYTES,
   toStreamableFile,
@@ -119,6 +120,16 @@ export class TechnicianDocumentsController {
     @UploadedFile() file: UploadedFileData,
   ) {
     return this.documents.uploadDocument(user.id, dto, file);
+  }
+
+  @Post('documents/:documentId/services')
+  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  reuseDocumentForService(
+    @CurrentUser() user: AuthUser,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+    @Body() dto: ReuseDocumentServiceDto,
+  ) {
+    return this.documents.reuseForService(user.id, documentId, dto.categoryId);
   }
 
   // Replaces and resubmits a document that an administrator denied.

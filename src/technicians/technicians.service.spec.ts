@@ -87,6 +87,9 @@ describe('TechniciansService', () => {
         findUnique: jest.fn().mockResolvedValue(baseProfile()),
         findUniqueOrThrow: jest.fn().mockResolvedValue(baseProfile()),
       },
+      job: {
+        count: jest.fn().mockResolvedValue(0),
+      },
       company: {
         create: jest.fn().mockResolvedValue({
           id: 'company-id',
@@ -105,6 +108,11 @@ describe('TechniciansService', () => {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
         createMany: jest.fn().mockResolvedValue({ count: 1 }),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      serviceCategory: {
+        findFirst: jest.fn().mockResolvedValue({ id: categoryId }),
       },
     };
     const prisma = {
@@ -726,6 +734,56 @@ describe('TechniciansService', () => {
       service.updateMyAvailability(userId, TechnicianAvailability.ONLINE),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
+  it('prevents an individual with three active jobs from going online', async () => {
+    const { service, transaction } = createService();
+    const approvedProfile = {
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.APPROVED,
+    };
+    transaction.technicianProfile.findUnique.mockResolvedValue(approvedProfile);
+    transaction.technicianProfile.findUniqueOrThrow.mockResolvedValue(
+      approvedProfile,
+    );
+    transaction.job.count.mockResolvedValue(3);
+
+    await expect(
+      service.updateMyAvailability(userId, TechnicianAvailability.ONLINE),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(transaction.job.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: { in: ['ASSIGNED', 'PAUSED'] },
+        }),
+      }),
+    );
+    expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
+  it('adds a service without replacing the technician existing services', async () => {
+    const { service, transaction, audit } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      id: profileId,
+    });
+
+    await service.addServiceExperience(userId, {
+      categoryId,
+      yearsOfExperience: 4,
+    });
+
+    expect(transaction.technicianCategory.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        technician: { connect: { id: profileId } },
+        category: { connect: { id: categoryId } },
+        yearsOfExperience: 4,
+      }),
+    });
+    expect(transaction.technicianCategory.deleteMany).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'SERVICE_EXPERIENCE_ADDED' }),
+      transaction,
+    );
   });
 
   it('rejects an incomplete coordinate pair', async () => {

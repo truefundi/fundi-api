@@ -55,6 +55,9 @@ describe('TechnicianDocumentsService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUniqueOrThrow: jest.fn().mockResolvedValue(updatedDocument),
       },
+      technicianDocumentService: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
       technicianProfile: {
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
@@ -70,6 +73,7 @@ describe('TechnicianDocumentsService', () => {
             status ? { ...deniedDocument(), status } : null,
           )
           .mockResolvedValue(null),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(updatedDocument),
         count: jest.fn().mockResolvedValue(0),
       },
       serviceCategory: {
@@ -239,5 +243,41 @@ describe('TechnicianDocumentsService', () => {
     await expect(
       service.updateDeniedDocument(userId, documentId, {}, replacementFile),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('links an existing accepted certificate to another service without reuploading it', async () => {
+    const { service, prisma, transaction, audit } = createService();
+    const document = {
+      ...deniedDocument(),
+      type: DocumentType.CERTIFICATE,
+      status: DocumentStatus.ACCEPTED,
+      certificateType: 'DIPLOMA',
+      serviceCategories: [],
+    };
+    prisma.serviceCategory.findFirst.mockResolvedValue({
+      id: 'service-category',
+    } as never);
+    prisma.technicianDocument.findFirst
+      .mockReset()
+      .mockResolvedValueOnce(document)
+      .mockResolvedValueOnce(null);
+    prisma.technicianDocument.findUniqueOrThrow.mockResolvedValue(document);
+    const responseSpy = jest
+      .spyOn(service as unknown as { toResponse: jest.Mock }, 'toResponse')
+      .mockResolvedValue({});
+
+    await service.reuseForService(userId, document.id, 'service-category');
+
+    expect(transaction.technicianDocumentService.create).toHaveBeenCalledWith({
+      data: {
+        documentId: document.id,
+        serviceCategoryId: 'service-category',
+      },
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'DOCUMENT_REUSED_FOR_SERVICE' }),
+      transaction,
+    );
+    expect(responseSpy).toHaveBeenCalled();
   });
 });

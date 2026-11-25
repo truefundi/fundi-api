@@ -188,6 +188,14 @@ export class TechnicianDocumentsService {
             sizeBytes: file!.buffer.length,
           },
         });
+        if (categoryRef.categoryId) {
+          await tx.technicianDocumentService.create({
+            data: {
+              documentId: document.id,
+              serviceCategoryId: categoryRef.categoryId,
+            },
+          });
+        }
         await this.reopenRejectedApplication(tx, profile.id, userId);
         await this.audit.log(
           {
@@ -206,7 +214,19 @@ export class TechnicianDocumentsService {
           },
           tx,
         );
-        return document;
+        return tx.technicianDocument.findUniqueOrThrow({
+          where: { id: document.id },
+          include: {
+            category: { select: { id: true, name: true, slug: true } },
+            serviceCategories: {
+              include: {
+                serviceCategory: {
+                  select: { id: true, name: true, slug: true },
+                },
+              },
+            },
+          },
+        });
       });
       return this.toResponse(created);
     } catch (error) {
@@ -331,6 +351,19 @@ export class TechnicianDocumentsService {
             'The document is no longer denied and cannot be updated.',
           );
         }
+        if (document.type === DocumentType.CERTIFICATE) {
+          await tx.technicianDocumentService.deleteMany({
+            where: { documentId: document.id },
+          });
+          if (categoryRef.categoryId) {
+            await tx.technicianDocumentService.create({
+              data: {
+                documentId: document.id,
+                serviceCategoryId: categoryRef.categoryId,
+              },
+            });
+          }
+        }
         await this.reopenRejectedApplication(tx, profile.id, userId);
         await this.audit.log(
           {
@@ -354,6 +387,13 @@ export class TechnicianDocumentsService {
           where: { id: document.id },
           include: {
             category: { select: { id: true, name: true, slug: true } },
+            serviceCategories: {
+              include: {
+                serviceCategory: {
+                  select: { id: true, name: true, slug: true },
+                },
+              },
+            },
           },
         });
       });
@@ -378,7 +418,14 @@ export class TechnicianDocumentsService {
     const profile = await this.requireProfile(userId);
     const documents = await this.prisma.technicianDocument.findMany({
       where: { technicianId: profile.id },
-      include: { category: { select: { id: true, name: true, slug: true } } },
+      include: {
+        category: { select: { id: true, name: true, slug: true } },
+        serviceCategories: {
+          include: {
+            serviceCategory: { select: { id: true, name: true, slug: true } },
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return documents.map((document) => this.toResponse(document));
@@ -391,6 +438,87 @@ export class TechnicianDocumentsService {
     });
     if (!document) throw new NotFoundException('Document not found.');
     return this.readFile(document);
+  }
+
+  async reuseForService(
+    userId: string,
+    documentId: string,
+    categoryId: string,
+  ) {
+    const profile = await this.requireProfile(userId);
+    const document = await this.prisma.technicianDocument.findFirst({
+      where: { id: documentId, technicianId: profile.id },
+      include: { serviceCategories: { select: { serviceCategoryId: true } } },
+    });
+    if (!document) throw new NotFoundException('Document not found.');
+    if (document.type !== DocumentType.CERTIFICATE) {
+      throw new BadRequestException(
+        'Only certificate documents can be linked to service categories.',
+      );
+    }
+    if (document.status === DocumentStatus.DENIED) {
+      throw new ConflictException(
+        'A denied document must be corrected and resubmitted before reuse.',
+      );
+    }
+    if (
+      document.serviceCategories.some(
+        (service) => service.serviceCategoryId === categoryId,
+      )
+    ) {
+      throw new ConflictException(
+        'This certificate is already linked to that service.',
+      );
+    }
+    const category = await this.prisma.serviceCategory.findFirst({
+      where: { id: categoryId, isActive: true },
+      select: { id: true },
+    });
+    if (!category) {
+      throw new BadRequestException(
+        'The selected service category is invalid or inactive.',
+      );
+    }
+    await this.assertNoLiveCertificate(
+      profile.id,
+      {
+        type: DocumentType.CERTIFICATE,
+        title: document.title,
+        certificateType: document.certificateType!,
+      },
+      {
+        categoryId,
+        customCategoryName: null,
+        customCategoryNormalized: null,
+      },
+    );
+    await this.prisma.$transaction(async (tx) => {
+      await tx.technicianDocumentService.create({
+        data: { documentId: document.id, serviceCategoryId: categoryId },
+      });
+      await this.audit.log(
+        {
+          entityType: 'TechnicianDocument',
+          entityId: document.id,
+          action: 'DOCUMENT_REUSED_FOR_SERVICE',
+          actorId: userId,
+          metadata: { technicianId: profile.id, categoryId },
+        },
+        tx,
+      );
+    });
+    const updated = await this.prisma.technicianDocument.findUniqueOrThrow({
+      where: { id: document.id },
+      include: {
+        category: { select: { id: true, name: true, slug: true } },
+        serviceCategories: {
+          include: {
+            serviceCategory: { select: { id: true, name: true, slug: true } },
+          },
+        },
+      },
+    });
+    return this.toResponse(updated);
   }
 
   // Deletes an own document that has not been accepted or put under review.
@@ -436,7 +564,14 @@ export class TechnicianDocumentsService {
     if (!exists) throw new NotFoundException('Technician not found.');
     const documents = await this.prisma.technicianDocument.findMany({
       where: { technicianId: profileId },
-      include: { category: { select: { id: true, name: true, slug: true } } },
+      include: {
+        category: { select: { id: true, name: true, slug: true } },
+        serviceCategories: {
+          include: {
+            serviceCategory: { select: { id: true, name: true, slug: true } },
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return documents.map((document) => this.toResponse(document, true));
@@ -502,7 +637,14 @@ export class TechnicianDocumentsService {
       );
       const updated = await tx.technicianDocument.findUniqueOrThrow({
         where: { id: documentId },
-        include: { category: { select: { id: true, name: true, slug: true } } },
+        include: {
+          category: { select: { id: true, name: true, slug: true } },
+          serviceCategories: {
+            include: {
+              serviceCategory: { select: { id: true, name: true, slug: true } },
+            },
+          },
+        },
       });
 
       const tech = await tx.technicianProfile.findUnique({
@@ -777,7 +919,16 @@ export class TechnicianDocumentsService {
         certificateType: dto.certificateType,
         status: { not: DocumentStatus.DENIED },
         ...(categoryRef.categoryId
-          ? { categoryId: categoryRef.categoryId }
+          ? {
+              OR: [
+                { categoryId: categoryRef.categoryId },
+                {
+                  serviceCategories: {
+                    some: { serviceCategoryId: categoryRef.categoryId },
+                  },
+                },
+              ],
+            }
           : {
               customCategoryNormalized: categoryRef.customCategoryNormalized,
             }),
@@ -858,6 +1009,9 @@ export class TechnicianDocumentsService {
   private toResponse(
     document: TechnicianDocument & {
       category?: { id: string; name: string; slug: string } | null;
+      serviceCategories?: Array<{
+        serviceCategory: { id: string; name: string; slug: string };
+      }>;
     },
     forAdmin = false,
   ) {
@@ -869,6 +1023,9 @@ export class TechnicianDocumentsService {
       certificateType: document.certificateType,
       categoryId: document.categoryId,
       category: document.category ?? null,
+      serviceCategories:
+        document.serviceCategories?.map((link) => link.serviceCategory) ??
+        (document.category ? [document.category] : []),
       customCategoryName: document.customCategoryName,
       mimeType: document.mimeType,
       originalFileName: document.originalFileName,

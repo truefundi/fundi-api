@@ -72,6 +72,9 @@ name (`customCategoryName`) if the service is not in the catalogue yet.
 `categoryId` is the service ID for compatibility with the existing API; it
 does not identify the service's parent category.
 Certificates are optional and are not part of the approval checklist.
+An uploaded certificate can also be linked to additional catalog services
+without uploading the file again. These service links share the same document
+and administrator review status.
 
 ## Document statuses
 
@@ -202,6 +205,20 @@ note. No request body.
 
 Success response (`200`): an array of document objects. No documents returns
 `[]`.
+
+### `POST /api/v1/technicians/profile/documents/:documentId/services`
+
+Links an existing, non-denied certificate to another active catalog service.
+The same stored file and review status are used for every linked service.
+
+```json
+{
+  "categoryId": "e5a4f4d7-0b21-46d8-9a4b-98765d332100"
+}
+```
+
+The response includes `serviceCategories`, the list of linked service
+categories. Non-certificate documents cannot be linked to services.
 
 ### `GET /api/v1/technicians/profile/documents/:documentId/download`
 

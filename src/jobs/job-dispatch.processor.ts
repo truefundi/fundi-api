@@ -7,6 +7,11 @@ interface ExpireOfferTask {
   offerId: string;
 }
 
+interface AutoCompleteJobTask {
+  jobId: string;
+  dueAt: string;
+}
+
 @Processor('job-dispatch')
 export class JobDispatchProcessor
   extends WorkerHost
@@ -26,9 +31,24 @@ export class JobDispatchProcessor
     });
   }
 
-  async process(job: Job<ExpireOfferTask, void, string>): Promise<void> {
+  async process(
+    job: Job<ExpireOfferTask | AutoCompleteJobTask, void, string>,
+  ): Promise<void> {
     if (job.name === 'expire-offer') {
+      if (!('offerId' in job.data)) {
+        throw new Error('Invalid expire-offer task payload.');
+      }
       await this.jobs.expireOffer(job.data.offerId);
+      return;
+    }
+    if (job.name === 'auto-complete-job') {
+      if (!('jobId' in job.data)) {
+        throw new Error('Invalid auto-complete-job task payload.');
+      }
+      await this.jobs.autoCompleteAfterConfirmation(
+        job.data.jobId,
+        job.data.dueAt,
+      );
       return;
     }
     throw new Error(`Unsupported job-dispatch task: ${job.name}`);

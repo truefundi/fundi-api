@@ -22,6 +22,7 @@ import { UpdateAvailabilityDto } from './dto/update-availability.dto';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto';
 import { RegisterTechnicianProfileDto } from './dto/register-technician-profile.dto';
 import { RegisterTechnicianDto } from './dto/register-technician.dto';
+import { ServiceExperienceDto } from './dto/service-experience.dto';
 import { TechniciansService } from './technicians.service';
 import { AuthService } from '../auth/auth.service';
 
@@ -67,6 +68,15 @@ export class TechniciansController {
     @Body() dto: UpdateTechnicianProfileDto,
   ) {
     return this.technicians.updateMyProfile(user.id, dto);
+  }
+
+  @Post('profile/services')
+  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  addMyService(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: ServiceExperienceDto,
+  ) {
+    return this.technicians.addServiceExperience(user.id, dto);
   }
 
   @Patch('availability')

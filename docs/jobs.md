@@ -14,7 +14,8 @@ OTP. Technicians continue to verify for each job. For an
 SOS request, the owner pays the higher SOS fee and creates the request through
 the SOS endpoint; the system automatically offers it to eligible technicians
 in match order, one at a time, with 30 seconds to respond to each offer. Normal
-job proposals remain open for two minutes.
+online technician proposals remain open for two minutes. Customers can also
+request an approved offline technician; those offers remain open for two hours.
 
 Both job-creation endpoints accept `CUSTOMER` and `TECHNICIAN` roles. Users
 with a pending technician application remain in customer mode until approval;
@@ -82,9 +83,12 @@ fields side by side.
 | `GET`    | `/api/v1/jobs/mine/:jobId/rating`                    | Read the owner's rating                                                       |
 | `POST`   | `/api/v1/jobs/mine/:jobId/rating`                    | Optionally rate the assigned technician                                       |
 | `POST`   | `/api/v1/jobs/mine/:jobId/requests`                  | Propose a matching technician                                                 |
+| `POST`   | `/api/v1/jobs/mine/:jobId/offline-requests`          | Propose an approved, offline matching technician (two-hour offer)             |
+| `POST`   | `/api/v1/jobs/mine/:jobId/company-requests`          | Send a request to an approved company                                         |
 | `POST`   | `/api/v1/jobs/mine/:jobId/confirm-cooperation`       | Customer confirms agreement with the assigned technician                      |
 | `PATCH`  | `/api/v1/jobs/mine/:jobId`                           | Edit an open, unassigned job                                                  |
 | `PATCH`  | `/api/v1/jobs/mine/:jobId/progress`                  | Update customer progress                                                      |
+| `PATCH`  | `/api/v1/jobs/mine/:jobId/status`                    | Update shared work status                                                     |
 | `POST`   | `/api/v1/jobs/mine/:jobId/cancel`                    | Cancel with a reason                                                          |
 | `POST`   | `/api/v1/jobs/mine/:jobId/pause`                     | Request a mutual pause                                                        |
 | `POST`   | `/api/v1/jobs/mine/:jobId/resume`                    | Request a mutual resume                                                       |
@@ -345,16 +349,16 @@ The job response includes `cooperationStatus` (`PENDING` until both confirm,
 then `CONFIRMED`) and both confirmation timestamps. When the second party
 confirms, the payment immediately becomes `EXPIRED` and `validUntil` is set to
 that time, regardless of the remaining booking lifetime. The job remains
-in its current work status (`ASSIGNED` or `PAUSED`); cooperation confirmation
-is separate from work progress and completion, which still requires both sides
-to mark their work completed.
+in its current assignment status (`ASSIGNED` or `PAUSED`); cooperation
+confirmation is separate from the shared work status described below.
 
 If an assigned job is cancelled before mutual confirmation, the existing
 remaining payment validity resumes and the job can be reassigned. After mutual
 confirmation, cancellation ends the job rather than reopening it for
 reassignment, because its booking payment has expired.
 
-Both job participants update their own progress with
+The legacy progress endpoints continue to update each participant's progress
+separately, using
 `PATCH /api/v1/jobs/mine/{{jobId}}/progress` (customer) or
 `PATCH /api/v1/jobs/technician/mine/{{jobId}}/progress` (technician):
 
@@ -365,8 +369,37 @@ Both job participants update their own progress with
 ```
 
 Progress values are `STARTED`, `IN_PROGRESS`, `COMPLETED`, and `FAILED`.
-Overall job status becomes `COMPLETED` only when both sides mark it completed;
-either side marking it failed makes the job `FAILED`.
+Through these legacy endpoints, overall job status becomes `COMPLETED` only
+when both sides mark it completed; either side marking it failed makes the job
+`FAILED`.
+
+For the shared work status, either participant can use
+`PATCH /api/v1/jobs/mine/{{jobId}}/status` (customer) or
+`PATCH /api/v1/jobs/technician/mine/{{jobId}}/status` (technician). The values
+are `PENDING`, `HEADING_TO_LOCATION`, `ARRIVED`, `IN_PROGRESS`, `ON_HOLD`, and
+`COMPLETED`. `ON_HOLD` requires a `reason`; cancelling still uses the existing
+reason-required cancel/drop actions. The technician's `COMPLETED` status starts
+a 10-minute customer confirmation window. The customer confirms by submitting
+`{"status":"COMPLETED"}` to the status endpoint. If the customer does not
+confirm and there is no unresolved dispute, a delayed background task marks the
+job complete at the deadline. The response exposes `completionConfirmationDueAt`
+and `completionAutoCompletedAt`.
+
+After both parties confirm cooperation, both job responses include each other's
+phone number and email when available. Before mutual confirmation, those contact
+fields remain hidden.
+
+Offline offers use the same technician offer inbox and accept/reject endpoints
+as online offers. If an offer expires, the job is open for another request;
+the customer can repeat the offline request for that technician or choose a
+different technician. The technician must still be approved and match the job's
+service.
+
+Company requests target the company's owner technician profile. The owner
+accepts through the normal offer inbox; an offline owner receives the two-hour
+offer. Company-owned technicians can accept multiple jobs without the
+individual technician limit. Individual technicians can have up to three
+assigned or paused jobs; reaching that limit automatically takes them offline.
 
 Pause and resume are mutual actions. Both participants call the corresponding
 endpoint for the same job; the state changes only after both requests:
@@ -390,6 +423,7 @@ another assigned job is still active.
 | `GET`    | `/api/v1/jobs/technician/mine/:jobId`                     | Read an assigned or previously assigned job            |
 | `POST`   | `/api/v1/jobs/technician/mine/:jobId/confirm-cooperation` | Technician confirms agreement with the job owner       |
 | `PATCH`  | `/api/v1/jobs/technician/mine/:jobId/progress`            | Update technician progress                             |
+| `PATCH`  | `/api/v1/jobs/technician/mine/:jobId/status`              | Update shared work status                              |
 | `POST`   | `/api/v1/jobs/technician/mine/:jobId/drop`                | Request cancellation with a reason                     |
 | `POST`   | `/api/v1/jobs/technician/mine/:jobId/pause`               | Request a mutual pause                                 |
 | `POST`   | `/api/v1/jobs/technician/mine/:jobId/resume`              | Request a mutual resume                                |

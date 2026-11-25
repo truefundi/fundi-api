@@ -552,14 +552,14 @@ export class JobsService {
           select: { role: true, phoneVerifiedAt: true },
         });
         if (!account) throw new NotFoundException('Account not found.');
+        // Confirming a code makes it the account's verified number, so a verified
+        // account (customer or technician hiring) needs no per-job code. A code
+        // sent along anyway is only recorded while still usable: the booking fee
+        // may be confirmed by an admin long after the code's few minutes ran out,
+        // and that must not turn a paid request away.
         const accountPhoneIsVerified =
-          account.role === UserRole.CUSTOMER &&
-          account.phoneVerifiedAt !== null;
-        if (!dto.phoneVerificationId && !accountPhoneIsVerified) {
-          throw new ConflictException(
-            'Verify your phone number for this job request before submitting it.',
-          );
-        }
+          account.role !== UserRole.ADMIN && account.phoneVerifiedAt !== null;
+        let phoneVerificationId: string | null = null;
         if (dto.phoneVerificationId) {
           const phoneVerification =
             await tx.customerPhoneVerification.findFirst({
@@ -572,11 +572,12 @@ export class JobsService {
               },
               select: { id: true },
             });
-          if (!phoneVerification) {
-            throw new ConflictException(
-              'Verify your phone number for this job request before submitting it.',
-            );
-          }
+          phoneVerificationId = phoneVerification?.id ?? null;
+        }
+        if (!phoneVerificationId && !accountPhoneIsVerified) {
+          throw new ConflictException(
+            'Verify your phone number for this job request before submitting it.',
+          );
         }
         const reference = await this.nextJobReference(tx);
         await tx.job.create({
@@ -585,7 +586,7 @@ export class JobsService {
             reference,
             customerId,
             ...selection,
-            phoneVerificationId: dto.phoneVerificationId ?? null,
+            phoneVerificationId,
             description: dto.description.trim(),
             locationAddress: dto.locationAddress.trim(),
             latitude: dto.latitude,
@@ -622,10 +623,10 @@ export class JobsService {
             'The booking payment has already been used.',
           );
         }
-        if (dto.phoneVerificationId) {
+        if (phoneVerificationId) {
           const consumed = await tx.customerPhoneVerification.updateMany({
             where: {
-              id: dto.phoneVerificationId,
+              id: phoneVerificationId,
               customerId,
               verifiedAt: { not: null },
               consumedAt: null,
@@ -652,7 +653,7 @@ export class JobsService {
               matchCount: candidates.length,
               paymentId: payment.id,
               requestType,
-              phoneVerificationId: dto.phoneVerificationId ?? null,
+              phoneVerificationId,
             },
           },
           tx,

@@ -4459,127 +4459,6 @@ paths:
       tags:
         - Disputes
       x-fundi-status: implemented
-  /payments/providers:
-    get:
-      operationId: PaymentProvidersController_listProviders
-      summary: Discover MTN and Airtel payment modes (public)
-      tags: [Payments]
-      responses:
-        '200':
-          description: Effective modes and saved preferences for both providers.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/PaymentProviderSetting'
-      x-fundi-status: implemented
-  /admin/payment-providers:
-    get:
-      operationId: PaymentProvidersController_listAdminProviders
-      summary: Read independent mobile money toggles (admin)
-      tags: [Payments]
-      security:
-        - adminAccessToken: []
-      responses:
-        '200':
-          description: Current MTN and Airtel settings.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/PaymentProviderSetting'
-      x-fundi-status: implemented
-  /admin/payment-providers/{provider}:
-    patch:
-      operationId: PaymentProvidersController_updateProvider
-      summary: Enable API mode or switch one provider to manual approval
-      tags: [Payments]
-      security:
-        - adminAccessToken: []
-      parameters:
-        - name: provider
-          in: path
-          required: true
-          schema:
-            type: string
-            enum: [MTN, AIRTEL]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [apiEnabled]
-              properties:
-                apiEnabled:
-                  type: boolean
-      responses:
-        '200':
-          description: Updated provider setting; change is audited.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PaymentProviderSetting'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '503':
-          description: API mode is currently available only in development/test.
-      x-fundi-status: implemented
-  /payments/initiate:
-    post:
-      operationId: PaymentProvidersController_initiate
-      summary: Pay using a phone number (simulated in development/test)
-      description: Requires API mode. The server calculates the fee. Reuse the idempotency key on retries. No third-party call is made.
-      tags: [Payments]
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/InitiateMobilePayment'
-      responses:
-        '201':
-          description: Successful simulated payment, or the original transaction on an idempotent retry.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MobilePaymentTransaction'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '409':
-          description: Provider is manual, an existing claim awaits review, or the key was used with different payment details.
-        '503':
-          description: Simulation unavailable outside development/test, or signing configuration is missing.
-      x-fundi-status: implemented
-  /payments/transactions/{transactionId}:
-    get:
-      operationId: PaymentProvidersController_getTransaction
-      summary: Recover the authenticated user's payment result
-      tags: [Payments]
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: transactionId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Persisted collection result and associated booking payment.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MobilePaymentTransaction'
-        '404':
-          description: Transaction does not exist or belongs to another user.
-      x-fundi-status: implemented
   /payments/quote:
     get:
       operationId: PaymentsController_quote
@@ -4615,7 +4494,6 @@ paths:
   /payments/mock:
     post:
       operationId: PaymentsController_createMock
-      description: Legacy test helper. Blocked outside development/test; use mode-aware initiate or claims for client checkout.
       requestBody:
         required: true
         content:
@@ -4693,7 +4571,6 @@ paths:
   /payments/claims:
     post:
       operationId: PaymentsController_submitPaymentClaim
-      description: MTN/Airtel require effective MANUAL mode. Admins receive payment-claim:created after commit. No booking payment is issued until approval.
       requestBody:
         required: true
         content:
@@ -4799,7 +4676,6 @@ paths:
   /admin/payment-claims/{claimId}/review:
     patch:
       operationId: PaymentsController_reviewPaymentClaim
-      description: Existing claims remain reviewable after changing provider mode. The claimant receives payment-claim:reviewed after commit.
       parameters:
         - $ref: '#/components/parameters/PaymentClaimId'
       requestBody:
@@ -5365,113 +5241,6 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
-    PaymentProviderSetting:
-      type: object
-      required: [provider, apiEnabled, mode, apiAvailable, executionMode, updatedAt]
-      properties:
-        provider:
-          type: string
-          enum: [MTN, AIRTEL]
-        apiEnabled:
-          type: boolean
-          description: Saved administrator preference.
-        mode:
-          type: string
-          enum: [API, MANUAL]
-          description: Effective client flow. Outside development/test this is always MANUAL until live integration exists.
-        apiAvailable:
-          type: boolean
-          description: Runtime supports API mode; not a provider health check.
-        executionMode:
-          type: string
-          enum: [SIMULATED, UNAVAILABLE]
-        updatedAt:
-          type: [string, 'null']
-          format: date-time
-    InitiateMobilePayment:
-      type: object
-      additionalProperties: false
-      required: [provider, serviceCategoryId, phoneNumber, idempotencyKey]
-      properties:
-        provider:
-          type: string
-          enum: [MTN, AIRTEL]
-        serviceCategoryId:
-          type: string
-          format: uuid
-        requestType:
-          type: string
-          enum: [NORMAL, SOS]
-          default: NORMAL
-        phoneNumber:
-          type: string
-          example: '+250788123456'
-          description: Rwanda mobile number; local format such as 0788123456 is normalized.
-        idempotencyKey:
-          type: string
-          format: uuid
-          description: UUID v4 generated once per payment and retained for retries.
-    MobilePaymentTransaction:
-      type: object
-      required: [id, provider, status, simulated, providerVerified, amount, currency, bookingPaymentId]
-      properties:
-        id:
-          type: string
-          format: uuid
-          description: Transaction ID, not the booking payment ID used to create a job.
-        provider:
-          type: string
-          enum: [MTN, AIRTEL]
-        status:
-          type: string
-          enum: [PENDING, SUCCESS, FAILED]
-        simulated:
-          type: boolean
-        providerVerified:
-          type: boolean
-        serviceCategoryId:
-          type: string
-          format: uuid
-        requestType:
-          type: string
-          enum: [NORMAL, SOS]
-        phoneNumber:
-          type: string
-        amount:
-          type: integer
-        currency:
-          type: string
-          enum: [RWF]
-        pricingDetails:
-          $ref: '#/components/schemas/PaymentPricingQuote'
-        externalPaymentId:
-          type: string
-        bookingPaymentId:
-          type: [string, 'null']
-          description: Pass this ID as paymentId when creating a job.
-        bookingPayment:
-          type: [object, 'null']
-          properties:
-            id:
-              type: string
-              format: uuid
-            status:
-              type: string
-              enum: [VALID, EXPIRED, PAUSED, RESUMED, COMPLETED]
-            paidAt:
-              type: string
-              format: date-time
-            validUntil:
-              type: string
-              format: date-time
-            jobId:
-              type: [string, 'null']
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
     ServiceCharge:
       type: object
       required: [id, serviceCategoryId, name, chargeType, value, payer, sortOrder, createdAt, updatedAt]

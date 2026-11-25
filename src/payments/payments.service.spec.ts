@@ -14,8 +14,6 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { PaymentsService } from './payments.service';
-import { PaymentProvidersService } from './payment-providers.service';
-import { PaymentEventsService } from './payment-events.service';
 
 describe('PaymentsService mock booking payments', () => {
   const fixedNow = new Date('2026-10-28T12:00:00.000Z');
@@ -61,11 +59,7 @@ describe('PaymentsService mock booking payments', () => {
           fullName: 'Customer One',
           phoneNumber: '+250788123456',
         },
-        serviceCategory: {
-          id: category.id,
-          name: category.name,
-          slug: category.slug,
-        },
+        serviceCategory: { id: category.id, name: category.name, slug: category.slug },
         reviewedBy: null,
         bookingPayment: null,
       }),
@@ -78,7 +72,6 @@ describe('PaymentsService mock booking payments', () => {
       $queryRaw: jest.fn().mockResolvedValue([]),
       bookingPayment: { create: paymentCreate },
       paymentClaim: {
-        findFirst: jest.fn().mockResolvedValue(null),
         create: claimCreate,
         findMany: claimFindMany,
         findUnique: claimFindUnique,
@@ -108,23 +101,10 @@ describe('PaymentsService mock booking payments', () => {
       }),
     };
     const audit = { log: jest.fn().mockResolvedValue(undefined) };
-    const providers = {
-      assertSimulationAvailable: jest.fn(() => {
-        if (environment === 'production')
-          throw new ServiceUnavailableException();
-      }),
-      assertMode: jest.fn().mockResolvedValue(undefined),
-    };
-    const events = {
-      claimCreated: jest.fn().mockResolvedValue(undefined),
-      claimReviewed: jest.fn().mockResolvedValue(undefined),
-    };
     const service = new PaymentsService(
       prisma as unknown as PrismaService,
       config as unknown as ConfigService,
       audit as unknown as AuditService,
-      providers as unknown as PaymentProvidersService,
-      events as unknown as PaymentEventsService,
     );
     return {
       service,
@@ -137,8 +117,6 @@ describe('PaymentsService mock booking payments', () => {
       claimDelete,
       audit,
       tx,
-      providers,
-      events,
     };
   };
 
@@ -203,8 +181,6 @@ describe('PaymentsService mock booking payments', () => {
       prisma as unknown as PrismaService,
       { get: jest.fn() } as unknown as ConfigService,
       { log: jest.fn() } as unknown as AuditService,
-      {} as PaymentProvidersService,
-      {} as PaymentEventsService,
     );
 
     await expect(
@@ -277,8 +253,6 @@ describe('PaymentsService mock booking payments', () => {
           prisma as unknown as PrismaService,
           config as unknown as ConfigService,
           audit as unknown as AuditService,
-          {} as PaymentProvidersService,
-          {} as PaymentEventsService,
         ),
         prisma,
         tx,
@@ -392,16 +366,6 @@ describe('PaymentsService mock booking payments', () => {
         serviceCategoryId: 'category-1',
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
-    expect(paymentCreate).not.toHaveBeenCalled();
-  });
-
-  it('refuses legacy mock payments in production', async () => {
-    const { service, paymentCreate } = createService(1000, true, 'production');
-    await expect(
-      service.createMockPayment('customer-1', {
-        serviceCategoryId: 'category-1',
-      }),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(paymentCreate).not.toHaveBeenCalled();
   });
 
@@ -596,14 +560,17 @@ describe('PaymentsService mock booking payments', () => {
       ],
     });
 
-    const payment = await service.recordFrontendProcessedPayment('customer-1', {
-      serviceCategoryId: 'category-1',
-      externalPaymentId: 'provider-ref-expected-total',
-      status: 'SUCCESS',
-      phoneNumber: '+250788123456',
-      amount: 2750,
-      paidAt: fixedNow.toISOString(),
-    });
+    const payment = await service.recordFrontendProcessedPayment(
+      'customer-1',
+      {
+        serviceCategoryId: 'category-1',
+        externalPaymentId: 'provider-ref-expected-total',
+        status: 'SUCCESS',
+        phoneNumber: '+250788123456',
+        amount: 2750,
+        paidAt: fixedNow.toISOString(),
+      },
+    );
 
     expect(payment.amount).toBe(2750);
     expect(payment.pricingDetails).toMatchObject({
@@ -666,15 +633,7 @@ describe('PaymentsService mock booking payments', () => {
   });
 
   it('creates a pending payment claim with the matching pricing snapshot', async () => {
-    const {
-      service,
-      claimCreate,
-      paymentCreate,
-      audit,
-      tx,
-      providers,
-      events,
-    } = createService();
+    const { service, claimCreate, audit, tx } = createService();
 
     const claim = await service.submitPaymentClaim('customer-1', {
       serviceCategoryId: 'category-1',
@@ -706,69 +665,6 @@ describe('PaymentsService mock booking payments', () => {
       expect.objectContaining({ action: 'SUBMITTED' }),
       tx,
     );
-    expect(providers.assertMode).toHaveBeenCalledWith(tx, 'MTN', 'MANUAL');
-    expect(paymentCreate).not.toHaveBeenCalled();
-    expect(events.claimCreated).toHaveBeenCalledWith(claim);
-  });
-
-  it('rejects new mobile money claims when their provider is in API mode', async () => {
-    const { service, providers, claimCreate, events } = createService();
-    providers.assertMode.mockRejectedValue(
-      new ConflictException('Use API payments.'),
-    );
-    await expect(
-      service.submitPaymentClaim('customer-1', {
-        serviceCategoryId: 'category-1',
-        amount: 1000,
-        paymentMethod: PaymentClaimMethod.MTN,
-        paymentNumber: '+250788123456',
-      }),
-    ).rejects.toBeInstanceOf(ConflictException);
-    expect(claimCreate).not.toHaveBeenCalled();
-    expect(events.claimCreated).not.toHaveBeenCalled();
-  });
-
-  it('does not notify admins if submitting a claim fails to commit', async () => {
-    const { service, prisma, events } = createService();
-    prisma.$transaction.mockRejectedValueOnce(new Error('Commit failed'));
-    await expect(
-      service.submitPaymentClaim('customer-1', {
-        serviceCategoryId: 'category-1',
-        amount: 1000,
-        paymentMethod: PaymentClaimMethod.MTN,
-        paymentNumber: '+250788123456',
-      }),
-    ).rejects.toThrow('Commit failed');
-    expect(events.claimCreated).not.toHaveBeenCalled();
-  });
-
-  it('returns the claim already waiting instead of queueing the same payment twice', async () => {
-    const { service, claimCreate, tx } = createService();
-    (tx.paymentClaim.findFirst as jest.Mock).mockResolvedValue({
-      id: 'claim-waiting',
-    });
-
-    await expect(
-      service.submitPaymentClaim('customer-1', {
-        serviceCategoryId: 'category-1',
-        amount: 1000,
-        paymentMethod: PaymentClaimMethod.MTN,
-        paymentNumber: '+250788123456',
-      }),
-    ).rejects.toMatchObject({
-      response: expect.objectContaining({ existingClaimId: 'claim-waiting' }),
-    });
-    expect(tx.paymentClaim.findFirst).toHaveBeenCalledWith({
-      where: expect.objectContaining({
-        customerId: 'customer-1',
-        serviceCategoryId: 'category-1',
-        paymentMethod: PaymentClaimMethod.MTN,
-        paymentNumber: '+250788123456',
-        status: PaymentClaimStatus.PENDING,
-      }),
-      select: { id: true },
-    });
-    expect(claimCreate).not.toHaveBeenCalled();
   });
 
   it('rejects a claim amount that differs from the current customer total', async () => {
@@ -816,23 +712,13 @@ describe('PaymentsService mock booking payments', () => {
       status: PaymentClaimStatus.PENDING,
     });
     expect(claimFindMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        where: { status: PaymentClaimStatus.PENDING },
-      }),
+      expect.objectContaining({ where: { status: PaymentClaimStatus.PENDING } }),
     );
   });
 
   it('creates a valid booking payment when an admin approves a pending claim', async () => {
-    const {
-      service,
-      claimFindUnique,
-      claimUpdate,
-      paymentCreate,
-      audit,
-      tx,
-      events,
-      providers,
-    } = createService();
+    const { service, claimFindUnique, claimUpdate, paymentCreate, audit, tx } =
+      createService();
     const claim = {
       id: 'claim-1',
       customerId: 'customer-1',
@@ -910,13 +796,10 @@ describe('PaymentsService mock booking payments', () => {
       expect.objectContaining({ action: 'PAYMENT_CLAIM_APPROVED' }),
       tx,
     );
-    expect(events.claimReviewed).toHaveBeenCalledWith(result);
-    // Claims submitted while manual remain reviewable after enabling API mode.
-    expect(providers.assertMode).not.toHaveBeenCalled();
   });
 
   it('rejects a claim without creating a booking payment', async () => {
-    const { service, claimFindUnique, claimUpdate, paymentCreate, events } =
+    const { service, claimFindUnique, claimUpdate, paymentCreate } =
       createService();
     const claim = {
       id: 'claim-1',
@@ -966,12 +849,6 @@ describe('PaymentsService mock booking payments', () => {
       reviewNote: 'Payment could not be verified.',
     });
     expect(updateData).not.toHaveProperty('bookingPaymentId');
-    expect(events.claimReviewed).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: 'REJECTED',
-        bookingPayment: null,
-      }),
-    );
   });
 
   it('does not accept a full card number as a claim payment reference', async () => {
@@ -989,8 +866,14 @@ describe('PaymentsService mock booking payments', () => {
   });
 
   it('audits and deletes a claim without deleting its issued payment', async () => {
-    const { service, claimFindUnique, claimDelete, paymentCreate, audit, tx } =
-      createService();
+    const {
+      service,
+      claimFindUnique,
+      claimDelete,
+      paymentCreate,
+      audit,
+      tx,
+    } = createService();
     claimFindUnique.mockResolvedValue({
       id: 'claim-1',
       customerId: 'customer-1',

@@ -9,7 +9,6 @@ import { json, urlencoded } from 'express';
 import * as cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-import { ConfiguredIoAdapter } from './websockets/configured-io.adapter';
 import {
   ADMIN_2FA_CHALLENGE_COOKIE,
   ADMIN_ACCESS_COOKIE,
@@ -28,7 +27,6 @@ async function bootstrap() {
   app.use(cookieParser());
 
   const configService = app.get(ConfigService);
-  app.useWebSocketAdapter(new ConfiguredIoAdapter(app, configService));
   const port = configService.get<number>('port', 3000);
   const corsOrigins = configService.get<string[]>('cors.origins', [
     'http://localhost:3000',
@@ -73,23 +71,13 @@ async function bootstrap() {
     // previous one under the default name `cookie`.
     .addCookieAuth(ADMIN_ACCESS_COOKIE, undefined, 'adminAccessToken')
     .addCookieAuth(ADMIN_REFRESH_COOKIE, undefined, 'adminRefreshToken')
-    .addCookieAuth(
-      ADMIN_2FA_CHALLENGE_COOKIE,
-      undefined,
-      'adminTwoFactorChallenge',
-    )
-    .addTag(
-      'auth',
-      'Phone-OTP sign-up and sign-in, token exchange, and session revocation.',
-    )
+    .addCookieAuth(ADMIN_2FA_CHALLENGE_COOKIE, undefined, 'adminTwoFactorChallenge')
+    .addTag('auth', 'Phone-OTP sign-up and sign-in, token exchange, and session revocation.')
     .addTag(
       'admin-auth',
       'Admin dashboard sign-in: email and password, then an SMS second factor. Sessions are held in httpOnly cookies.',
     )
-    .addTag(
-      'users',
-      'Profile and account administration. Routes marked admin need the ADMIN role.',
-    )
+    .addTag('users', 'Profile and account administration. Routes marked admin need the ADMIN role.')
     .build();
 
   const document = SwaggerModule.createDocument(app, config);

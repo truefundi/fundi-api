@@ -297,8 +297,17 @@ services. The body uses the same service shape as an entry in
 }
 ```
 
-Use `customName` instead of `categoryId` for a service not in the catalogue.
-The endpoint rejects duplicate services and enforces the existing limit of ten.
+Use `customName` instead of `categoryId` for a service not in the catalogue
+(a typed name that matches an active category is linked to it). The endpoint
+rejects duplicate services and enforces the existing limit of ten.
+
+Handled by the per-service review (`TechnicianServicesController`): the
+profile must already be `APPROVED`, and the new service starts `PENDING`. It is
+matched to jobs only after an admin approves it through
+`PATCH /api/v1/admin/technician-services/:serviceId/review`. While the
+application itself is under review, services are listed in the application
+(`serviceExperiences`) instead. `GET`, `PATCH /:serviceId` (resubmit) and
+`DELETE /:serviceId` (withdraw) live on the same path.
 
 ### `PATCH /api/v1/technicians/availability`
 

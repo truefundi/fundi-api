@@ -11,10 +11,11 @@ import {
   JobCooperationStatus,
   JobRequestType,
   JobStatus,
+  MobilePaymentProvider,
   PaymentClaimStatus,
   Prisma,
 } from '@prisma/client';
-import { createHmac, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { CreateMockPaymentDto } from './dto/create-mock-payment.dto';
@@ -26,6 +27,9 @@ import { PaymentQuoteDto } from './dto/payment-quote.dto';
 import { CreatePaymentClaimDto } from './dto/create-payment-claim.dto';
 import { ListPaymentClaimsDto } from './dto/list-payment-claims.dto';
 import { ReviewPaymentClaimDto } from './dto/review-payment-claim.dto';
+import { PaymentProvidersService } from './payment-providers.service';
+import { PaymentEventsService } from './payment-events.service';
+import { signBookingPayment } from './payment-signature';
 import {
   calculatePaymentQuote,
   PaymentPricingQuote,
@@ -55,9 +59,12 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly audit: AuditService,
+    private readonly providers: PaymentProvidersService,
+    private readonly paymentEvents: PaymentEventsService,
   ) {}
 
   async createMockPayment(customerId: string, dto: CreateMockPaymentDto) {
+    this.providers.assertSimulationAvailable();
     const requestType = dto.requestType ?? JobRequestType.NORMAL;
     const category = await this.getServiceForPricing(dto.serviceCategoryId);
     const pricing = calculatePaymentQuote(category, requestType);
@@ -151,8 +158,14 @@ export class PaymentsService {
     };
   }
 
-  async quote(dto: PaymentQuoteDto): Promise<PaymentPricingQuote> {
-    const category = await this.getServiceForPricing(dto.serviceCategoryId);
+  async quote(
+    dto: PaymentQuoteDto,
+    client: Prisma.TransactionClient = this.prisma,
+  ): Promise<PaymentPricingQuote> {
+    const category = await this.getServiceForPricing(
+      dto.serviceCategoryId,
+      client,
+    );
     return calculatePaymentQuote(
       category,
       dto.requestType ?? JobRequestType.NORMAL,
@@ -180,7 +193,34 @@ export class PaymentsService {
       });
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${customerId} FOR UPDATE`;
+      if (dto.paymentMethod === 'MTN' || dto.paymentMethod === 'AIRTEL') {
+        await this.providers.assertMode(
+          tx,
+          dto.paymentMethod as MobilePaymentProvider,
+          'MANUAL',
+        );
+      }
+      // Reject duplicate submissions rather than queueing another review.
+      const pending = await tx.paymentClaim.findFirst({
+        where: {
+          customerId,
+          serviceCategoryId: category.id,
+          requestType,
+          paymentMethod: dto.paymentMethod,
+          paymentNumber: dto.paymentNumber,
+          status: PaymentClaimStatus.PENDING,
+        },
+        select: { id: true },
+      });
+      if (pending) {
+        throw new ConflictException({
+          message:
+            'You already reported this payment. Fundi is checking it; you will be notified once it is confirmed.',
+          existingClaimId: pending.id,
+        });
+      }
       const claim = await tx.paymentClaim.create({
         data: {
           customerId,
@@ -211,6 +251,8 @@ export class PaymentsService {
       );
       return this.toPaymentClaimResponse(claim);
     });
+    await this.paymentEvents.claimCreated(result);
+    return result;
   }
 
   async listMyPaymentClaims(customerId: string) {
@@ -249,14 +291,15 @@ export class PaymentsService {
       where: { id },
       select: { id: true, status: true },
     });
-    if (!claimReference) throw new NotFoundException('Payment claim not found.');
+    if (!claimReference)
+      throw new NotFoundException('Payment claim not found.');
     if (claimReference.status !== PaymentClaimStatus.PENDING) {
       throw new ConflictException(
         'Only pending payment claims can be reviewed.',
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`
         SELECT "id" FROM "payment_claims"
         WHERE "id" = ${id}
@@ -323,8 +366,7 @@ export class PaymentsService {
             signature,
             phoneNumber: claim.customer.phoneNumber,
             amount: claim.amount,
-            pricingSnapshot:
-              claim.pricingSnapshot as Prisma.InputJsonValue,
+            pricingSnapshot: claim.pricingSnapshot as Prisma.InputJsonValue,
             requestType: claim.requestType,
             status: BookingPaymentStatus.VALID,
             paidAt: reviewedAt,
@@ -390,6 +432,8 @@ export class PaymentsService {
       );
       return this.toPaymentClaimResponse(updated);
     });
+    await this.paymentEvents.claimReviewed(result);
+    return result;
   }
 
   async deletePaymentClaim(id: string, actorId: string) {
@@ -605,37 +649,37 @@ export class PaymentsService {
       orderBy: [{ paidAt: 'desc' }, { id: 'asc' }],
     });
     return payments.map((payment) => ({
-        ...this.toSafePayment(payment),
-        service: payment.serviceCategory.name,
-        job: payment.job
-          ? {
-              id: payment.job.id,
-              status: payment.job.status,
-              description: payment.job.description,
-              createdAt: payment.job.createdAt,
-              completedAt: payment.job.completedAt,
-              technicians: this.uniqueTechnicians(
-                payment.job.assignmentHistory.map((entry) => ({
-                  technicianId: entry.technicianId,
-                  fullName: entry.technicianName,
-                  acceptedAt: entry.acceptedAt,
-                  endedAt: entry.endedAt,
-                  endReason: entry.endReason,
-                  reason: entry.reason,
-                })),
-                payment.job.offers.map((offer) => ({
-                  technicianId: offer.technicianId,
-                  fullName: offer.technician.user.fullName,
-                  offerStatus: offer.status,
-                  offeredAt: offer.offeredAt,
-                  respondedAt: offer.respondedAt,
-                  rejectionReason: offer.rejectionReason,
-                  cancellationReason: offer.dropReason,
-                })),
-              ),
-            }
-          : null,
-      }));
+      ...this.toSafePayment(payment),
+      service: payment.serviceCategory.name,
+      job: payment.job
+        ? {
+            id: payment.job.id,
+            status: payment.job.status,
+            description: payment.job.description,
+            createdAt: payment.job.createdAt,
+            completedAt: payment.job.completedAt,
+            technicians: this.uniqueTechnicians(
+              payment.job.assignmentHistory.map((entry) => ({
+                technicianId: entry.technicianId,
+                fullName: entry.technicianName,
+                acceptedAt: entry.acceptedAt,
+                endedAt: entry.endedAt,
+                endReason: entry.endReason,
+                reason: entry.reason,
+              })),
+              payment.job.offers.map((offer) => ({
+                technicianId: offer.technicianId,
+                fullName: offer.technician.user.fullName,
+                offerStatus: offer.status,
+                offeredAt: offer.offeredAt,
+                respondedAt: offer.respondedAt,
+                rejectionReason: offer.rejectionReason,
+                cancellationReason: offer.dropReason,
+              })),
+            ),
+          }
+        : null,
+    }));
   }
 
   async listAll() {
@@ -985,8 +1029,9 @@ export class PaymentsService {
 
   private async getServiceForPricing(
     serviceCategoryId: string,
+    client: Prisma.TransactionClient = this.prisma,
   ): Promise<ServiceForPricing> {
-    const category = await this.prisma.serviceCategory.findFirst({
+    const category = await client.serviceCategory.findFirst({
       where: {
         id: serviceCategoryId,
         isActive: true,
@@ -1028,21 +1073,18 @@ export class PaymentsService {
     requestType: JobRequestType,
     pricingSnapshot: unknown = null,
   ) {
-    return createHmac('sha256', secret)
-      .update(
-        [
-          id,
-          externalPaymentId,
-          customerId,
-          serviceCategoryId,
-          requestType,
-          amount,
-          phoneNumber,
-          paidAt.toISOString(),
-          JSON.stringify(pricingSnapshot),
-        ].join(':'),
-      )
-      .digest('hex');
+    return signBookingPayment(
+      secret,
+      id,
+      externalPaymentId,
+      customerId,
+      serviceCategoryId,
+      amount,
+      phoneNumber,
+      paidAt,
+      requestType,
+      pricingSnapshot,
+    );
   }
 
   private toSafePayment<

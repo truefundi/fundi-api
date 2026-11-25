@@ -231,4 +231,47 @@ describe('TechnicianServicesService', () => {
       expect.objectContaining({ title: 'Carpentry approved' }),
     );
   });
+
+  it('shows the admin a certificate reused from another service', async () => {
+    const { service, prisma } = setup();
+    const pending = {
+      ...row(),
+      technician: {
+        id: profileId,
+        verificationStatus: VerificationStatus.APPROVED,
+        user: { id: userId, fullName: 'Alex', phoneNumber: '+250700000000' },
+      },
+    };
+    Object.assign(prisma.technicianCategory, {
+      count: jest.fn().mockResolvedValue(1),
+      findMany: jest.fn().mockResolvedValue([pending]),
+    });
+    const certificate = (id: string, categoryId: string, links: string[]) => ({
+      id,
+      technicianId: profileId,
+      title: id,
+      status: 'ACCEPTED',
+      certificateType: 'TVET_CERTIFICATE',
+      categoryId,
+      customCategoryNormalized: null,
+      createdAt: new Date('2026-11-20T10:00:00Z'),
+      serviceCategories: links.map((serviceCategoryId) => ({ serviceCategoryId })),
+    });
+    Object.assign(prisma, {
+      technicianDocument: {
+        findMany: jest.fn().mockResolvedValue([
+          // Uploaded for plumbing, then reused for carpentry.
+          certificate('reused-cert', plumbingId, [plumbingId, carpentryId]),
+          // Plumbing only: not evidence for carpentry.
+          certificate('plumbing-only', plumbingId, [plumbingId]),
+        ]),
+      },
+    });
+
+    const result = await service.listForReview({});
+
+    expect(result.data[0].certificates).toEqual([
+      expect.objectContaining({ id: 'reused-cert', reused: true }),
+    ]);
+  });
 });

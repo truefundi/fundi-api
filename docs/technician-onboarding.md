@@ -309,6 +309,13 @@ application itself is under review, services are listed in the application
 (`serviceExperiences`) instead. `GET`, `PATCH /:serviceId` (resubmit) and
 `DELETE /:serviceId` (withdraw) live on the same path.
 
+A certificate already on file can back the new service instead of a new
+upload: `POST /api/v1/technicians/profile/documents/:documentId/services` with
+`{ "categoryId": "..." }` (catalog services only). The admin list,
+`GET /api/v1/admin/technician-services`, shows each service with every
+certificate that covers it, including ones reused from another service; those
+carry `reused: true`.
+
 ### `PATCH /api/v1/technicians/availability`
 
 Changes the technician's availability.

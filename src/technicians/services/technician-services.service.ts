@@ -238,6 +238,9 @@ export class TechnicianServicesService {
             categoryId: true,
             customCategoryNormalized: true,
             createdAt: true,
+            // Every catalog service the certificate covers: the one it was
+            // uploaded for and any it was reused for since.
+            serviceCategories: { select: { serviceCategoryId: true } },
           },
           orderBy: { createdAt: 'desc' },
         })
@@ -251,18 +254,30 @@ export class TechnicianServicesService {
           fullName: row.technician.user.fullName,
           phoneNumber: row.technician.user.phoneNumber,
         },
-        // Certificates filed for this service.
+        // Certificates filed for this service, including ones reused from another service.
         certificates: certificates
           .filter(
             (doc) =>
               doc.technicianId === row.technicianId &&
               (row.categoryId
-                ? doc.categoryId === row.categoryId
+                ? doc.categoryId === row.categoryId ||
+                  doc.serviceCategories.some(
+                    (link) => link.serviceCategoryId === row.categoryId,
+                  )
                 : !doc.categoryId &&
                   doc.customCategoryNormalized === row.customNameNormalized),
           )
           .map(
-            ({ technicianId: _t, customCategoryNormalized: _c, ...doc }) => doc,
+            ({
+              technicianId: _t,
+              customCategoryNormalized: _c,
+              serviceCategories: _s,
+              ...doc
+            }) => ({
+              ...doc,
+              // True when this certificate was first uploaded for another service.
+              reused: Boolean(row.categoryId && doc.categoryId !== row.categoryId),
+            }),
           ),
       })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },

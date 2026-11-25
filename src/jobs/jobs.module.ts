@@ -1,3 +1,4 @@
+import { ChatRealtimeModule } from '../chat/chat-realtime.module';
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -24,6 +25,7 @@ import { TestQueueProcessor } from './test-queue.processor';
     StorageModule,
     AuditModule,
     WebSocketsModule,
+    ChatRealtimeModule,
     NotificationsModule,
     AuthModule,
     BullModule.forRootAsync({

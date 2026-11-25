@@ -7,7 +7,7 @@ import { StorageModule } from '../storage/storage.module';
 import { AdminChatController } from './admin-chat.controller';
 import { ChatController } from './chat.controller';
 import { ChatGateway } from './chat.gateway';
-import { ChatRealtimeService } from './chat-realtime.service';
+import { ChatRealtimeModule } from './chat-realtime.module';
 import { ChatService } from './chat.service';
 
 @Module({
@@ -16,10 +16,11 @@ import { ChatService } from './chat.service';
     DatabaseModule,
     AuditModule,
     JobsModule,
+    ChatRealtimeModule,
     StorageModule,
   ],
   controllers: [ChatController, AdminChatController],
-  providers: [ChatService, ChatRealtimeService, ChatGateway],
+  providers: [ChatService, ChatGateway],
   exports: [ChatService],
 })
 export class ChatModule {}

@@ -91,6 +91,11 @@ export interface TechnicianResponse {
   /** Why the application was rejected; owner and admin views only. */
   rejectionReason?: string | null;
   availabilityStatus: string;
+  /**
+   * Owner and admin views only: an individual technician was taken offline
+   * because they reached three active jobs; they come back online when one ends.
+   */
+  capacityAutoOffline?: boolean;
   location: {
     address: string;
     publicLocationLabel: string | null;
@@ -1673,6 +1678,7 @@ export class TechniciansService {
         verificationStatus: profile.verificationStatus,
         rejectionReason: profile.rejectionReason ?? null,
         availabilityStatus: profile.availabilityStatus,
+        capacityAutoOffline: profile.capacityAutoOffline,
         location: {
           address: profile.baseAddress,
           publicLocationLabel: profile.publicLocationLabel,

@@ -105,14 +105,14 @@ These endpoints reuse the existing job lifecycle and payment rules:
 | POST | `/chat/rooms/{{chatRoomId}}/resume` | None |
 
 Room responses include the job's shared `workStatus`, optional
-`workStatusReason`, and `completionConfirmationDueAt`. Either chat participant
-can update work status without leaving the room. Supported work statuses are
-`PENDING`, `HEADING_TO_LOCATION`, `ARRIVED`, `IN_PROGRESS`, `ON_HOLD`, and
-`COMPLETED`; an on-hold update requires a reason. The technician's completed
-status starts a 10-minute customer confirmation window. The customer confirms
-with `{"status":"COMPLETED"}` on the same endpoint; without confirmation and
-without an unresolved dispute, the job is completed automatically at the
-deadline.
+`workStatusReason`, and `completionConfirmationDueAt`. The technician moves
+the work status without leaving the room: `HEADING_TO_LOCATION`, `ARRIVED`,
+`IN_PROGRESS`, `ON_HOLD` (a reason is required), and `COMPLETED`. Marking it
+`COMPLETED` starts a 10-minute confirmation window for the customer, who can
+only send `{"status":"COMPLETED"}` on the same endpoint to confirm. Without
+confirmation and without an unresolved dispute, the job is completed
+automatically at the deadline, and `chat:job:updated` (`{ "id": jobId }`) is
+pushed to the job's rooms so an open chat reloads.
 
 Both job participants must confirm cooperation before the job/payment follows
 the agreed confirmed flow. A pre-confirmation denial releases the assignment;

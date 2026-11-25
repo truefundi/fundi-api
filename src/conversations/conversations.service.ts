@@ -9,6 +9,7 @@ import {
   ConversationMessageType,
   ConversationSender,
   ConversationStatus,
+  JobCooperationStatus,
   JobStatus,
   NotificationType,
   Prisma,
@@ -40,6 +41,7 @@ const CONVERSATION_INCLUDE = {
     select: {
       id: true,
       status: true,
+      cooperationStatus: true,
       customerId: true,
       technicianId: true,
       description: true,
@@ -993,6 +995,12 @@ export class ConversationsService {
 
   private toResponse(conversation: ConversationWithDetails) {
     const pending = this.pendingOffer(conversation);
+    // Phone numbers stay hidden until both sides confirm the deal (as on the job).
+    const showContactDetails =
+      conversation.job.cooperationStatus === JobCooperationStatus.CONFIRMED;
+    const contact = <T extends { phoneNumber: string | null }>(person: T) =>
+      showContactDetails ? person : { ...person, phoneNumber: null };
+    const technician = conversation.job.technician?.user;
     return {
       id: conversation.id,
       jobId: conversation.jobId,
@@ -1014,8 +1022,8 @@ export class ConversationsService {
         latitude: conversation.job.latitude,
         longitude: conversation.job.longitude,
       },
-      customer: conversation.job.customer,
-      technician: conversation.job.technician?.user ?? null,
+      customer: contact(conversation.job.customer),
+      technician: technician ? contact(technician) : null,
       currentOffer: pending ? this.offerResponse(pending) : null,
       messages: conversation.messages.map((message) => ({
         id: message.id,

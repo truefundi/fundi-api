@@ -385,6 +385,14 @@ accepts through the normal offer inbox; an offline owner receives the two-hour
 offer. Company-owned technicians can accept multiple jobs without the
 individual technician limit. Individual technicians can have up to three
 assigned or paused jobs; reaching that limit automatically takes them offline.
+While that applies, the technician's own profile (`GET /technicians/profile`)
+returns `capacityAutoOffline: true`; they go back online by themselves when one
+of the jobs ends.
+
+Phone numbers and emails are shared only once both sides confirm the deal
+(`cooperationStatus: CONFIRMED`). Before that, job responses leave them out and
+negotiation (`/conversations`) responses return `phoneNumber: null` for both
+the customer and the technician.
 
 Pause and resume are mutual actions. Both participants call the corresponding
 endpoint for the same job; the state changes only after both requests:

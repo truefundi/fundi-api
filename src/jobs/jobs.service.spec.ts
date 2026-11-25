@@ -1497,6 +1497,58 @@ describe('JobsService shared work status', () => {
     });
     expect(tx.job.update).not.toHaveBeenCalled();
   });
+
+  it('tells the open chat when the window closes and the job completes itself', async () => {
+    const dueAt = new Date(Date.now() - 1_000);
+    const job = {
+      id: 'job-1',
+      customerId: 'customer-1',
+      technicianId: null,
+      status: JobStatus.ASSIGNED,
+      workStatus: JobWorkStatus.COMPLETED,
+      completionConfirmationDueAt: dueAt,
+      technician: { userId: 'technician-user-1' },
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      job: {
+        findUnique: jest.fn().mockResolvedValue(job),
+        update: jest.fn().mockResolvedValue(job),
+      },
+      dispute: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    const prisma = {
+      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+        work(tx),
+      ),
+      chatRoom: { findMany: jest.fn().mockResolvedValue([{ id: 'room-1' }]) },
+    };
+    const chatRealtime = { publish: jest.fn() };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      { log: jest.fn() } as never,
+      { notifyUser: jest.fn() } as never,
+      { create: jest.fn().mockResolvedValue(undefined) } as never,
+      undefined as never,
+      undefined as never,
+      chatRealtime as never,
+    );
+    jest
+      .spyOn(
+        service as unknown as { finalizeJobCompletion: () => Promise<void> },
+        'finalizeJobCompletion',
+      )
+      .mockResolvedValue(undefined);
+
+    await service.autoCompleteAfterConfirmation(job.id, dueAt.toISOString());
+
+    expect(chatRealtime.publish).toHaveBeenCalledWith(
+      'room-1',
+      'chat:job:updated',
+      { id: 'job-1' },
+    );
+  });
 });
 
 // Covers the dashboard counts: OPEN, ASSIGNED, and PAUSED jobs are active,

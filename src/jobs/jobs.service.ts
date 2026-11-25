@@ -5,8 +5,10 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ChatRealtimeService } from '../chat/chat-realtime.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   ConversationMessageType,
@@ -234,7 +236,21 @@ export class JobsService {
     private readonly notifications: NotificationsService,
     @InjectQueue('job-dispatch') private readonly dispatchQueue: Queue,
     private readonly geocoding: GeocodingService,
+    // Optional so unit tests can build the service without the chat socket.
+    @Optional() private readonly chatRealtime?: ChatRealtimeService,
   ) {}
+
+  /** Tells an open chat that its job changed, so the screen reloads at once. */
+  private async publishToJobChat(jobId: string) {
+    if (!this.chatRealtime) return;
+    const rooms = await this.prisma.chatRoom.findMany({
+      where: { jobId },
+      select: { id: true },
+    });
+    for (const room of rooms) {
+      this.chatRealtime.publish(room.id, 'chat:job:updated', { id: jobId });
+    }
+  }
 
   async confirmCooperation(
     userId: string,
@@ -3227,6 +3243,11 @@ export class JobsService {
     });
 
     if (!completed) return;
+    await this.publishToJobChat(jobId).catch((error: unknown) => {
+      this.logger.warn(
+        `Could not tell the chat that job ${jobId} was auto-completed: ${this.errorMessage(error)}`,
+      );
+    });
     for (const recipient of [
       completed.customerId,
       completed.technician?.userId,

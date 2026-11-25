@@ -243,6 +243,27 @@ describe('ConversationsService', () => {
   });
 
   describe('get', () => {
+    it('hides both phone numbers until the deal is confirmed', async () => {
+      const { service } = createService(buildConversation());
+
+      const result = await service.get(CUSTOMER_USER, 'conv1');
+
+      expect(result.customer.phoneNumber).toBeNull();
+      expect(result.technician?.phoneNumber).toBeNull();
+      expect(result.technician?.fullName).toBe('Christian');
+    });
+
+    it('shows both phone numbers once the deal is confirmed', async () => {
+      const confirmed = buildConversation();
+      (confirmed.job as AnyRecord).cooperationStatus = 'CONFIRMED';
+      const { service } = createService(confirmed);
+
+      const result = await service.get(CUSTOMER_USER, 'conv1');
+
+      expect(result.customer.phoneNumber).toBe('+250733762239');
+      expect(result.technician?.phoneNumber).toBe('+250736202068');
+    });
+
     it('hides the conversation from non-participants', async () => {
       const { service } = createService(buildConversation());
 

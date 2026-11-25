@@ -17,7 +17,6 @@ import {
   JobMediaType,
   JobOfferStatus,
   JobPriority,
-  JobProgressStatus,
   JobWorkStatus,
   JobCooperationStatus,
   JobRequestType,
@@ -64,7 +63,6 @@ import { AdminRateJobDto } from './dto/admin-rate-job.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import {
   DropJobDto,
-  JobProgressDto,
   JobWorkStatusDto,
   RejectJobOfferDto,
 } from './dto/job-action.dto';
@@ -194,6 +192,11 @@ type CustomerOffer = NonNullable<CustomerMessage['offer']>;
 interface MediaInput {
   upload: JobUpload;
   validated: ValidatedJobUpload;
+}
+
+/** The technician just marked the work finished (the client must confirm). */
+function newlyFinished(status: JobWorkStatus, side: 'customer' | 'technician') {
+  return side === 'technician' && status === JobWorkStatus.COMPLETED;
 }
 
 @Injectable()
@@ -2422,8 +2425,6 @@ export class JobsService {
           status: JobStatus.ASSIGNED,
           dispatchStatus: JobDispatchStatus.STOPPED,
           assignedAt: now,
-          technicianProgress: JobProgressStatus.PENDING,
-          customerProgress: JobProgressStatus.PENDING,
           workStatus: JobWorkStatus.PENDING,
           workStatusReason: null,
           cooperationStatus: JobCooperationStatus.PENDING,
@@ -2753,7 +2754,6 @@ export class JobsService {
               status: JobStatus.ASSIGNED,
               cooperationStatus: JobCooperationStatus.PENDING,
               dispatchStatus: JobDispatchStatus.STOPPED,
-              technicianProgress: JobProgressStatus.STARTED,
               workStatus: JobWorkStatus.PENDING,
               workStatusReason: null,
               completionConfirmationDueAt: null,
@@ -2992,6 +2992,11 @@ export class JobsService {
     dto: JobWorkStatusDto,
   ) {
     const reason = dto.reason?.trim() || null;
+    if (side === 'customer' && dto.status !== JobWorkStatus.COMPLETED) {
+      throw new BadRequestException(
+        'The technician updates the work status; confirm the job once it is marked finished.',
+      );
+    }
     if (dto.status === JobWorkStatus.ON_HOLD && !reason) {
       throw new BadRequestException(
         'A reason is required when placing a job on hold.',
@@ -3021,12 +3026,7 @@ export class JobsService {
         );
       }
 
-      const customerConfirmingCompletion =
-        side === 'customer' && dto.status === JobWorkStatus.COMPLETED;
-      const customerPreviouslyMarkedComplete =
-        side === 'technician' &&
-        dto.status === JobWorkStatus.COMPLETED &&
-        job.customerProgress === JobProgressStatus.COMPLETED;
+      const customerConfirmingCompletion = side === 'customer';
       if (customerConfirmingCompletion) {
         if (
           job.workStatus !== JobWorkStatus.COMPLETED ||
@@ -3043,14 +3043,11 @@ export class JobsService {
 
       const now = new Date();
       const newCompletionDueAt =
-        side === 'technician' &&
-        dto.status === JobWorkStatus.COMPLETED &&
-        !customerPreviouslyMarkedComplete
+        side === 'technician' && dto.status === JobWorkStatus.COMPLETED
           ? new Date(now.getTime() + JOB_COMPLETION_CONFIRMATION_SECONDS * 1000)
           : null;
       const dueAt = newCompletionDueAt ?? job.completionConfirmationDueAt;
-      const completed =
-        customerConfirmingCompletion || customerPreviouslyMarkedComplete;
+      const completed = customerConfirmingCompletion;
       const nextJobStatus = completed
         ? JobStatus.COMPLETED
         : dto.status === JobWorkStatus.ON_HOLD
@@ -3087,24 +3084,8 @@ export class JobsService {
               customerResumeRequestedAt: null,
               technicianResumeRequestedAt: null,
             }),
-          ...(completed && {
-            customerProgress: JobProgressStatus.COMPLETED,
-            technicianProgress: JobProgressStatus.COMPLETED,
-            completionConfirmedAt: now,
-          }),
-          ...(side === 'technician' &&
-            dto.status === JobWorkStatus.COMPLETED && {
-              technicianProgress: JobProgressStatus.COMPLETED,
-              completionConfirmationDueAt: dueAt,
-            }),
-          ...(dto.status === JobWorkStatus.IN_PROGRESS && {
-            ...(side === 'customer' && {
-              customerProgress: JobProgressStatus.IN_PROGRESS,
-            }),
-            ...(side === 'technician' && {
-              technicianProgress: JobProgressStatus.IN_PROGRESS,
-            }),
-          }),
+          ...(completed && { completionConfirmedAt: now }),
+          ...(newCompletionDueAt && { completionConfirmationDueAt: dueAt }),
           ...(completed && {
             completedAt: now,
             completionConfirmationDueAt: null,
@@ -3140,19 +3121,43 @@ export class JobsService {
     });
 
     const updated = await this.findJob(jobId);
+    const recipients = [updated.customerId, updated.technician?.userId].filter(
+      (id): id is string => Boolean(id),
+    );
+    for (const recipient of recipients) {
+      this.events.notifyUser(recipient, 'job:updated', {
+        jobId,
+        status: updated.status,
+        workStatus: updated.workStatus,
+        completionConfirmationDueAt: updated.completionConfirmationDueAt,
+      });
+    }
     if (updated.status === JobStatus.COMPLETED) {
-      for (const recipient of [
-        updated.customerId,
-        updated.technician?.userId,
-      ]) {
-        if (recipient) {
-          this.events.notifyUser(recipient, 'job:updated', {
-            jobId,
-            status: updated.status,
-            workStatus: updated.workStatus,
-          });
-        }
+      for (const recipient of recipients) {
+        await this.notifications
+          .create({
+            userId: recipient,
+            type: NotificationType.JOB_COMPLETED,
+            title: 'Job completed',
+            body: 'The client confirmed the job is done.',
+            data: { jobId, dedupeKey: `job-completed:${jobId}` },
+          })
+          .catch(() => undefined);
       }
+    } else if (newlyFinished(dto.status, side)) {
+      await this.notifications
+        .create({
+          userId: updated.customerId,
+          type: NotificationType.SYSTEM,
+          title: 'Job marked finished',
+          body: `Confirm the work is done. The job completes on its own in ${JOB_COMPLETION_CONFIRMATION_SECONDS / 60} minutes.`,
+          data: {
+            kind: 'JOB_COMPLETION_CONFIRMATION',
+            jobId,
+            dedupeKey: `job-finished:${jobId}:${updated.completionConfirmationDueAt?.getTime() ?? ''}`,
+          },
+        })
+        .catch(() => undefined);
     }
     return this.toResponse(updated, side);
   }
@@ -3200,8 +3205,6 @@ export class JobsService {
           status: JobStatus.COMPLETED,
           completedAt: now,
           completionAutoCompletedAt: now,
-          customerProgress: JobProgressStatus.COMPLETED,
-          technicianProgress: JobProgressStatus.COMPLETED,
           dispatchStatus: JobDispatchStatus.STOPPED,
         },
       });
@@ -3253,205 +3256,6 @@ export class JobsService {
           });
       }
     }
-  }
-
-  async updateProgress(
-    userId: string,
-    jobId: string,
-    side: 'customer' | 'technician',
-    dto: JobProgressDto,
-  ) {
-    const where: Prisma.JobWhereInput =
-      side === 'customer'
-        ? { id: jobId, customerId: userId, status: JobStatus.ASSIGNED }
-        : {
-            id: jobId,
-            technician: { is: { userId } },
-            status: JobStatus.ASSIGNED,
-          };
-    await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "jobs" WHERE "id" = ${jobId} FOR UPDATE`;
-      const job = await tx.job.findFirst({ where });
-      if (!job) throw new NotFoundException('Assigned job not found.');
-      const current =
-        side === 'customer' ? job.customerProgress : job.technicianProgress;
-      this.assertProgressTransition(current, dto.status);
-      const nextCustomer =
-        side === 'customer' ? dto.status : job.customerProgress;
-      const nextTechnician =
-        side === 'technician' ? dto.status : job.technicianProgress;
-      const status =
-        nextCustomer === JobProgressStatus.FAILED ||
-        nextTechnician === JobProgressStatus.FAILED
-          ? JobStatus.FAILED
-          : nextCustomer === JobProgressStatus.COMPLETED &&
-              nextTechnician === JobProgressStatus.COMPLETED
-            ? JobStatus.COMPLETED
-            : JobStatus.ASSIGNED;
-      const awaitingCustomerConfirmation =
-        side === 'technician' &&
-        dto.status === JobProgressStatus.COMPLETED &&
-        nextCustomer !== JobProgressStatus.COMPLETED;
-      const now = new Date();
-      const completionDueAt = awaitingCustomerConfirmation
-        ? new Date(now.getTime() + JOB_COMPLETION_CONFIRMATION_SECONDS * 1000)
-        : null;
-      if (completionDueAt) {
-        await this.dispatchQueue.add(
-          'auto-complete-job',
-          { jobId, dueAt: completionDueAt.toISOString() },
-          {
-            jobId: `job-auto-complete-${jobId}-${completionDueAt.getTime()}`,
-            delay: JOB_COMPLETION_CONFIRMATION_SECONDS * 1000,
-            attempts: 3,
-            removeOnComplete: true,
-          },
-        );
-      }
-      await tx.job.update({
-        where: { id: jobId },
-        data: {
-          ...(side === 'customer'
-            ? { customerProgress: dto.status }
-            : { technicianProgress: dto.status }),
-          status,
-          ...(nextTechnician === JobProgressStatus.COMPLETED && {
-            workStatus: JobWorkStatus.COMPLETED,
-          }),
-          completionConfirmationDueAt:
-            status === JobStatus.COMPLETED
-              ? null
-              : (completionDueAt ?? job.completionConfirmationDueAt),
-          ...(status === JobStatus.COMPLETED && {
-            completionConfirmedAt: now,
-            completionAutoCompletedAt: null,
-          }),
-          dispatchStatus:
-            status === JobStatus.ASSIGNED
-              ? job.dispatchStatus
-              : JobDispatchStatus.STOPPED,
-          completedAt:
-            status === JobStatus.COMPLETED || status === JobStatus.FAILED
-              ? now
-              : null,
-        },
-      });
-      if (status === JobStatus.COMPLETED || status === JobStatus.FAILED) {
-        const history = await tx.jobAssignmentHistory.findFirst({
-          where: { jobId, endedAt: null },
-          orderBy: { acceptedAt: 'desc' },
-        });
-        if (history) {
-          await tx.jobAssignmentHistory.update({
-            where: { id: history.id },
-            data: {
-              endedAt: new Date(),
-              endReason: status,
-            },
-          });
-          await tx.chatRoom.updateMany({
-            where: { assignmentHistoryId: history.id },
-            data: {
-              status:
-                status === JobStatus.COMPLETED
-                  ? ChatRoomStatus.COMPLETED
-                  : ChatRoomStatus.DISABLED,
-              disabledAt: new Date(),
-              disabledById: null,
-              disabledReason:
-                status === JobStatus.COMPLETED
-                  ? 'Both participants marked the job completed.'
-                  : 'The job ended without completion.',
-            },
-          });
-        }
-        // Accepting the job took the technician offline; once it ends they can
-        // take requests again, unless another job still holds them.
-        if (job.technicianId) {
-          const otherActiveJobs = await tx.job.count({
-            where: {
-              technicianId: job.technicianId,
-              status: JobStatus.ASSIGNED,
-              id: { not: jobId },
-            },
-          });
-          if (!otherActiveJobs) {
-            await tx.technicianProfile.updateMany({
-              where: {
-                id: job.technicianId,
-                verificationStatus: VerificationStatus.APPROVED,
-                user: { is: { status: UserStatus.ACTIVE } },
-              },
-              data: { availabilityStatus: TechnicianAvailability.ONLINE },
-            });
-          }
-        }
-        if (status === JobStatus.COMPLETED) {
-          await tx.bookingPayment.updateMany({
-            where: {
-              jobId,
-              status: {
-                in: [BookingPaymentStatus.PAUSED, BookingPaymentStatus.EXPIRED],
-              },
-            },
-            data: {
-              status: BookingPaymentStatus.COMPLETED,
-              remainingValiditySeconds: null,
-            },
-          });
-          if (job.technicianId) {
-            await this.refreshTechnicianAvailability(tx, job.technicianId);
-          }
-        }
-      }
-      await this.audit.log(
-        {
-          entityType: 'Job',
-          entityId: jobId,
-          action: `${side.toUpperCase()}_PROGRESS_UPDATED`,
-          actorId: userId,
-          metadata: {
-            status: dto.status,
-            customerProgress: nextCustomer,
-            technicianProgress: nextTechnician,
-          },
-        },
-        tx,
-      );
-    });
-    const updated = await this.findJob(jobId);
-    if (
-      this.notifications &&
-      (updated.status === JobStatus.COMPLETED ||
-        updated.status === JobStatus.FAILED)
-    ) {
-      const completed = updated.status === JobStatus.COMPLETED;
-      const recipients = [
-        updated.customerId,
-        updated.technician?.userId,
-      ].filter((id): id is string => Boolean(id));
-      for (const recipient of new Set(recipients)) {
-        await this.notifications
-          .create({
-            userId: recipient,
-            type: completed
-              ? NotificationType.JOB_COMPLETED
-              : NotificationType.JOB_CANCELLED,
-            title: completed ? 'Job completed' : 'Job ended',
-            body: completed
-              ? 'The job has been marked as completed by both parties.'
-              : 'The job was marked as failed.',
-            data: {
-              jobId,
-              dedupeKey: completed
-                ? `job-completed:${jobId}`
-                : `job-failed:${jobId}`,
-            },
-          })
-          .catch(() => undefined);
-      }
-    }
-    return this.toResponse(updated, side);
   }
 
   async getTechnicianJob(technicianUserId: string, jobId: string) {
@@ -4482,8 +4286,6 @@ export class JobsService {
       ...(viewer === 'customer' && {
         lastOffer: lastOffer ? await offerResponse(lastOffer) : null,
       }),
-      customerProgress: job.customerProgress,
-      technicianProgress: job.technicianProgress,
       pauseRequests: {
         customerRequested: Boolean(job.customerPauseRequestedAt),
         technicianRequested: Boolean(job.technicianPauseRequestedAt),
@@ -4699,8 +4501,6 @@ export class JobsService {
           ? JobDispatchStatus.STOPPED
           : JobDispatchStatus.PENDING,
         ...(confirmedCooperation ? {} : { dispatchRound: { increment: 1 } }),
-        technicianProgress: JobProgressStatus.PENDING,
-        customerProgress: JobProgressStatus.PENDING,
         assignedAt: null,
         ...(confirmedCooperation
           ? {}
@@ -5069,28 +4869,6 @@ export class JobsService {
     if (!allowed[current].includes(next)) {
       throw new ConflictException(
         `Work status cannot change from ${current} to ${next}.`,
-      );
-    }
-  }
-
-  private assertProgressTransition(
-    current: JobProgressStatus,
-    next: JobProgressStatus,
-  ) {
-    const allowed: Record<JobProgressStatus, JobProgressStatus[]> = {
-      PENDING: [JobProgressStatus.STARTED, JobProgressStatus.FAILED],
-      STARTED: [
-        JobProgressStatus.IN_PROGRESS,
-        JobProgressStatus.COMPLETED,
-        JobProgressStatus.FAILED,
-      ],
-      IN_PROGRESS: [JobProgressStatus.COMPLETED, JobProgressStatus.FAILED],
-      COMPLETED: [],
-      FAILED: [],
-    };
-    if (!allowed[current].includes(next)) {
-      throw new ConflictException(
-        `Progress cannot change from ${current} to ${next}.`,
       );
     }
   }

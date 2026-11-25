@@ -87,8 +87,7 @@ fields side by side.
 | `POST`   | `/api/v1/jobs/mine/:jobId/company-requests`          | Send a request to an approved company                                         |
 | `POST`   | `/api/v1/jobs/mine/:jobId/confirm-cooperation`       | Customer confirms agreement with the assigned technician                      |
 | `PATCH`  | `/api/v1/jobs/mine/:jobId`                           | Edit an open, unassigned job                                                  |
-| `PATCH`  | `/api/v1/jobs/mine/:jobId/progress`                  | Update customer progress                                                      |
-| `PATCH`  | `/api/v1/jobs/mine/:jobId/status`                    | Update shared work status                                                     |
+| `PATCH`  | `/api/v1/jobs/mine/:jobId/status`                    | Confirm a finished job (`COMPLETED` only)                                     |
 | `POST`   | `/api/v1/jobs/mine/:jobId/cancel`                    | Cancel with a reason                                                          |
 | `POST`   | `/api/v1/jobs/mine/:jobId/pause`                     | Request a mutual pause                                                        |
 | `POST`   | `/api/v1/jobs/mine/:jobId/resume`                    | Request a mutual resume                                                       |
@@ -336,7 +335,7 @@ remaining validity resumes for reassignment. Only completed or cancelled jobs
 can be hidden with `DELETE /api/v1/jobs/mine/{{jobId}}`. Hiding is per user and
 does not delete the other party's history.
 
-### Progress, pause, and resume
+### Work status, pause, and resume
 
 After an offer is accepted, the job is `ASSIGNED` and the booking payment is
 `PAUSED`. The customer and assigned technician independently confirm their
@@ -357,30 +356,16 @@ remaining payment validity resumes and the job can be reassigned. After mutual
 confirmation, cancellation ends the job rather than reopening it for
 reassignment, because its booking payment has expired.
 
-The legacy progress endpoints continue to update each participant's progress
-separately, using
-`PATCH /api/v1/jobs/mine/{{jobId}}/progress` (customer) or
-`PATCH /api/v1/jobs/technician/mine/{{jobId}}/progress` (technician):
-
-```json
-{
-  "status": "IN_PROGRESS"
-}
-```
-
-Progress values are `STARTED`, `IN_PROGRESS`, `COMPLETED`, and `FAILED`.
-Through these legacy endpoints, overall job status becomes `COMPLETED` only
-when both sides mark it completed; either side marking it failed makes the job
-`FAILED`.
-
-For the shared work status, either participant can use
-`PATCH /api/v1/jobs/mine/{{jobId}}/status` (customer) or
-`PATCH /api/v1/jobs/technician/mine/{{jobId}}/status` (technician). The values
-are `PENDING`, `HEADING_TO_LOCATION`, `ARRIVED`, `IN_PROGRESS`, `ON_HOLD`, and
+Work progress is one status, `workStatus`, driven by the technician after both
+parties confirm cooperation:
+`PATCH /api/v1/jobs/technician/mine/{{jobId}}/status`. The values are
+`PENDING`, `HEADING_TO_LOCATION`, `ARRIVED`, `IN_PROGRESS`, `ON_HOLD`, and
 `COMPLETED`. `ON_HOLD` requires a `reason`; cancelling still uses the existing
 reason-required cancel/drop actions. The technician's `COMPLETED` status starts
-a 10-minute customer confirmation window. The customer confirms by submitting
-`{"status":"COMPLETED"}` to the status endpoint. If the customer does not
+a 10-minute customer confirmation window and notifies the customer. The
+customer's only status action is to confirm: `{"status":"COMPLETED"}` to
+`PATCH /api/v1/jobs/mine/{{jobId}}/status`, which completes the job; any other
+value is refused. If the customer does not
 confirm and there is no unresolved dispute, a delayed background task marks the
 job complete at the deadline. The response exposes `completionConfirmationDueAt`
 and `completionAutoCompletedAt`.
@@ -422,8 +407,7 @@ another assigned job is still active.
 | `GET`    | `/api/v1/jobs/technician/mine`                            | List visible current and past jobs                     |
 | `GET`    | `/api/v1/jobs/technician/mine/:jobId`                     | Read an assigned or previously assigned job            |
 | `POST`   | `/api/v1/jobs/technician/mine/:jobId/confirm-cooperation` | Technician confirms agreement with the job owner       |
-| `PATCH`  | `/api/v1/jobs/technician/mine/:jobId/progress`            | Update technician progress                             |
-| `PATCH`  | `/api/v1/jobs/technician/mine/:jobId/status`              | Update shared work status                              |
+| `PATCH`  | `/api/v1/jobs/technician/mine/:jobId/status`              | Update the work status                                 |
 | `POST`   | `/api/v1/jobs/technician/mine/:jobId/drop`                | Request cancellation with a reason                     |
 | `POST`   | `/api/v1/jobs/technician/mine/:jobId/pause`               | Request a mutual pause                                 |
 | `POST`   | `/api/v1/jobs/technician/mine/:jobId/resume`              | Request a mutual resume                                |
@@ -531,11 +515,11 @@ diagnosis, quote, or quote-approval records, those three stages return
 | Request  | `status: OPEN` and `dispatchStatus: PENDING`                                                                              |
 | Match    | `status: OPEN` and `dispatchStatus` is `OFFERED`, `EXHAUSTED`, or `STOPPED`                                               |
 | Accept   | `status` is `ASSIGNED`/`PAUSED`, a technician is assigned, and `cooperationStatus: PENDING`                               |
-| Visit    | `status` is `ASSIGNED`/`PAUSED`, `cooperationStatus: CONFIRMED`, and neither side's progress is `IN_PROGRESS`/`COMPLETED` |
+| Visit    | `status` is `ASSIGNED`/`PAUSED`, `cooperationStatus: CONFIRMED`, and `workStatus` is not `IN_PROGRESS`/`ON_HOLD`/`COMPLETED` |
 | Diagnose | Not tracked                                                                                                               |
 | Quote    | Not tracked                                                                                                               |
 | Approve  | Not tracked                                                                                                               |
-| Repair   | `status` is `ASSIGNED`/`PAUSED`, `cooperationStatus: CONFIRMED`, and either side's progress is `IN_PROGRESS`/`COMPLETED`  |
+| Repair   | `status` is `ASSIGNED`/`PAUSED`, `cooperationStatus: CONFIRMED`, and `workStatus` is `IN_PROGRESS`/`ON_HOLD`/`COMPLETED`    |
 | Settle   | `status: COMPLETED` and `ratedAt` is null                                                                                 |
 | Rate     | `status: COMPLETED` and `ratedAt` is set                                                                                  |
 

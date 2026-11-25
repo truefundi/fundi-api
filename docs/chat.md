@@ -100,7 +100,6 @@ These endpoints reuse the existing job lifecycle and payment rules:
 | POST | `/chat/rooms/{{chatRoomId}}/cooperation/confirm` | None |
 | POST | `/chat/rooms/{{chatRoomId}}/cooperation/deny` | `{"reason":"We could not agree on the terms."}` |
 | POST | `/chat/rooms/{{chatRoomId}}/cancel` | `{"reason":"The customer no longer needs the repair."}` |
-| PATCH | `/chat/rooms/{{chatRoomId}}/progress` | `{"status":"COMPLETED"}` |
 | PATCH | `/chat/rooms/{{chatRoomId}}/status` | `{"status":"ON_HOLD","reason":"Waiting for a replacement part."}` |
 | POST | `/chat/rooms/{{chatRoomId}}/pause` | None |
 | POST | `/chat/rooms/{{chatRoomId}}/resume` | None |

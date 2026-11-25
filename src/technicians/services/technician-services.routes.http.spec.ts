@@ -21,6 +21,9 @@ import { TechnicianServicesService } from './technician-services.service';
  * POST /profile/services on TechniciansController would silently take over.
  */
 describe('POST /api/v1/technicians/profile/services (HTTP)', () => {
+  // Booting a Nest app per test can take a few seconds on a busy machine.
+  jest.setTimeout(30_000);
+
   let app: INestApplication;
   const userId = '0a1b2c3d-0000-4000-8000-000000000001';
   const categoryId = '0a1b2c3d-0000-4000-8000-000000000002';

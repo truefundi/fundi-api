@@ -1316,8 +1316,6 @@ describe('JobsService shared work status', () => {
       workStatusReason: null,
       completionConfirmationDueAt: null,
       completionConfirmedAt: null,
-      customerProgress: 'STARTED',
-      technicianProgress: 'STARTED',
     };
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([]),
@@ -1333,12 +1331,13 @@ describe('JobsService shared work status', () => {
       ),
     };
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
+    const notifications = { create: jest.fn().mockResolvedValue(undefined) };
     const service = new JobsService(
       prisma as unknown as PrismaService,
       undefined as never,
       { log: jest.fn().mockResolvedValue(undefined) } as never,
-      undefined as never,
-      undefined as never,
+      { notifyUser: jest.fn() } as never,
+      notifications as never,
       queue as never,
       undefined as never,
     );
@@ -1349,6 +1348,14 @@ describe('JobsService shared work status', () => {
     await service.updateWorkStatus('technician-user-1', job.id, 'technician', {
       status: JobWorkStatus.COMPLETED,
     });
+
+    // The client is asked to confirm.
+    expect(notifications.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'customer-1',
+        title: 'Job marked finished',
+      }),
+    );
 
     const updated = tx.job.update.mock.calls[0][0].data;
     expect(updated.completionConfirmationDueAt).toBeInstanceOf(Date);
@@ -1362,6 +1369,89 @@ describe('JobsService shared work status', () => {
       'auto-complete-job',
       expect.objectContaining({ jobId: job.id }),
       expect.objectContaining({ delay: 600_000 }),
+    );
+  });
+
+  const workStatusService = (job: Record<string, unknown>) => {
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      job: {
+        findFirst: jest.fn().mockResolvedValue(job),
+        update: jest.fn().mockResolvedValue(job),
+      },
+      jobAssignmentHistory: { findFirst: jest.fn().mockResolvedValue(null) },
+      bookingPayment: { updateMany: jest.fn() },
+      technicianProfile: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    const prisma = {
+      job: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ ...job, status: JobStatus.COMPLETED }),
+      },
+      $transaction: jest.fn((work: (client: typeof tx) => Promise<unknown>) =>
+        work(tx),
+      ),
+    };
+    const notifications = { create: jest.fn().mockResolvedValue(undefined) };
+    const service = new JobsService(
+      prisma as unknown as PrismaService,
+      undefined as never,
+      { log: jest.fn().mockResolvedValue(undefined) } as never,
+      { notifyUser: jest.fn() } as never,
+      notifications as never,
+      { add: jest.fn() } as never,
+      undefined as never,
+    );
+    jest
+      .spyOn(service as unknown as { toResponse: jest.Mock }, 'toResponse')
+      .mockResolvedValue({});
+    return { service, tx, notifications };
+  };
+
+  it('lets the client only confirm a finished job, not move the work along', async () => {
+    const { service, tx } = workStatusService({
+      id: 'job-1',
+      customerId: 'customer-1',
+      status: JobStatus.ASSIGNED,
+      cooperationStatus: JobCooperationStatus.CONFIRMED,
+      workStatus: JobWorkStatus.PENDING,
+    });
+
+    await expect(
+      service.updateWorkStatus('customer-1', 'job-1', 'customer', {
+        status: JobWorkStatus.IN_PROGRESS,
+      }),
+    ).rejects.toThrow('The technician updates the work status');
+    expect(tx.job.update).not.toHaveBeenCalled();
+  });
+
+  it('completes the job when the client confirms within the window', async () => {
+    const { service, tx, notifications } = workStatusService({
+      id: 'job-1',
+      customerId: 'customer-1',
+      technicianId: null,
+      status: JobStatus.ASSIGNED,
+      cooperationStatus: JobCooperationStatus.CONFIRMED,
+      workStatus: JobWorkStatus.COMPLETED,
+      completionConfirmationDueAt: new Date(Date.now() + 60_000),
+      completionConfirmedAt: null,
+    });
+
+    await service.updateWorkStatus('customer-1', 'job-1', 'customer', {
+      status: JobWorkStatus.COMPLETED,
+    });
+
+    expect(tx.job.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: JobStatus.COMPLETED,
+          completionConfirmedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Job completed' }),
     );
   });
 

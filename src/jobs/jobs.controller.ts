@@ -20,7 +20,7 @@ import {
   CurrentUser,
 } from '../common/decorators/auth.decorator';
 import { JOB_MAX_VIDEO_BYTES } from './job.constants';
-import { JobProgressDto, JobWorkStatusDto } from './dto/job-action.dto';
+import { JobWorkStatusDto } from './dto/job-action.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobUpload } from './job-media.util';
@@ -280,15 +280,6 @@ export class JobsController {
     @Body() dto: UpdateJobDto,
   ) {
     return this.jobs.update(user.id, jobId, dto);
-  }
-
-  @Patch('mine/:jobId/progress')
-  updateProgress(
-    @CurrentUser() user: AuthUser,
-    @Param('jobId', ParseUUIDPipe) jobId: string,
-    @Body() dto: JobProgressDto,
-  ) {
-    return this.jobs.updateProgress(user.id, jobId, 'customer', dto);
   }
 
   @Patch('mine/:jobId/status')

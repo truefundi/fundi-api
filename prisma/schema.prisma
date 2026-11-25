@@ -323,8 +323,6 @@ model Job {
   /// SOS: when the customer started the current round of offers. A technician
   /// who only let an earlier offer expire may be asked again in a new round.
   sosRoundStartedAt           DateTime?
-  customerProgress            JobProgressStatus          @default(PENDING)
-  technicianProgress          JobProgressStatus          @default(PENDING)
   workStatus                  JobWorkStatus             @default(PENDING)
   workStatusReason            String?
   completionConfirmationDueAt DateTime?
@@ -969,14 +967,6 @@ enum JobDispatchStatus {
   OFFERED
   EXHAUSTED
   STOPPED
-}
-
-enum JobProgressStatus {
-  PENDING
-  STARTED
-  IN_PROGRESS
-  COMPLETED
-  FAILED
 }
 
 enum JobOfferStatus {

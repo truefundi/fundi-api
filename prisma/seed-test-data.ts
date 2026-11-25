@@ -32,7 +32,7 @@ import {
   JobStatus,
   JobPriority,
   JobDispatchStatus,
-  JobProgressStatus,
+  JobWorkStatus,
   JobOfferStatus,
   ConversationStatus,
   ConversationSender,
@@ -451,13 +451,10 @@ async function seedJobs(
             ? JobDispatchStatus.OFFERED
             : JobDispatchStatus.PENDING,
         dispatchRound: 1,
-        customerProgress: JobProgressStatus.PENDING,
-        technicianProgress:
+        workStatus:
           status === JobStatus.COMPLETED
-            ? JobProgressStatus.COMPLETED
-            : assigned
-              ? JobProgressStatus.STARTED
-              : JobProgressStatus.PENDING,
+            ? JobWorkStatus.COMPLETED
+            : JobWorkStatus.PENDING,
         assignedAt,
         completedAt,
       },
@@ -481,13 +478,10 @@ async function seedJobs(
             ? JobDispatchStatus.OFFERED
             : JobDispatchStatus.PENDING,
         dispatchRound: 1,
-        customerProgress: JobProgressStatus.PENDING,
-        technicianProgress:
+        workStatus:
           status === JobStatus.COMPLETED
-            ? JobProgressStatus.COMPLETED
-            : assigned
-              ? JobProgressStatus.STARTED
-              : JobProgressStatus.PENDING,
+            ? JobWorkStatus.COMPLETED
+            : JobWorkStatus.PENDING,
         assignedAt,
         completedAt,
         createdAt,

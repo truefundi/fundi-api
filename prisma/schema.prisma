@@ -39,6 +39,17 @@ enum PaymentClaimStatus {
   REJECTED
 }
 
+enum MobilePaymentProvider {
+  MTN
+  AIRTEL
+}
+
+enum PaymentTransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
 datasource db {
   provider   = "postgresql"
   url        = env("DATABASE_URL")
@@ -46,37 +57,38 @@ datasource db {
 }
 
 model User {
-  id                 String                      @id @default(uuid())
-  email              String?                     @unique
-  phoneNumber        String                      @unique
-  fullName           String
-  role               UserRole                    @default(CUSTOMER)
-  status             UserStatus                  @default(ACTIVE)
-  phoneVerifiedAt    DateTime?
-  createdAt          DateTime                    @default(now())
-  updatedAt          DateTime                    @updatedAt
-  passwordHash       String?
-  pinHash            String?
-  totpSecret         String?
-  totpEnabledAt      DateTime?
-  customerJobs       Job[]                       @relation("JobCustomer")
-  refreshTokens      RefreshToken[]
-  technicianProfile  TechnicianProfile?
-  bookingPayments    BookingPayment[]
-  phoneVerifications CustomerPhoneVerification[]
-  chatMemberships    ChatRoomMember[]
-  chatMessageReads   ChatMessageRead[]
-  resolvedDisputes   Dispute[]                   @relation("DisputeResolver")
-  notifications      Notification[]
-  pushTokens         PushToken[]
-  createdAds         Ad[]                        @relation("AdCreatedBy")
-  createdBroadcasts  Broadcast[]                 @relation("BroadcastCreatedBy")
-  passkeyCredentials PasskeyCredential[]
-  submittedRatings   JobRating[]                 @relation("JobRatingSubmittedBy")
-  customerRatings    JobRating[]                 @relation("JobRatingCustomer")
-  verifiedCompanies  Company[]                   @relation("CompanyVerifiedBy")
-  paymentClaims      PaymentClaim[]              @relation("PaymentClaimCustomer")
-  reviewedClaims     PaymentClaim[]              @relation("PaymentClaimReviewer")
+  id                  String                      @id @default(uuid())
+  email               String?                     @unique
+  phoneNumber         String                      @unique
+  fullName            String
+  role                UserRole                    @default(CUSTOMER)
+  status              UserStatus                  @default(ACTIVE)
+  phoneVerifiedAt     DateTime?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  passwordHash        String?
+  pinHash             String?
+  totpSecret          String?
+  totpEnabledAt       DateTime?
+  customerJobs        Job[]                       @relation("JobCustomer")
+  refreshTokens       RefreshToken[]
+  technicianProfile   TechnicianProfile?
+  bookingPayments     BookingPayment[]
+  phoneVerifications  CustomerPhoneVerification[]
+  chatMemberships     ChatRoomMember[]
+  chatMessageReads    ChatMessageRead[]
+  resolvedDisputes    Dispute[]                   @relation("DisputeResolver")
+  notifications       Notification[]
+  pushTokens          PushToken[]
+  createdAds          Ad[]                        @relation("AdCreatedBy")
+  createdBroadcasts   Broadcast[]                 @relation("BroadcastCreatedBy")
+  passkeyCredentials  PasskeyCredential[]
+  submittedRatings    JobRating[]                 @relation("JobRatingSubmittedBy")
+  customerRatings     JobRating[]                 @relation("JobRatingCustomer")
+  verifiedCompanies   Company[]                   @relation("CompanyVerifiedBy")
+  paymentClaims       PaymentClaim[]              @relation("PaymentClaimCustomer")
+  reviewedClaims      PaymentClaim[]              @relation("PaymentClaimReviewer")
+  paymentTransactions PaymentTransaction[]
 
   @@map("users")
 }
@@ -121,31 +133,32 @@ model CatalogCategory {
 }
 
 model ServiceCategory {
-  id                String               @id @default(uuid())
-  categoryId        String
-  name              String               @unique
-  slug              String               @unique
-  description       String               @default("")
+  id                  String                      @id @default(uuid())
+  categoryId          String
+  name                String                      @unique
+  slug                String                      @unique
+  description         String                      @default("")
   /// Optional extra words customers can use to find this service.
-  keywords          String               @default("")
+  keywords            String                      @default("")
   /// Booking (visit/diagnostic) fee charged for this service, in RWF.
-  visitFee          Int                  @default(0)
+  visitFee            Int                         @default(0)
   /// Booking fee used when the customer marks the request as an emergency, in RWF.
-  emergencyVisitFee Int                  @default(0)
+  emergencyVisitFee   Int                         @default(0)
   /// Booking fee charged for an SOS request, in RWF.
-  sosBookingFee     Int?
-  icon              String?
-  isActive          Boolean              @default(true)
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  jobs              Job[]                @relation("JobServiceCategory")
-  technicians       TechnicianCategory[]
-  documents         TechnicianDocument[]
+  sosBookingFee       Int?
+  icon                String?
+  isActive            Boolean                     @default(true)
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  jobs                Job[]                       @relation("JobServiceCategory")
+  technicians         TechnicianCategory[]
+  documents           TechnicianDocument[]
   technicianDocuments TechnicianDocumentService[]
-  bookingPayments   BookingPayment[]
-  serviceCharges    ServiceCharge[]
-  paymentClaims     PaymentClaim[]
-  category          CatalogCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  bookingPayments     BookingPayment[]
+  serviceCharges      ServiceCharge[]
+  paymentClaims       PaymentClaim[]
+  paymentTransactions PaymentTransaction[]
+  category            CatalogCategory             @relation(fields: [categoryId], references: [id], onDelete: Restrict)
 
   @@index([categoryId])
   @@map("service_categories")
@@ -236,8 +249,8 @@ model TechnicianCategory {
   technicianId         String
   categoryId           String?
   customName           String?
-  customNameNormalized String            @default("")
-  id                   String            @id @default(uuid())
+  customNameNormalized String             @default("")
+  id                   String             @id @default(uuid())
   yearsOfExperience    Int
   /// Each service is reviewed on its own: only APPROVED services get jobs.
   status               VerificationStatus @default(PENDING)
@@ -245,10 +258,10 @@ model TechnicianCategory {
   reviewNote           String?
   reviewedById         String?
   reviewedAt           DateTime?
-  createdAt            DateTime          @default(now())
-  updatedAt            DateTime          @default(now()) @updatedAt
-  category             ServiceCategory?  @relation(fields: [categoryId], references: [id])
-  technician           TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @default(now()) @updatedAt
+  category             ServiceCategory?   @relation(fields: [categoryId], references: [id])
+  technician           TechnicianProfile  @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([categoryId])
   @@index([technicianId])
@@ -257,7 +270,7 @@ model TechnicianCategory {
 }
 
 model TechnicianDocument {
-  id                       String            @id @default(uuid())
+  id                       String                      @id @default(uuid())
   technicianId             String
   title                    String
   titleNormalized          String
@@ -265,20 +278,20 @@ model TechnicianDocument {
   mimeType                 String
   originalFileName         String
   sizeBytes                Int
-  status                   DocumentStatus    @default(SUBMITTED)
+  status                   DocumentStatus              @default(SUBMITTED)
   reviewNote               String?
   reviewedById             String?
   reviewedAt               DateTime?
-  createdAt                DateTime          @default(now())
-  updatedAt                DateTime          @updatedAt
+  createdAt                DateTime                    @default(now())
+  updatedAt                DateTime                    @updatedAt
   certificateType          CertificateType?
   categoryId               String?
   customCategoryName       String?
   customCategoryNormalized String?
   type                     DocumentType
-  category                 ServiceCategory?  @relation(fields: [categoryId], references: [id])
-  serviceCategories         TechnicianDocumentService[]
-  technician               TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  category                 ServiceCategory?            @relation(fields: [categoryId], references: [id])
+  serviceCategories        TechnicianDocumentService[]
+  technician               TechnicianProfile           @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([technicianId, status])
   @@index([status])
@@ -323,7 +336,7 @@ model Job {
   /// SOS: when the customer started the current round of offers. A technician
   /// who only let an earlier offer expire may be asked again in a new round.
   sosRoundStartedAt           DateTime?
-  workStatus                  JobWorkStatus             @default(PENDING)
+  workStatus                  JobWorkStatus              @default(PENDING)
   workStatusReason            String?
   completionConfirmationDueAt DateTime?
   completionConfirmedAt       DateTime?
@@ -480,10 +493,48 @@ model BookingPayment {
   serviceCategory          ServiceCategory      @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
   job                      Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
   paymentClaim             PaymentClaim?
+  paymentTransaction       PaymentTransaction?
 
   @@index([customerId, paidAt])
   @@index([status, validUntil])
   @@map("booking_payments")
+}
+
+/// One independent dashboard toggle per mobile money provider. Off means manual review.
+model PaymentProviderSetting {
+  provider   MobilePaymentProvider @id
+  apiEnabled Boolean               @default(false)
+  updatedAt  DateTime              @updatedAt
+
+  @@map("payment_provider_settings")
+}
+
+/// Collection status is independent of a booking payment's validity/job lifecycle.
+model PaymentTransaction {
+  id                String                   @id @default(uuid())
+  customerId        String
+  serviceCategoryId String
+  provider          MobilePaymentProvider
+  requestType       JobRequestType           @default(NORMAL)
+  phoneNumber       String
+  amount            Int
+  currency          String                   @default("RWF")
+  pricingSnapshot   Json
+  status            PaymentTransactionStatus @default(PENDING)
+  simulated         Boolean                  @default(false)
+  idempotencyKey    String
+  externalPaymentId String                   @unique
+  bookingPaymentId  String?                  @unique
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  customer          User                     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory   ServiceCategory          @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
+  bookingPayment    BookingPayment?          @relation(fields: [bookingPaymentId], references: [id], onDelete: SetNull)
+
+  @@unique([customerId, idempotencyKey])
+  @@index([customerId, createdAt])
+  @@index([provider, status, createdAt])
+  @@map("payment_transactions")
 }
 
 model PaymentClaim {

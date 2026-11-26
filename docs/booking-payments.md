@@ -1,9 +1,12 @@
 # Booking Payments API
 
-These endpoints implement a **development-only mock payment** for category
-booking fees and record payment data submitted by a frontend. They do not
-transfer real money or independently verify payment with a provider. All routes
-are prefixed with `/api/v1`.
+These endpoints support manual payment claims verified by an administrator,
+development payment helpers, and saved booking payments. MTN/Airtel have
+independent dashboard toggles: API mode currently simulates success in
+development/test; manual mode requires admin approval. See
+[mobile-money-payments.md](mobile-money-payments.md) for toggles, phone-number
+checkout, and websocket events. No live provider API is integrated yet.
+All routes are prefixed with `/api/v1`.
 Customer payment endpoints accept a customer or technician bearer token.
 Administrator endpoints require an administrator session or token.
 
@@ -79,6 +82,9 @@ Creates a successful development payment for an active, priced category. The
 customer's account phone number is used unless `phoneNumber` is supplied. The
 amount is calculated from the current quote; customer-paid charges are
 included, and Fundi-paid charges are excluded.
+
+This legacy test helper is blocked outside development/test. Client checkout
+should use the mode-aware `POST /payments/initiate` or `POST /payments/claims`.
 
 Request:
 
@@ -226,6 +232,10 @@ Use this endpoint when a customer or technician says they paid outside the
 online flow. A claim is **not** a booking payment and cannot be used to create
 a job while it is `PENDING` or `REJECTED`. The submitted amount must exactly
 match the current customer total for the selected service and request type.
+
+MTN and Airtel must be in effective `MANUAL` mode to submit new claims; otherwise
+the response is `409` with the provider's current mode. Active admins receive
+`payment-claim:created` and an inbox notification after submission commits.
 
 ```json
 {

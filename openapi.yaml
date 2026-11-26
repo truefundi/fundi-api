@@ -761,20 +761,41 @@ paths:
     get:
       operationId: AdminJobsController_list
       x-required-permissions: [jobs.view]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/AdminListSearch'
+        - $ref: '#/components/parameters/AdminListSortOrder'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/JobStatus' } }
+        - { name: group, in: query, schema: { type: string, enum: [matching, in_progress, completed, cancelled, disputed] } }
+        - { name: priority, in: query, schema: { type: string, enum: [LOW, NORMAL, HIGH, URGENT] } }
+        - { name: requestType, in: query, schema: { type: string, enum: [NORMAL, SOS] } }
+        - { name: serviceCategoryId, in: query, schema: { type: string, format: uuid } }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: technicianId, in: query, schema: { type: string, format: uuid } }
+        - { name: sortBy, in: query, schema: { type: string, enum: [createdAt, updatedAt, priority, offeredAmount], default: createdAt } }
       responses:
         '200':
-          description: One page of jobs.
+          description: Lightweight page when a supported query parameter is supplied; legacy detail array otherwise.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PageOfJob'
+                oneOf:
+                  - $ref: '#/components/schemas/AdminJobPageDto'
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
       security:
         - adminAccessToken: []
       tags:
         - AdminJobs
-      summary: List all jobs
+      summary: List jobs with optional server-side pagination
       description: |
-        `needs-decision`: the live backend returns a bare array. The dashboard expects `{ items, total, page, pageSize }`. Align on `PageOfJob`.
+        Send page=1 for { data, pagination: { page, limit, total, totalPages } }.
+        No query parameters preserves the legacy array. Filters combine with AND;
+        sorting uses id ASC as a tie-breaker. List rows omit histories, offers,
+        media and full ratings. Use the detail endpoint for those fields.
+        See docs/admin-performance.md for group definitions and frontend migration.
       x-fundi-status: implemented
     post:
       description: 'Creates the request on an active customer’s behalf. The job is dispatched like a customer request: matching technicians receive offers immediately.'
@@ -798,6 +819,59 @@ paths:
       tags:
         - AdminJobs
       x-fundi-status: implemented
+  /admin/payments:
+    get:
+      operationId: PaymentsController_listAll
+      tags: [Payments]
+      summary: List booking payments with optional server-side pagination
+      security:
+        - adminAccessToken: []
+      x-required-permissions: [payments.view]
+      description: |
+        Any supported query parameter selects a read-only lightweight page;
+        no query parameters preserves the legacy array and expiration writes.
+        VALID/RESUMED payments past validUntil are presented as EXPIRED.
+        Rows omit pricing details and contain at most the latest job assignment.
+        Dates filter paidAt using inclusive from and exclusive to; from must precede to.
+      parameters: &adminPaymentListParameters
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/AdminListSearch'
+        - $ref: '#/components/parameters/AdminListSortOrder'
+        - { name: status, in: query, schema: { type: string, enum: [VALID, PAUSED, RESUMED, EXPIRED, COMPLETED] } }
+        - { name: requestType, in: query, schema: { type: string, enum: [NORMAL, SOS] } }
+        - { name: serviceCategoryId, in: query, schema: { type: string, format: uuid } }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: sortBy, in: query, schema: { type: string, enum: [paidAt, createdAt, amount, validUntil], default: paidAt } }
+      responses:
+        '200':
+          description: Lightweight page, or legacy array without query parameters.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AdminPaymentPageDto'
+                  - type: array
+                    items: { type: object }
+  /admin/payments/summary:
+    get:
+      operationId: PaymentsController_summary
+      tags: [Payments]
+      summary: Filtered booking-payment counts and amounts by effective status
+      security:
+        - adminAccessToken: []
+      x-required-permissions: [payments.view]
+      description: Uses the same filters as the list; page, limit and sorting are ignored. Read-only, with consistent aggregates and effective expiration.
+      parameters: *adminPaymentListParameters
+      responses:
+        '200':
+          description: Totals for all matching payments in RWF, including zero-valued statuses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPaymentSummaryDto'
   /admin/jobs/summary:
     get:
       description: Counts active (OPEN or ASSIGNED) and COMPLETED jobs, plus disputes that have no resolution yet.
@@ -5377,6 +5451,15 @@ components:
       name: fundi_admin_2fa_challenge
       description: 'Opaque pending-challenge cookie set by `POST /auth/admin/login` and consumed by `POST /auth/admin/2fa/verify`. Grants nothing on its own.'
   parameters:
+    AdminListSearch:
+      name: search
+      in: query
+      description: Trimmed case-insensitive substring search.
+      schema: { type: string, minLength: 1, maxLength: 200 }
+    AdminListSortOrder:
+      name: sortOrder
+      in: query
+      schema: { type: string, enum: [asc, desc], default: desc }
     Page:
       name: page
       in: query
@@ -5543,6 +5626,43 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
+    AdminJobPageDto:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          description: Job summary fields, customer, currentTechnician, serviceCategory, location, bookingPayment (amount/status), and dispute (id/resolvedAt). Not a complete Job detail record.
+          items: { type: object }
+        pagination:
+          $ref: '#/components/schemas/PaginationMetaDto'
+    AdminPaymentPageDto:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          description: Payment summary fields, currency, customer, serviceCategory and linked job with at most one assignment. Omits pricing details, signatures and keys.
+          items: { type: object }
+        pagination:
+          $ref: '#/components/schemas/PaginationMetaDto'
+    AdminPaymentSummaryDto:
+      type: object
+      required: [total, amount, currency, byStatus, generatedAt]
+      properties:
+        total: { type: integer }
+        amount: { type: number }
+        currency: { type: string, enum: [RWF] }
+        generatedAt: { type: string, format: date-time }
+        byStatus:
+          type: array
+          items:
+            type: object
+            required: [status, count, amount]
+            properties:
+              status: { type: string, enum: [VALID, PAUSED, RESUMED, EXPIRED, COMPLETED] }
+              count: { type: integer }
+              amount: { type: number }
     StaffRole:
       type: string
       enum: [SUPER_ADMIN, ADMIN, ACCOUNTANT, SUPPORT]

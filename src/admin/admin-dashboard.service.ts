@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { BroadcastRole, JobStatus, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { DashboardRange, resolveDashboardRange } from './dashboard-period';
+import { DashboardCache } from './dashboard-cache';
 import {
   DashboardActivityQueryDto,
   DashboardInterval,
@@ -19,9 +20,18 @@ interface TrendRow {
 
 @Injectable()
 export class AdminDashboardService {
+  private readonly cache = new DashboardCache();
+  // Coalesce only concurrent aggregate reads. Keeping these after completion
+  // would stack their TTL with the response TTL and exceed the freshness bound.
+  private readonly aggregateCache = new DashboardCache(0);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async overview(query: DashboardQueryDto) {
+    return this.cached('overview', query, () => this.loadOverview(query));
+  }
+
+  private async loadOverview(query: DashboardQueryDto) {
     const range = resolveDashboardRange(query);
     const usersWhere = this.usersWhere(query, range);
     const newTechniciansWhere = this.techniciansWhere(query, range);
@@ -40,7 +50,6 @@ export class AdminDashboardService {
       availabilityStates,
       jobs,
       completedJobs,
-      payments,
       paymentStates,
       disputesOpened,
       openDisputes,
@@ -65,39 +74,17 @@ export class AdminDashboardService {
       newServices,
       currentServices,
     ] = await Promise.all([
-      this.prisma.user.groupBy({
-        by: ['role', 'status'],
-        where: usersWhere,
-        _count: { _all: true },
-      }),
+      this.userGroups(usersWhere),
       this.prisma.technicianProfile.count({ where: newTechniciansWhere }),
-      this.prisma.technicianProfile.groupBy({
-        by: ['verificationStatus'],
-        where: techniciansWhere,
-        _count: { _all: true },
-      }),
-      this.prisma.technicianProfile.groupBy({
-        by: ['availabilityStatus'],
-        where: techniciansWhere,
-        _count: { _all: true },
-      }),
+      this.verificationGroups(techniciansWhere),
+      this.availabilityGroups(techniciansWhere),
       this.prisma.job.groupBy({
         by: ['status', 'requestType'],
         where: jobsWhere,
         _count: { _all: true },
       }),
       this.completedJobsCount(query, range),
-      this.prisma.bookingPayment.aggregate({
-        where: paymentsWhere,
-        _count: { _all: true },
-        _sum: { amount: true },
-      }),
-      this.prisma.bookingPayment.groupBy({
-        by: ['status', 'requestType'],
-        where: paymentsWhere,
-        _count: { _all: true },
-        _sum: { amount: true },
-      }),
+      this.paymentGroups(paymentsWhere),
       this.prisma.dispute.count({ where: disputesWhere }),
       this.prisma.dispute.count({
         where: { ...openDisputesWhere, resolvedAt: null },
@@ -238,6 +225,15 @@ export class AdminDashboardService {
     const adsClicks = ads._sum.clicks ?? 0;
     const createdJobCount = jobs.reduce((sum, row) => sum + row._count._all, 0);
     const averageRating = this.round(ratingScores._avg.score);
+    const payments = {
+      _count: { _all: paymentStates.reduce((sum, row) => sum + row._count._all, 0) },
+      _sum: {
+        amount: paymentStates.reduce(
+          (sum, row) => sum + (row._sum.amount ?? 0),
+          0,
+        ),
+      },
+    };
     const comparison = query.compare
       ? await this.comparePeriod(query, range, {
           newAccounts: userCount,
@@ -332,6 +328,10 @@ export class AdminDashboardService {
   }
 
   async trends(query: DashboardTrendsQueryDto) {
+    return this.cached('trends', query, () => this.loadTrends(query));
+  }
+
+  private async loadTrends(query: DashboardTrendsQueryDto) {
     const range = resolveDashboardRange(query);
     const interval = query.interval ?? this.defaultInterval(range);
     const dateTrunc = Prisma.sql`${interval}::text`;
@@ -465,6 +465,10 @@ export class AdminDashboardService {
   }
 
   async breakdowns(query: DashboardQueryDto) {
+    return this.cached('breakdowns', query, () => this.loadBreakdowns(query));
+  }
+
+  private async loadBreakdowns(query: DashboardQueryDto) {
     const range = resolveDashboardRange(query);
     const [
       users,
@@ -487,21 +491,9 @@ export class AdminDashboardService {
       notifications,
       cancellationRequests,
     ] = await Promise.all([
-      this.prisma.user.groupBy({
-        by: ['role', 'status'],
-        where: this.usersWhere(query, range),
-        _count: { _all: true },
-      }),
-      this.prisma.technicianProfile.groupBy({
-        by: ['verificationStatus'],
-        where: this.techniciansWhere(query),
-        _count: { _all: true },
-      }),
-      this.prisma.technicianProfile.groupBy({
-        by: ['availabilityStatus'],
-        where: this.techniciansWhere(query),
-        _count: { _all: true },
-      }),
+      this.userGroups(this.usersWhere(query, range)),
+      this.verificationGroups(this.techniciansWhere(query)),
+      this.availabilityGroups(this.techniciansWhere(query)),
       this.prisma.job.groupBy({
         by: ['status', 'requestType', 'priority'],
         where: this.jobsWhere(query, range),
@@ -528,12 +520,7 @@ export class AdminDashboardService {
         },
         _count: { _all: true },
       }),
-      this.prisma.bookingPayment.groupBy({
-        by: ['status', 'requestType'],
-        where: this.paymentsWhere(query, range),
-        _count: { _all: true },
-        _sum: { amount: true },
-      }),
+      this.paymentGroups(this.paymentsWhere(query, range)),
       this.prisma.dispute.groupBy({
         by: ['openedBy', 'outcome'],
         where: this.disputesWhere(query, range),
@@ -734,6 +721,12 @@ export class AdminDashboardService {
   }
 
   async topTechnicians(query: TopTechniciansQueryDto) {
+    return this.cached('top-technicians', query, () =>
+      this.loadTopTechnicians(query),
+    );
+  }
+
+  private async loadTopTechnicians(query: TopTechniciansQueryDto) {
     const range = resolveDashboardRange(query);
     const limit = query.limit ?? 10;
     const rows = await this.prisma.$queryRaw<
@@ -965,6 +958,10 @@ export class AdminDashboardService {
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       take: 100,
     });
+    if (logs.length) {
+      this.cache.clear();
+      this.aggregateCache.clear();
+    }
     const actorIds = [
       ...new Set(logs.map((row) => row.actorId).filter(Boolean)),
     ] as string[];
@@ -986,6 +983,66 @@ export class AdminDashboardService {
       metadata: row.metadata,
       createdAt: row.createdAt,
     }));
+  }
+
+  private userGroups(where: Prisma.UserWhereInput) {
+    return this.aggregateCache.get(JSON.stringify(['user-groups', where]), () =>
+      this.prisma.user.groupBy({
+        by: ['role', 'status'],
+        where,
+        _count: { _all: true },
+      }),
+    );
+  }
+
+  private verificationGroups(where: Prisma.TechnicianProfileWhereInput) {
+    return this.aggregateCache.get(
+      JSON.stringify(['verification-groups', where]),
+      () =>
+        this.prisma.technicianProfile.groupBy({
+          by: ['verificationStatus'],
+          where,
+          _count: { _all: true },
+        }),
+    );
+  }
+
+  private availabilityGroups(where: Prisma.TechnicianProfileWhereInput) {
+    return this.aggregateCache.get(
+      JSON.stringify(['availability-groups', where]),
+      () =>
+        this.prisma.technicianProfile.groupBy({
+          by: ['availabilityStatus'],
+          where,
+          _count: { _all: true },
+        }),
+    );
+  }
+
+  private paymentGroups(where: Prisma.BookingPaymentWhereInput) {
+    return this.aggregateCache.get(JSON.stringify(['payment-groups', where]), () =>
+      this.prisma.bookingPayment.groupBy({
+        by: ['status', 'requestType'],
+        where,
+        _count: { _all: true },
+        _sum: { amount: true },
+      }),
+    );
+  }
+
+  private cached<T>(
+    name: string,
+    query: DashboardQueryDto,
+    load: () => Promise<T>,
+  ): Promise<T> {
+    // Validate before lookup; include the resolved range so midnight/month changes
+    // cannot reuse a previous period's result. All filters participate in the key.
+    const range = resolveDashboardRange(query);
+    const filters = Object.entries(query)
+      .filter(([, value]) => value !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b));
+    const key = JSON.stringify([name, range, filters]);
+    return this.cache.get(key, load);
   }
 
   private usersWhere(

@@ -393,6 +393,9 @@ model Job {
   chatRooms                   ChatRoom[]
   customerRating              JobRating?
 
+  @@index([createdAt(sort: Desc), id])
+  @@index([status, createdAt(sort: Desc), id])
+  @@index([completedAt])
   @@index([customerId, createdAt])
   @@index([technicianId, status, updatedAt])
   @@index([status, dispatchStatus, priority, createdAt])
@@ -511,6 +514,7 @@ model BookingPayment {
   paymentTransaction       PaymentTransaction?
 
   @@index([customerId, paidAt])
+  @@index([paidAt(sort: Desc), id])
   @@index([status, validUntil])
   @@map("booking_payments")
 }
@@ -838,6 +842,7 @@ model AuditLog {
   createdAt  DateTime @default(now())
 
   @@index([entityType, entityId])
+  @@index([createdAt, id])
   @@map("audit_logs")
 }
 

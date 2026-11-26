@@ -32,6 +32,8 @@ export class AdminDashboardController {
   @Get('overview')
   @ApiOperation({
     summary: 'Get dashboard summary cards across platform domains',
+    description:
+      'Results are cached per API process for 15 seconds after computation completes. Identical concurrent requests and shared aggregates coalesce pending work. Observed audit-stream activity invalidates the cache.',
   })
   overview(@Query() query: DashboardQueryDto) {
     return this.dashboard.overview(query);
@@ -41,7 +43,7 @@ export class AdminDashboardController {
   @ApiOperation({
     summary: 'Get time-series chart data across platform domains',
     description:
-      'Returns sparse time buckets for signups, jobs, completions, booking amounts, disputes, chat messages, and ratings.',
+      'Returns sparse time buckets for signups, jobs, completions, booking amounts, disputes, chat messages, and ratings. Cached per query for up to 15 seconds.',
   })
   trends(@Query() query: DashboardTrendsQueryDto) {
     return this.dashboard.trends(query);
@@ -50,6 +52,7 @@ export class AdminDashboardController {
   @Get('breakdowns')
   @ApiOperation({
     summary: 'Get dashboard chart breakdowns across platform domains',
+    description: 'Cached per query for up to 15 seconds; shares matching aggregates with overview requests.',
   })
   breakdowns(@Query() query: DashboardQueryDto) {
     return this.dashboard.breakdowns(query);
@@ -60,6 +63,7 @@ export class AdminDashboardController {
   @ApiOperation({
     summary:
       'Rank technicians by completed jobs and ratings in the selected period',
+    description: 'Cached per query for up to 15 seconds.',
   })
   topTechnicians(@Query() query: TopTechniciansQueryDto) {
     return this.dashboard.topTechnicians(query);

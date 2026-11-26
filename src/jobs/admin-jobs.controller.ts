@@ -10,7 +10,14 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiExtraModels,
+  ApiOperation,
+  ApiParam,
+  ApiResponse,
+  ApiTags,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import {
   StaffAuth,
@@ -36,6 +43,8 @@ import { AdminRateJobDto } from './dto/admin-rate-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobsService } from './jobs.service';
 import { ReviewCancellationDto } from './dto/cancel-job.dto';
+import { ListAdminJobsQueryDto } from './dto/list-admin-jobs-query.dto';
+import { AdminJobPageDto } from './dto/admin-job-page.dto';
 
 @ApiTags('Admin jobs')
 @Controller('api/v1/admin/jobs')
@@ -44,8 +53,30 @@ export class AdminJobsController {
   constructor(private readonly jobs: JobsService) {}
 
   @Get()
-  list() {
-    return this.jobs.listForAdmin();
+  @ApiExtraModels(AdminJobPageDto)
+  @ApiOperation({
+    summary: 'List jobs',
+    description:
+      'Send page=1 (or any supported query parameter) for bounded, lightweight rows with pagination metadata. No query parameters preserves the legacy full-detail array; migrate clients to the paginated form. Filters combine with AND; sorting uses id as a stable tie-breaker.',
+  })
+  @ApiResponse({
+    status: 200,
+    schema: {
+      oneOf: [
+        { $ref: getSchemaPath(AdminJobPageDto) },
+        {
+          type: 'array',
+          items: { type: 'object' },
+          description: 'Legacy response when no query parameters are sent.',
+        },
+      ],
+    },
+  })
+  @ApiValidationFailed()
+  list(@Query() query: ListAdminJobsQueryDto = {}) {
+    return Object.values(query).some((value) => value !== undefined)
+      ? this.jobs.listPageForAdmin(query)
+      : this.jobs.listForAdmin();
   }
 
   // Declared before ':jobId' so the literal segment is not parsed as a UUID.

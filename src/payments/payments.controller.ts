@@ -11,6 +11,12 @@ import {
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import {
+  ApiExtraModels,
+  ApiOperation,
+  ApiResponse,
+  getSchemaPath,
+} from '@nestjs/swagger';
+import {
   Auth,
   StaffAuth,
   AuthUser,
@@ -26,6 +32,11 @@ import { CreatePaymentClaimDto } from './dto/create-payment-claim.dto';
 import { ListPaymentClaimsDto } from './dto/list-payment-claims.dto';
 import { ReviewPaymentClaimDto } from './dto/review-payment-claim.dto';
 import { PaymentsService } from './payments.service';
+import { ListAdminPaymentsQueryDto } from './dto/list-admin-payments-query.dto';
+import {
+  AdminPaymentPageDto,
+  AdminPaymentSummaryDto,
+} from './dto/admin-payment-page.dto';
 
 @Controller('api/v1')
 export class PaymentsController {
@@ -107,8 +118,41 @@ export class PaymentsController {
 
   @Get('admin/payments')
   @StaffAuth('payments.view')
-  listAll() {
-    return this.payments.listAll();
+  @ApiExtraModels(AdminPaymentPageDto)
+  @ApiOperation({
+    summary: 'List booking payments',
+    description:
+      'Send page=1 (or any supported query parameter) for a bounded, read-only paginated list. Filters combine with AND and paidAt dates use [from,to). Without query parameters, returns the legacy full array. Paginated rows omit pricing snapshots and contain only the latest assignment. VALID/RESUMED payments past validUntil are presented as EXPIRED.',
+  })
+  @ApiResponse({
+    status: 200,
+    schema: {
+      oneOf: [
+        { $ref: getSchemaPath(AdminPaymentPageDto) },
+        {
+          type: 'array',
+          items: { type: 'object' },
+          description: 'Legacy response without query parameters.',
+        },
+      ],
+    },
+  })
+  listAll(@Query() query: ListAdminPaymentsQueryDto = {}) {
+    return Object.values(query).some((value) => value !== undefined)
+      ? this.payments.listPageForAdmin(query)
+      : this.payments.listAll();
+  }
+
+  @Get('admin/payments/summary')
+  @StaffAuth('payments.view')
+  @ApiOperation({
+    summary: 'Filtered payment counts and amounts by effective status',
+    description:
+      'Uses the same search, status, requestType, customer, service and paidAt filters as the paginated list. Counts all matching records; page, limit and sorting are ignored. Read-only: does not expire payments in storage.',
+  })
+  @ApiResponse({ status: 200, type: AdminPaymentSummaryDto })
+  summary(@Query() query: ListAdminPaymentsQueryDto) {
+    return this.payments.summaryForAdmin(query);
   }
 
   @Get('admin/payments/completed')

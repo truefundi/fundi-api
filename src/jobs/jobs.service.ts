@@ -46,6 +46,13 @@ import {
   DEFAULT_PAGE_LIMIT,
 } from '../common/dto/pagination.constants';
 import { PrismaService } from '../database/prisma.service';
+import { paginationMeta, resolveAdminPaging } from '../common/pagination';
+import {
+  ADMIN_JOB_LIST_SELECT,
+  adminJobListResponse,
+  adminJobWhere,
+} from './admin-job-list';
+import { ListAdminJobsQueryDto } from './dto/list-admin-jobs-query.dto';
 import { StorageService } from '../storage/storage.service';
 import { EventsGateway } from '../websockets/events.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -428,6 +435,7 @@ export class JobsService {
     video?: JobUpload,
     actorId = customerId,
     requestType = dto.requestType ?? JobRequestType.NORMAL,
+    responseFor: 'customer' | 'admin' = 'customer',
   ) {
     const selection = await this.resolveServiceSelection(
       dto.serviceCategoryId,
@@ -605,7 +613,9 @@ export class JobsService {
     if (requestType === JobRequestType.SOS) {
       await this.dispatchNextSosTechnician(jobId);
     }
-    return this.getCustomerJob(customerId, jobId);
+    return responseFor === 'admin'
+      ? this.getForAdmin(jobId)
+      : this.getCustomerJob(customerId, jobId);
   }
 
   async createSos(
@@ -642,14 +652,15 @@ export class JobsService {
         'The customer account is not active, so a job cannot be created for it.',
       );
     }
-    const job = await this.create(
+    return this.create(
       customer.id,
       jobInput,
       [],
       undefined,
       adminId,
+      jobInput.requestType ?? JobRequestType.NORMAL,
+      'admin',
     );
-    return this.getForAdmin(job.id);
   }
 
   async listForCustomer(customerId: string) {
@@ -3291,6 +3302,29 @@ export class JobsService {
     return this.toResponse(job, 'technician');
   }
 
+  async listPageForAdmin(query: ListAdminJobsQueryDto) {
+    const { page, limit, skip } = resolveAdminPaging(query);
+    const where = adminJobWhere(query);
+    const [total, jobs] = await Promise.all([
+      this.prisma.job.count({ where }),
+      this.prisma.job.findMany({
+        where,
+        select: ADMIN_JOB_LIST_SELECT,
+        orderBy: [
+          { [query.sortBy ?? 'createdAt']: query.sortOrder ?? 'desc' },
+          { id: 'asc' },
+        ],
+        skip,
+        take: limit,
+      }),
+    ]);
+    return {
+      data: jobs.map(adminJobListResponse),
+      pagination: paginationMeta(page, limit, total),
+    };
+  }
+
+  // Compatibility path for clients that have not opted into paging yet.
   async listForAdmin() {
     const jobs = await this.prisma.job.findMany({
       include: ADMIN_JOB_INCLUDE,

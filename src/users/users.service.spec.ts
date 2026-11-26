@@ -11,6 +11,7 @@ import {
   VerificationStatus,
 } from '@prisma/client';
 import { UsersService } from './users.service';
+import { STAFF_ROLES } from '../staff/staff-roles';
 
 // Tests admin listing (paging, filters, search) and status management rules.
 describe('UsersService', () => {
@@ -40,6 +41,8 @@ describe('UsersService', () => {
   const createService = () => {
     const transaction = {
       user: {
+        create: jest.fn(),
+        delete: jest.fn(),
         findUnique: jest.fn().mockResolvedValue({
           id: technician.id,
           role: UserRole.CUSTOMER,
@@ -71,7 +74,36 @@ describe('UsersService', () => {
           callback(transaction),
       ),
     };
-    const service = new UsersService(prisma as unknown as PrismaService);
+    transaction.user.create = prisma.user.create;
+    transaction.user.delete = prisma.user.delete;
+    // Preserve the exact update arguments for response-selection assertions.
+    transaction.user.update.mockImplementation((args) =>
+      args.data.role
+        ? Promise.resolve({ role: args.data.role })
+        : (prisma.user.update as jest.Mock)(args),
+    );
+    const policy = {
+      lock: jest.fn(),
+      authorize: jest.fn(async (_tx, _actor, id) => {
+        const user = await (prisma.user.findUnique as jest.Mock)({
+          where: { id },
+          select: safeSelect,
+        });
+        if (!user) throw new NotFoundException();
+        return user;
+      }),
+    };
+    const service = new UsersService(
+      prisma as unknown as PrismaService,
+      policy as never,
+      {
+        require: jest.fn(),
+        requireSuperAdmin: jest.fn(),
+        access: jest.fn().mockResolvedValue({ permissions: [] }),
+      } as never,
+      { log: jest.fn() } as never,
+      { invalidate: jest.fn() } as never,
+    );
     return { service, prisma, transaction };
   };
 
@@ -90,13 +122,10 @@ describe('UsersService', () => {
   };
 
   // Reads the arguments of the single findMany call a test triggered.
-  const findManyArgs = (prisma: ReturnType<typeof createService>['prisma']) =>
-    prisma.user.findMany.mock.calls[0][0] as {
-      where: Record<string, unknown>;
-      skip: number;
-      take: number;
-      orderBy: unknown;
-    };
+  const findManyArgs = (prisma: ReturnType<typeof createService>['prisma']) => {
+    const args = (prisma.user.findMany as jest.Mock).mock.calls[0][0];
+    return { ...args, where: args.where.AND[0] };
+  };
 
   describe('findAll pagination', () => {
     // Pages are fetched from the database with skip/take, never in memory.
@@ -107,9 +136,16 @@ describe('UsersService', () => {
       const result = await service.findAll({ page: 3, limit: 10 });
 
       expect(findManyArgs(prisma)).toMatchObject({ skip: 20, take: 10 });
-      expect(prisma.user.count).toHaveBeenCalledWith({ where: {} });
+      expect(prisma.user.count).toHaveBeenCalledWith({
+        where: { AND: [{}, { role: { notIn: STAFF_ROLES } }] },
+      });
       expect(result.data).toEqual([technician]);
-      expect(result.pagination).toEqual({ page: 3, limit: 10, total: 45, totalPages: 5 });
+      expect(result.pagination).toEqual({
+        page: 3,
+        limit: 10,
+        total: 45,
+        totalPages: 5,
+      });
     });
 
     describe('technician eligibility and role switching', () => {
@@ -122,12 +158,13 @@ describe('UsersService', () => {
           },
         } as never);
 
-        await expect(service.getTechnicianEligibility(technician.id)).resolves
-          .toMatchObject({
-            technicianRegistered: true,
-            technicianApproved: false,
-            canSwitchToTechnician: false,
-          });
+        await expect(
+          service.getTechnicianEligibility(technician.id),
+        ).resolves.toMatchObject({
+          technicianRegistered: true,
+          technicianApproved: false,
+          canSwitchToTechnician: false,
+        });
       });
 
       it('allows switching to technician only for an approved profile', async () => {
@@ -203,7 +240,12 @@ describe('UsersService', () => {
       const result = await service.findAll();
 
       expect(findManyArgs(prisma)).toMatchObject({ skip: 0, take: 20 });
-      expect(result.pagination).toEqual({ page: 1, limit: 20, total: 1, totalPages: 1 });
+      expect(result.pagination).toEqual({
+        page: 1,
+        limit: 20,
+        total: 1,
+        totalPages: 1,
+      });
     });
 
     // Total pages are derived from the counted total, not the page's rows.
@@ -213,7 +255,12 @@ describe('UsersService', () => {
 
       const result = await service.findAll({ page: 1, limit: 20 });
 
-      expect(result.pagination).toEqual({ page: 1, limit: 20, total: 100, totalPages: 5 });
+      expect(result.pagination).toEqual({
+        page: 1,
+        limit: 20,
+        total: 100,
+        totalPages: 5,
+      });
     });
 
     // An empty result set reports zero rows and zero pages.
@@ -238,7 +285,11 @@ describe('UsersService', () => {
 
       await service.findAll({ role: 'TECHNICIAN' });
 
-      expect(prisma.user.count).toHaveBeenCalledWith({ where: { role: 'TECHNICIAN' } });
+      expect(prisma.user.count).toHaveBeenCalledWith({
+        where: {
+          AND: [{ role: 'TECHNICIAN' }, { role: { notIn: STAFF_ROLES } }],
+        },
+      });
       expect(findManyArgs(prisma).where).toEqual({ role: 'TECHNICIAN' });
     });
 
@@ -248,7 +299,11 @@ describe('UsersService', () => {
 
       await service.findAll({ status: 'INACTIVE' });
 
-      expect(prisma.user.count).toHaveBeenCalledWith({ where: { status: 'INACTIVE' } });
+      expect(prisma.user.count).toHaveBeenCalledWith({
+        where: {
+          AND: [{ status: 'INACTIVE' }, { role: { notIn: STAFF_ROLES } }],
+        },
+      });
       expect(findManyArgs(prisma).where).toEqual({ status: 'INACTIVE' });
     });
   });
@@ -312,8 +367,15 @@ describe('UsersService', () => {
       });
       expect(args.skip).toBe(5);
       expect(args.take).toBe(5);
-      expect(prisma.user.count).toHaveBeenCalledWith({ where: args.where });
-      expect(result.pagination).toEqual({ page: 2, limit: 5, total: 2, totalPages: 1 });
+      expect(prisma.user.count).toHaveBeenCalledWith({
+        where: { AND: [args.where, { role: { notIn: STAFF_ROLES } }] },
+      });
+      expect(result.pagination).toEqual({
+        page: 2,
+        limit: 5,
+        total: 2,
+        totalPages: 1,
+      });
     });
 
     // The pre-existing /users/search route shares the same clauses, now including email.
@@ -324,10 +386,15 @@ describe('UsersService', () => {
 
       expect(prisma.user.findMany).toHaveBeenCalledWith({
         where: {
-          OR: [
-            { fullName: { contains: 'john', mode: 'insensitive' } },
-            { phoneNumber: { contains: 'john' } },
-            { email: { contains: 'john', mode: 'insensitive' } },
+          AND: [
+            {
+              OR: [
+                { fullName: { contains: 'john', mode: 'insensitive' } },
+                { phoneNumber: { contains: 'john' } },
+                { email: { contains: 'john', mode: 'insensitive' } },
+              ],
+            },
+            { role: { notIn: STAFF_ROLES } },
           ],
         },
         orderBy: [{ fullName: 'asc' }, { createdAt: 'desc' }],
@@ -339,7 +406,9 @@ describe('UsersService', () => {
     it('rejects an empty search query on the dedicated route', async () => {
       const { service, prisma } = createService();
 
-      await expect(service.search('   ')).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.search('   ')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       expect(prisma.user.findMany).not.toHaveBeenCalled();
     });
   });
@@ -361,7 +430,9 @@ describe('UsersService', () => {
       const { service, prisma } = createService();
       prisma.user.findUnique.mockResolvedValue(null);
 
-      await expect(service.getById(adminId)).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.getById(adminId)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 
@@ -402,9 +473,9 @@ describe('UsersService', () => {
       const { service, prisma } = createService();
       prisma.user.findUnique.mockResolvedValue(null);
 
-      await expect(service.updateStatus(adminId, 'INACTIVE')).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.updateStatus(adminId, 'INACTIVE'),
+      ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
 
@@ -423,10 +494,18 @@ describe('UsersService', () => {
     it('rejects invalid page and limit values', async () => {
       const { service, prisma } = createService();
 
-      await expect(service.findAll({ page: 0 })).rejects.toBeInstanceOf(BadRequestException);
-      await expect(service.findAll({ page: 1.5 })).rejects.toBeInstanceOf(BadRequestException);
-      await expect(service.findAll({ limit: 0 })).rejects.toBeInstanceOf(BadRequestException);
-      await expect(service.findAll({ limit: 101 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.findAll({ page: 0 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(service.findAll({ page: 1.5 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(service.findAll({ limit: 0 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(service.findAll({ limit: 101 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       expect(prisma.user.findMany).not.toHaveBeenCalled();
     });
 
@@ -445,7 +524,9 @@ describe('UsersService', () => {
     it('rejects an empty search value', async () => {
       const { service, prisma } = createService();
 
-      await expect(service.findAll({ search: '' })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.findAll({ search: '' })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       await expect(service.findAll({ search: '   ' })).rejects.toBeInstanceOf(
         BadRequestException,
       );
@@ -458,29 +539,70 @@ describe('UsersService', () => {
     // ask for the response-safe fields only. A regression here reopens the leak
     // where GET /auth/me handed back the bcrypt hash and the TOTP secret.
     it.each([
-      ['create', (service: UsersService) => service.create({ phoneNumber: '+250788000001', fullName: 'New User' }), 'create'],
+      [
+        'create',
+        (service: UsersService) =>
+          service.create(
+            { phoneNumber: '+250788000001', fullName: 'New User' },
+            adminId,
+          ),
+        'create',
+      ],
       ['findAll', (service: UsersService) => service.findAll(), 'findMany'],
-      ['search', (service: UsersService) => service.search('alice'), 'findMany'],
-      ['getById', (service: UsersService) => service.getById(adminId), 'findUnique'],
-      ['getByEmail', (service: UsersService) => service.getByEmail('alice@example.com'), 'findUnique'],
-      ['update', (service: UsersService) => service.update(adminId, { fullName: 'Renamed' }), 'update'],
-      ['updateAccount', (service: UsersService) => service.updateAccount(adminId, { fullName: 'Renamed' }), 'update'],
-      ['updateStatus', (service: UsersService) => service.updateStatus(adminId, 'INACTIVE'), 'update'],
-    ])('%s selects only response-safe fields', async (name, run, prismaMethod) => {
-      const { service, prisma } = createService();
+      [
+        'search',
+        (service: UsersService) => service.search('alice'),
+        'findMany',
+      ],
+      [
+        'getById',
+        (service: UsersService) => service.getById(adminId),
+        'findUnique',
+      ],
+      [
+        'getByEmail',
+        (service: UsersService) => service.getByEmail('alice@example.com'),
+        'findUnique',
+      ],
+      [
+        'update',
+        (service: UsersService) =>
+          service.update(adminId, { fullName: 'Renamed' }),
+        'update',
+      ],
+      [
+        'updateAccount',
+        (service: UsersService) =>
+          service.updateAccount(adminId, { fullName: 'Renamed' }),
+        'update',
+      ],
+      [
+        'updateStatus',
+        (service: UsersService) => service.updateStatus(adminId, 'INACTIVE'),
+        'update',
+      ],
+    ])(
+      '%s selects only response-safe fields',
+      async (name, run, prismaMethod) => {
+        const { service, prisma } = createService();
 
-      await run(service);
+        await run(service);
 
-      const call = (prisma.user as Record<string, jest.Mock>)[prismaMethod].mock.calls[0][0];
-      expect(call.select).toEqual(safeSelect);
-    });
+        const call = (prisma.user as Record<string, jest.Mock>)[prismaMethod]
+          .mock.calls[0][0];
+        expect(call.select).toEqual(safeSelect);
+      },
+    );
 
     // The three columns the select exists to keep out, stated explicitly so the
     // intent survives even if someone reshapes the select above.
     it('never requests credential hashes or TOTP secrets', async () => {
       const { service, prisma } = createService();
 
-      await service.create({ phoneNumber: '+250788000001', fullName: 'New User' });
+      await service.create(
+        { phoneNumber: '+250788000001', fullName: 'New User' },
+        adminId,
+      );
       await service.findAll();
       await service.search('alice');
       await service.getById(adminId);

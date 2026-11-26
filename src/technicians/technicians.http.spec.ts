@@ -14,6 +14,7 @@ import { TechniciansController } from './technicians.controller';
 import { TechniciansPublicController } from './technicians-public.controller';
 import { TechniciansService } from './technicians.service';
 import { AuthService } from '../auth/auth.service';
+import { PermissionsService } from '../staff/permissions.service';
 
 // Exercises the full request pipeline used in main.ts (ValidationPipe +
 // HttpExceptionFilter) with a stand-in JWT guard, so query conversion,
@@ -53,19 +54,18 @@ describe('Technician list endpoints (HTTP)', () => {
   // Stand-in for AuthGuard('jwt'): a request carries its role in a test header.
   const testAuthGuard = {
     canActivate: (context: ExecutionContext) => {
-      const req = context
-        .switchToHttp()
-        .getRequest<{
-          headers: Record<string, string>;
-          user?: unknown;
-          authMethod?: 'bearer' | 'cookie';
-        }>();
+      const req = context.switchToHttp().getRequest<{
+        headers: Record<string, string>;
+        user?: unknown;
+        authMethod?: 'bearer' | 'cookie';
+      }>();
       const role = req.headers['x-test-role'];
       if (!role) throw new UnauthorizedException();
       req.user = { userId: technicianId, role };
       // Mirrors JwtStrategy: the way the credential arrived is recorded so
       // RolesGuard can refuse a bearer token carrying the ADMIN role.
-      req.authMethod = req.headers['x-test-auth-method'] === 'bearer' ? 'bearer' : 'cookie';
+      req.authMethod =
+        req.headers['x-test-auth-method'] === 'bearer' ? 'bearer' : 'cookie';
       return true;
     },
   };
@@ -107,6 +107,10 @@ describe('Technician list endpoints (HTTP)', () => {
         TechniciansPublicController,
       ],
       providers: [
+        {
+          provide: PermissionsService,
+          useValue: { require: jest.fn().mockResolvedValue({}) },
+        },
         { provide: TechniciansService, useValue: techniciansService },
         { provide: AuthService, useValue: authService },
       ],
@@ -171,7 +175,9 @@ describe('Technician list endpoints (HTTP)', () => {
           })
           .expect(201);
 
-        expect(techniciansService.registerPublicTechnician).toHaveBeenCalledWith(
+        expect(
+          techniciansService.registerPublicTechnician,
+        ).toHaveBeenCalledWith(
           expect.objectContaining({
             user: expect.objectContaining({
               phoneNumber: '+250788123456',

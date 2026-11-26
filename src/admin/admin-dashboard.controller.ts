@@ -5,12 +5,15 @@ import {
   MessageEvent,
   Query,
   Sse,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
 import { EMPTY, from, interval } from 'rxjs';
 import { exhaustMap, map, mergeMap, startWith } from 'rxjs/operators';
-import { Auth } from '../common/decorators/auth.decorator';
+import { StaffAuth, CurrentUser, AuthUser } from '../common/decorators/auth.decorator';
+import { DASHBOARD_PERMISSIONS } from '../staff/permission-catalog';
+import { PermissionsService } from '../staff/permissions.service';
+import { PrismaService } from '../database/prisma.service';
 import { AdminDashboardService } from './admin-dashboard.service';
 import {
   DashboardActivityQueryDto,
@@ -21,9 +24,10 @@ import {
 
 @ApiTags('Admin dashboard analytics')
 @Controller('api/v1/admin/dashboard')
-@Auth(UserRole.ADMIN)
+@StaffAuth(...DASHBOARD_PERMISSIONS)
 export class AdminDashboardController {
-  constructor(private readonly dashboard: AdminDashboardService) {}
+  constructor(private readonly dashboard: AdminDashboardService,
+    private readonly permissions: PermissionsService, private readonly prisma: PrismaService) {}
 
   @Get('overview')
   @ApiOperation({
@@ -52,6 +56,7 @@ export class AdminDashboardController {
   }
 
   @Get('top-technicians')
+  @StaffAuth('dashboard.view', 'technicians.view', 'jobs.view', 'ratings.view')
   @ApiOperation({
     summary:
       'Rank technicians by completed jobs and ratings in the selected period',
@@ -61,6 +66,7 @@ export class AdminDashboardController {
   }
 
   @Get('activity')
+  @StaffAuth('dashboard.view', 'audit.view')
   @ApiOperation({
     summary: 'Get paginated audit activity for dashboard feeds',
   })
@@ -69,17 +75,18 @@ export class AdminDashboardController {
   }
 
   @Sse('events')
+  @StaffAuth('dashboard.view', 'audit.view')
   @ApiOperation({
     summary: 'Stream new audit activity to the admin dashboard using SSE',
     description:
       'Send Last-Event-ID when reconnecting. The stream emits dashboard.activity events as audit rows are committed.',
   })
-  events(@Headers('last-event-id') lastEventId?: string) {
+  events(@CurrentUser() user: AuthUser, @Headers('last-event-id') lastEventId?: string) {
     let cursor = this.dashboard.activityEvents(lastEventId);
     return interval(2_000).pipe(
       startWith(0),
       exhaustMap(() =>
-        from(this.dashboard.activityAfter(cursor)).pipe(
+        from(this.authorizedActivity(user, cursor)).pipe(
           mergeMap((rows) => (rows.length ? from(rows) : EMPTY)),
           map((row) => {
             cursor = { createdAt: row.createdAt, id: row.id };
@@ -98,5 +105,13 @@ export class AdminDashboardController {
         ),
       ),
     );
+  }
+
+  private async authorizedActivity(user: AuthUser, cursor: ReturnType<AdminDashboardService['activityEvents']>) {
+    if (!user.sessionId || !user.accessExpiresAt || user.accessExpiresAt * 1000 <= Date.now()) throw new UnauthorizedException('Session expired.');
+    const session = await this.prisma.refreshToken.findUnique({ where: { sessionId: user.sessionId } });
+    if (!session || session.userId !== user.id || session.expiresAt.getTime() <= Date.now()) throw new UnauthorizedException('Session revoked.');
+    await this.permissions.require(user.id, ['dashboard.view', 'audit.view']);
+    return this.dashboard.activityAfter(cursor);
   }
 }

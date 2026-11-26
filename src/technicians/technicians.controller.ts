@@ -25,6 +25,8 @@ import { RegisterTechnicianDto } from './dto/register-technician.dto';
 import { ServiceExperienceDto } from './dto/service-experience.dto';
 import { TechniciansService } from './technicians.service';
 import { AuthService } from '../auth/auth.service';
+import { RequirePermissions } from '../staff/permissions.guard';
+import { isStaffRole } from '../staff/staff-roles';
 
 // Groups technician self-service and authenticated discovery endpoints.
 @ApiTags('Technicians')
@@ -96,6 +98,7 @@ export class TechniciansController {
   // Approved + online. Optional paging and filter query parameters.
   @Get()
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
+  @RequirePermissions('technicians.view')
   @ApiOperation({
     summary: 'List available technicians (any signed-in role)',
     description:
@@ -112,13 +115,14 @@ export class TechniciansController {
     @CurrentUser() user: AuthUser,
     @Query() dto: SearchAvailableTechniciansDto,
   ) {
-    const viewer = user.role === UserRole.ADMIN ? 'admin' : 'authenticated';
+    const viewer = isStaffRole(user.role) ? 'admin' : 'authenticated';
     return this.technicians.listAvailable(dto, viewer);
   }
 
   // Approved (online or offline). Optional paging and filter query parameters.
   @Get('approved')
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
+  @RequirePermissions('technicians.view')
   @ApiOperation({
     summary:
       'List approved technicians regardless of availability (any signed-in role)',
@@ -135,29 +139,31 @@ export class TechniciansController {
     @CurrentUser() user: AuthUser,
     @Query() dto: SearchAvailableTechniciansDto,
   ) {
-    const viewer = user.role === UserRole.ADMIN ? 'admin' : 'authenticated';
+    const viewer = isStaffRole(user.role) ? 'admin' : 'authenticated';
     return this.technicians.listApproved(dto, viewer);
   }
 
   // Approved + online, single record.
   @Get('available/:id')
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
+  @RequirePermissions('technicians.view')
   getAvailableById(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    const viewer = user.role === UserRole.ADMIN ? 'admin' : 'authenticated';
+    const viewer = isStaffRole(user.role) ? 'admin' : 'authenticated';
     return this.technicians.getAvailableById(id, viewer);
   }
 
   // Approved (online or offline), single record.
   @Get('approved/:id')
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
+  @RequirePermissions('technicians.view')
   getApprovedById(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    const viewer = user.role === UserRole.ADMIN ? 'admin' : 'authenticated';
+    const viewer = isStaffRole(user.role) ? 'admin' : 'authenticated';
     return this.technicians.getApprovedById(id, viewer);
   }
 }

@@ -8,10 +8,12 @@ import {
 } from '../common/decorators/auth.decorator';
 import { toInlineJobMedia } from './job-media.util';
 import { JobsService } from './jobs.service';
+import { RequirePermissions } from '../staff/permissions.guard';
 
 @ApiTags('Job media')
 @Controller('api/v1/jobs')
 @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
+@RequirePermissions('jobs.view')
 export class JobMediaController {
   constructor(private readonly jobs: JobsService) {}
 

@@ -8,21 +8,17 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
 import {
-  Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
 import { DisputesService } from './disputes.service';
-import {
-  ListDisputesQueryDto,
-  ResolveDisputeDto,
-} from './dto/dispute.dto';
+import { ListDisputesQueryDto, ResolveDisputeDto } from './dto/dispute.dto';
 
 @ApiTags('Admin disputes')
 @Controller('api/v1/admin/disputes')
-@Auth(UserRole.ADMIN)
+@StaffAuth('disputes.view')
 export class AdminDisputesController {
   constructor(private readonly disputes: DisputesService) {}
 
@@ -50,13 +46,17 @@ export class AdminDisputesController {
   }
 
   @Post(':jobId/resolve')
+  @StaffAuth('disputes.manage')
   @ApiOperation({
     summary: 'Resolve a dispute (admin only)',
     description:
       'Records the outcome, the amount the customer must settle, and the reasoning. ' +
       'A dispute can only be resolved once.',
   })
-  @ApiResponse({ status: 201, description: 'The job with its resolved dispute' })
+  @ApiResponse({
+    status: 201,
+    description: 'The job with its resolved dispute',
+  })
   resolve(
     @CurrentUser() user: AuthUser,
     @Param('jobId', ParseUUIDPipe) jobId: string,

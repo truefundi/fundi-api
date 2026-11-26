@@ -20,11 +20,9 @@ import {
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
-import {
-  JobProgressDto,
-  JobWorkStatusDto,
-} from '../jobs/dto/job-action.dto';
+import { JobProgressDto, JobWorkStatusDto } from '../jobs/dto/job-action.dto';
 import { ChatService } from './chat.service';
+import { RequirePermissions } from '../staff/permissions.guard';
 import { AdminChatBlockDto, ChatReasonDto } from './dto/chat-action.dto';
 import {
   CreateChatTextMessageDto,
@@ -129,6 +127,7 @@ export class ChatController {
 
   @Get('rooms/:roomId/messages/:messageId/media')
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
+  @RequirePermissions('chat.view')
   downloadMedia(
     @CurrentUser() user: AuthUser,
     @Param('roomId', ParseUUIDPipe) roomId: string,

@@ -17,15 +17,20 @@ import {
 } from '../common/decorators/auth.decorator';
 import { ListNotificationsQueryDto } from './dto/list-notifications.query.dto';
 import { NotificationsService } from './notifications.service';
+import { RequirePermissions } from '../staff/permissions.guard';
 
 @ApiTags('Notifications')
 @Controller('api/v1/notifications')
 @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
+@RequirePermissions()
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
 
   @Get()
-  list(@CurrentUser() user: AuthUser, @Query() query: ListNotificationsQueryDto) {
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query() query: ListNotificationsQueryDto,
+  ) {
     return this.notifications.list(user.id, {
       limit: query.limit ?? 20,
       offset: query.offset ?? 0,

@@ -1,4 +1,15 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { AuditService } from '../audit/audit.service';
+import { StaffAccountPolicyService } from '../staff/staff-account-policy.service';
+import { StaffAccessEventsService } from '../staff/staff-access-events.service';
+import { PermissionsService } from '../staff/permissions.service';
+import { isStaffRole, STAFF_ROLES } from '../staff/staff-roles';
 import { PrismaService } from '../database/prisma.service';
 import {
   JobStatus,
@@ -34,20 +45,47 @@ const USER_RESPONSE_SELECT = {
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly policy: StaffAccountPolicyService,
+    private readonly permissions: PermissionsService,
+    private readonly audit: AuditService,
+    private readonly events: StaffAccessEventsService,
+  ) {}
 
   // Creates an account using admin-supplied role and status values.
-  async create(input: CreateUserDto) {
+  async create(input: CreateUserDto, actorId: string) {
     try {
-      return await this.prisma.user.create({
-        data: {
-          fullName: input.fullName.trim(),
-          phoneNumber: input.phoneNumber,
-          email: input.email || null,
-          role: input.role || UserRole.CUSTOMER,
-          status: input.status || UserStatus.ACTIVE,
-        },
-        select: USER_RESPONSE_SELECT,
+      return await this.prisma.$transaction(async (tx) => {
+        await this.policy.lock(tx);
+        if (isStaffRole(input.role)) {
+          await this.permissions.requireSuperAdmin(actorId, tx);
+          if (!input.email)
+            throw new BadRequestException(
+              'Staff accounts require an email address.',
+            );
+        } else await this.permissions.require(actorId, ['users.manage'], tx);
+        const user = await tx.user.create({
+          data: {
+            fullName: input.fullName.trim(),
+            phoneNumber: input.phoneNumber,
+            email: input.email || null,
+            role: input.role || UserRole.CUSTOMER,
+            status: input.status || UserStatus.ACTIVE,
+          },
+          select: USER_RESPONSE_SELECT,
+        });
+        await this.audit.log(
+          {
+            entityType: 'User',
+            entityId: user.id,
+            actorId,
+            action: 'USER_CREATED',
+            toStatus: user.role,
+          },
+          tx,
+        );
+        return user;
       });
     } catch (error) {
       this.handleWriteError(error);
@@ -57,12 +95,14 @@ export class UsersService {
   // Returns one page of accounts for administrator listing. Role, status, and
   // search filters are applied inside the database query, which also counts the
   // matching rows so pagination metadata stays accurate.
-  async findAll(query: ListUsersQueryDto = {}) {
+  async findAll(query: ListUsersQueryDto = {}, actorId?: string) {
     const page = query.page ?? DEFAULT_PAGE;
     const limit = query.limit ?? DEFAULT_PAGE_LIMIT;
     this.assertListQueryIsValid(query, page, limit);
 
-    const where = this.buildListWhere(query);
+    const where: Prisma.UserWhereInput = {
+      AND: [this.buildListWhere(query), await this.visibleAccounts(actorId)],
+    };
     const [total, data] = await Promise.all([
       this.prisma.user.count({ where }),
       this.prisma.user.findMany({
@@ -86,44 +126,111 @@ export class UsersService {
   }
 
   // Matches phone, full-name, and email fragments, retaining all duplicate-name results.
-  async search(query: string) {
-    if (!query?.trim()) throw new BadRequestException('Search query must not be empty.');
+  async search(query: string, actorId?: string) {
+    if (!query?.trim())
+      throw new BadRequestException('Search query must not be empty.');
     return this.prisma.user.findMany({
-      where: { OR: this.buildSearchClauses(query.trim()) },
+      where: {
+        AND: [
+          { OR: this.buildSearchClauses(query.trim()) },
+          await this.visibleAccounts(actorId),
+        ],
+      },
       orderBy: [{ fullName: 'asc' }, { createdAt: 'desc' }],
       select: USER_RESPONSE_SELECT,
     });
   }
 
   // Finds a user by ID and returns a clear not-found response when absent.
-  async getById(id: string) {
-    const user = await this.prisma.user.findUnique({ where: { id }, select: USER_RESPONSE_SELECT });
+  async getById(id: string, actorId?: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: USER_RESPONSE_SELECT,
+    });
     if (!user) throw new NotFoundException(`User with ID ${id} was not found.`);
+    if (actorId && isStaffRole(user.role))
+      await this.permissions.require(actorId, ['staff.view']);
     return user;
   }
 
   // Finds a user by unique email and returns a clear not-found response.
-  async getByEmail(email: string) {
-    const user = await this.prisma.user.findUnique({ where: { email }, select: USER_RESPONSE_SELECT });
-    if (!user) throw new NotFoundException(`User with email ${email} was not found.`);
+  async getByEmail(email: string, actorId?: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: USER_RESPONSE_SELECT,
+    });
+    if (!user)
+      throw new NotFoundException(`User with email ${email} was not found.`);
+    if (actorId && isStaffRole(user.role))
+      await this.permissions.require(actorId, ['staff.view']);
     return user;
   }
 
   // Updates administrator-managed fields, including role and status.
-  async update(id: string, input: UpdateUserDto) {
-    await this.getById(id);
+  async update(id: string, input: UpdateUserDto, actorId?: string) {
+    if (
+      input.role !== undefined &&
+      !Object.values(UserRole).includes(input.role)
+    )
+      throw new BadRequestException('A valid role is required.');
+    if (
+      input.status !== undefined &&
+      !Object.values(UserStatus).includes(input.status)
+    )
+      throw new BadRequestException('A valid account status is required.');
     try {
-      return await this.prisma.user.update({
-        where: { id },
-        data: {
-          ...(input.fullName !== undefined && { fullName: input.fullName.trim() }),
-          ...(input.phoneNumber !== undefined && { phoneNumber: input.phoneNumber }),
-          ...(input.email !== undefined && { email: input.email || null }),
-          ...(input.role !== undefined && { role: input.role }),
-          ...(input.status !== undefined && { status: input.status }),
-        },
-        select: USER_RESPONSE_SELECT,
+      const result = await this.prisma.$transaction(async (tx) => {
+        const before = await this.policy.authorize(tx, actorId, id, input);
+        const user = await tx.user.update({
+          where: { id },
+          data: {
+            ...(input.fullName !== undefined && {
+              fullName: input.fullName.trim(),
+            }),
+            ...(input.phoneNumber !== undefined && {
+              phoneNumber: input.phoneNumber,
+            }),
+            ...(input.email !== undefined && { email: input.email || null }),
+            ...(input.role !== undefined && { role: input.role }),
+            ...(input.status !== undefined && { status: input.status }),
+          },
+          select: USER_RESPONSE_SELECT,
+        });
+        if (
+          input.role &&
+          isStaffRole(input.role) !== isStaffRole(before.role)
+        ) {
+          await tx.refreshToken.deleteMany({ where: { userId: id } });
+        }
+        if (
+          input.role &&
+          input.role !== before.role &&
+          (input.role === UserRole.SUPER_ADMIN ||
+            before.role === UserRole.SUPER_ADMIN ||
+            !isStaffRole(input.role) ||
+            !isStaffRole(before.role))
+        ) {
+          await tx.staffPermission.deleteMany({ where: { userId: id } });
+        }
+        await this.audit.log(
+          {
+            entityType: 'User',
+            entityId: id,
+            actorId,
+            action: 'USER_UPDATED',
+            metadata: {
+              previousRole: before.role,
+              role: user.role,
+              previousStatus: before.status,
+              status: user.status,
+            },
+          },
+          tx,
+        );
+        return user;
       });
+      this.events.invalidate(id);
+      return result;
     } catch (error) {
       this.handleWriteError(error);
     }
@@ -132,14 +239,21 @@ export class UsersService {
   // Updates account-owned fields only, so callers cannot change role or status.
   async updateAccount(id: string, input: UpdateAccountDto) {
     try {
-      return await this.prisma.user.update({
-        where: { id },
-        data: {
-          ...(input.fullName !== undefined && { fullName: input.fullName.trim() }),
-          ...(input.phoneNumber !== undefined && { phoneNumber: input.phoneNumber }),
-          ...(input.email !== undefined && { email: input.email || null }),
-        },
-        select: USER_RESPONSE_SELECT,
+      return await this.prisma.$transaction(async (tx) => {
+        await this.policy.authorize(tx, undefined, id, input);
+        return tx.user.update({
+          where: { id },
+          data: {
+            ...(input.fullName !== undefined && {
+              fullName: input.fullName.trim(),
+            }),
+            ...(input.phoneNumber !== undefined && {
+              phoneNumber: input.phoneNumber,
+            }),
+            ...(input.email !== undefined && { email: input.email || null }),
+          },
+          select: USER_RESPONSE_SELECT,
+        });
       });
     } catch (error) {
       this.handleWriteError(error);
@@ -167,16 +281,22 @@ export class UsersService {
       technicianVerificationStatus:
         user.technicianProfile?.verificationStatus ?? null,
       technicianApproved: approved,
-      canSwitchToTechnician:
-        user.role === UserRole.CUSTOMER && approved,
+      canSwitchToTechnician: user.role === UserRole.CUSTOMER && approved,
     };
   }
 
-  async switchRole(
-    userId: string,
-    targetRole: UserRole,
-  ) {
+  async switchRole(userId: string, targetRole: UserRole) {
     return this.prisma.$transaction(async (tx) => {
+      await this.policy.authorize(tx, undefined, userId, { role: targetRole });
+      if (
+        ![UserRole.CUSTOMER, UserRole.TECHNICIAN].includes(
+          targetRole as 'CUSTOMER' | 'TECHNICIAN',
+        )
+      ) {
+        throw new ForbiddenException(
+          'Only customer and technician mode can be selected.',
+        );
+      }
       const user = await tx.user.findUnique({
         where: { id: userId },
         select: { id: true, role: true },
@@ -229,24 +349,26 @@ export class UsersService {
   }
 
   // Changes only active/inactive state through the dedicated admin route.
-  async updateStatus(id: string, status: UserStatus) {
+  async updateStatus(id: string, status: UserStatus, actorId?: string) {
     if (!Object.values(UserStatus).includes(status)) {
       throw new BadRequestException(
         `The status must be one of: ${Object.values(UserStatus).join(', ')}.`,
       );
     }
-    await this.getById(id);
-    return this.prisma.user.update({
-      where: { id },
-      data: { status },
-      select: USER_RESPONSE_SELECT,
-    });
+    return this.update(id, { status }, actorId);
   }
 
   // Deletes a user's account and cascades associated OTP and refresh records.
-  async delete(id: string) {
-    await this.getById(id);
-    await this.prisma.user.delete({ where: { id } });
+  async delete(id: string, actorId?: string) {
+    await this.prisma.$transaction(async (tx) => {
+      await this.policy.authorize(tx, actorId, id, { delete: true });
+      await tx.user.delete({ where: { id } });
+      await this.audit.log(
+        { entityType: 'User', entityId: id, actorId, action: 'USER_DELETED' },
+        tx,
+      );
+    });
+    this.events.invalidate(id);
     return { message: 'User deleted successfully.' };
   }
 
@@ -271,12 +393,18 @@ export class UsersService {
         `The limit query parameter must be an integer between 1 and ${MAX_PAGE_LIMIT}.`,
       );
     }
-    if (query.role !== undefined && !Object.values(UserRole).includes(query.role)) {
+    if (
+      query.role !== undefined &&
+      !Object.values(UserRole).includes(query.role)
+    ) {
       throw new BadRequestException(
         `The role query parameter must be one of: ${Object.values(UserRole).join(', ')}.`,
       );
     }
-    if (query.status !== undefined && !Object.values(UserStatus).includes(query.status)) {
+    if (
+      query.status !== undefined &&
+      !Object.values(UserStatus).includes(query.status)
+    ) {
       throw new BadRequestException(
         `The status query parameter must be one of: ${Object.values(UserStatus).join(', ')}.`,
       );
@@ -299,6 +427,19 @@ export class UsersService {
     };
   }
 
+  private async visibleAccounts(
+    actorId?: string,
+  ): Promise<Prisma.UserWhereInput> {
+    if (
+      actorId &&
+      (await this.permissions.access(actorId)).permissions.includes(
+        'staff.view',
+      )
+    )
+      return {};
+    return { role: { notIn: STAFF_ROLES } };
+  }
+
   // Shared substring clauses so listing search and /users/search behave the same.
   private buildSearchClauses(search: string): Prisma.UserWhereInput[] {
     return [
@@ -310,8 +451,13 @@ export class UsersService {
 
   // Converts database uniqueness violations into actionable API errors.
   private handleWriteError(error: unknown): never {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      throw new ConflictException('A user with this phone number or email already exists.');
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002'
+    ) {
+      throw new ConflictException(
+        'A user with this phone number or email already exists.',
+      );
     }
     throw error;
   }

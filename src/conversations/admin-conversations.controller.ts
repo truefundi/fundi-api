@@ -1,7 +1,6 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
-import { Auth } from '../common/decorators/auth.decorator';
+import { StaffAuth } from '../common/decorators/auth.decorator';
 import { ConversationsService } from './conversations.service';
 import { ConversationResponseDto } from './dto/conversation-response.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
@@ -9,7 +8,7 @@ import { PaginatedConversationsResponseDto } from './dto/paginated-conversations
 
 @ApiTags('Admin conversations')
 @Controller('api/v1/admin/conversations')
-@Auth(UserRole.ADMIN)
+@StaffAuth('conversations.view')
 export class AdminConversationsController {
   constructor(private readonly conversations: ConversationsService) {}
 

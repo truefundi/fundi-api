@@ -10,10 +10,14 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiBody, ApiCreatedResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
 import {
-  Auth,
+  ApiBody,
+  ApiCreatedResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
+import {
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -49,13 +53,13 @@ export class CatalogController {
   }
 
   @Get('admin/categories')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.view')
   listAllCategories() {
     return this.catalog.listAllCategories();
   }
 
   @Get('admin/categories/by-name')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.view')
   getCategoryByName(@Query('name') name: string) {
     if (!name?.trim()) {
       throw new BadRequestException('The name query parameter is required.');
@@ -64,13 +68,13 @@ export class CatalogController {
   }
 
   @Get('admin/categories/:id')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.view')
   getCategoryById(@Param('id', ParseUUIDPipe) id: string) {
     return this.catalog.getCategoryById(id);
   }
 
   @Post('categories')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.manage')
   @ApiOperation({ summary: 'Create a parent category (admin only)' })
   @ApiBody({
     type: CreateCategoryDto,
@@ -105,7 +109,7 @@ export class CatalogController {
   }
 
   @Patch('categories/:id')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.manage')
   updateCategory(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateCategoryDto,
@@ -115,7 +119,7 @@ export class CatalogController {
   }
 
   @Delete('categories/:id')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.manage')
   deactivateCategory(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
@@ -142,13 +146,13 @@ export class CatalogController {
   }
 
   @Get('admin/services')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.view')
   listAllServices() {
     return this.catalog.listAllServices();
   }
 
   @Get('admin/services/by-name')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.view')
   getServiceByName(@Query('name') name: string) {
     if (!name?.trim()) {
       throw new BadRequestException('The name query parameter is required.');
@@ -157,13 +161,13 @@ export class CatalogController {
   }
 
   @Get('admin/services/:id')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.view')
   getServiceById(@Param('id', ParseUUIDPipe) id: string) {
     return this.catalog.getServiceById(id);
   }
 
   @Get('admin/services/:serviceCategoryId/charges')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.view')
   listServiceCharges(
     @Param('serviceCategoryId', ParseUUIDPipe) serviceCategoryId: string,
   ) {
@@ -171,21 +175,17 @@ export class CatalogController {
   }
 
   @Post('admin/services/:serviceCategoryId/charges')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.manage')
   createServiceCharge(
     @Param('serviceCategoryId', ParseUUIDPipe) serviceCategoryId: string,
     @Body() dto: CreateServiceChargeDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.catalog.createServiceCharge(
-      serviceCategoryId,
-      dto,
-      user.id,
-    );
+    return this.catalog.createServiceCharge(serviceCategoryId, dto, user.id);
   }
 
   @Patch('admin/services/:serviceCategoryId/charges/:chargeId')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.manage')
   updateServiceCharge(
     @Param('serviceCategoryId', ParseUUIDPipe) serviceCategoryId: string,
     @Param('chargeId', ParseUUIDPipe) chargeId: string,
@@ -201,7 +201,7 @@ export class CatalogController {
   }
 
   @Delete('admin/services/:serviceCategoryId/charges/:chargeId')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.manage')
   deleteServiceCharge(
     @Param('serviceCategoryId', ParseUUIDPipe) serviceCategoryId: string,
     @Param('chargeId', ParseUUIDPipe) chargeId: string,
@@ -215,8 +215,10 @@ export class CatalogController {
   }
 
   @Post('services')
-  @Auth(UserRole.ADMIN)
-  @ApiOperation({ summary: 'Create a service under a parent category (admin only)' })
+  @StaffAuth('catalog.manage')
+  @ApiOperation({
+    summary: 'Create a service under a parent category (admin only)',
+  })
   @ApiBody({
     type: CreateServiceDto,
     examples: {
@@ -264,15 +266,12 @@ export class CatalogController {
       },
     },
   })
-  createService(
-    @Body() dto: CreateServiceDto,
-    @CurrentUser() user: AuthUser,
-  ) {
+  createService(@Body() dto: CreateServiceDto, @CurrentUser() user: AuthUser) {
     return this.catalog.createService(dto, user.id);
   }
 
   @Patch('services/:id')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.manage')
   updateService(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateServiceDto,
@@ -282,7 +281,7 @@ export class CatalogController {
   }
 
   @Delete('services/:id')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('catalog.manage')
   deactivateService(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,

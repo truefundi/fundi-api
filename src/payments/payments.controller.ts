@@ -12,6 +12,7 @@ import {
 import { UserRole } from '@prisma/client';
 import {
   Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -72,13 +73,13 @@ export class PaymentsController {
   }
 
   @Get('admin/payment-claims')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.view')
   listPaymentClaimsForAdmin(@Query() query: ListPaymentClaimsDto) {
     return this.payments.listPaymentClaimsForAdmin(query);
   }
 
   @Get('admin/payment-claims/:claimId')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.view')
   getPaymentClaimForAdmin(
     @Param('claimId', ParseUUIDPipe) claimId: string,
   ) {
@@ -86,7 +87,7 @@ export class PaymentsController {
   }
 
   @Patch('admin/payment-claims/:claimId/review')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.approve')
   reviewPaymentClaim(
     @Param('claimId', ParseUUIDPipe) claimId: string,
     @Body() dto: ReviewPaymentClaimDto,
@@ -96,7 +97,7 @@ export class PaymentsController {
   }
 
   @Delete('admin/payment-claims/:claimId')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.manage')
   deletePaymentClaim(
     @Param('claimId', ParseUUIDPipe) claimId: string,
     @CurrentUser() user: AuthUser,
@@ -105,19 +106,19 @@ export class PaymentsController {
   }
 
   @Get('admin/payments')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.view')
   listAll() {
     return this.payments.listAll();
   }
 
   @Get('admin/payments/completed')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.view')
   listCompleted() {
     return this.payments.listCompletedPayments();
   }
 
   @Post('admin/payments/completed')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.manage')
   createCompleted(
     @Body() dto: CreateCompletedPaymentDto,
     @CurrentUser() user: AuthUser,
@@ -126,13 +127,13 @@ export class PaymentsController {
   }
 
   @Get('admin/payments/completed/:paymentId')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.view')
   getCompleted(@Param('paymentId', ParseUUIDPipe) paymentId: string) {
     return this.payments.getCompletedPayment(paymentId);
   }
 
   @Patch('admin/payments/completed/:paymentId')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.manage')
   updateCompleted(
     @Param('paymentId', ParseUUIDPipe) paymentId: string,
     @Body() dto: UpdateCompletedPaymentDto,
@@ -142,7 +143,7 @@ export class PaymentsController {
   }
 
   @Delete('admin/payments/completed/:paymentId')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.manage')
   deleteCompleted(
     @Param('paymentId', ParseUUIDPipe) paymentId: string,
     @CurrentUser() user: AuthUser,
@@ -151,7 +152,7 @@ export class PaymentsController {
   }
 
   @Patch('admin/payments/:paymentId/extend')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.manage')
   extend(
     @Param('paymentId', ParseUUIDPipe) paymentId: string,
     @Body() dto: ExtendPaymentDto,

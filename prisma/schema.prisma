@@ -88,8 +88,38 @@ model User {
   paymentClaims       PaymentClaim[]              @relation("PaymentClaimCustomer")
   reviewedClaims      PaymentClaim[]              @relation("PaymentClaimReviewer")
   paymentTransactions PaymentTransaction[]
+  staffPermissions    StaffPermission[]           @relation("StaffPermissionOwner")
+  grantedPermissions  StaffPermission[]           @relation("StaffPermissionGrantor")
 
   @@map("users")
+}
+
+model Permission {
+  id          String            @id @default(uuid())
+  key         String            @unique
+  module      String
+  name        String
+  description String
+  sortOrder   Int               @default(0)
+  assignments StaffPermission[]
+
+  @@index([module, sortOrder])
+  @@map("permissions")
+}
+
+model StaffPermission {
+  userId      String
+  permissionId String
+  grantedById String?
+  createdAt   DateTime   @default(now())
+  user        User       @relation("StaffPermissionOwner", fields: [userId], references: [id], onDelete: Cascade)
+  permission  Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  grantedBy   User?      @relation("StaffPermissionGrantor", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@id([userId, permissionId])
+  @@index([permissionId])
+  @@index([grantedById])
+  @@map("staff_permissions")
 }
 
 model RefreshToken {
@@ -154,6 +184,7 @@ model ServiceCategory {
   documents         TechnicianDocument[]
   technicianDocuments TechnicianDocumentService[]
   bookingPayments   BookingPayment[]
+  paymentTransactions PaymentTransaction[]
   serviceCharges    ServiceCharge[]
   paymentClaims     PaymentClaim[]
   category          CatalogCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
@@ -888,6 +919,9 @@ enum UserRole {
   CUSTOMER
   TECHNICIAN
   ADMIN
+  SUPER_ADMIN
+  ACCOUNTANT
+  SUPPORT
 }
 
 enum UserStatus {

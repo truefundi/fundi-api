@@ -13,7 +13,7 @@ import {
 import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import {
-  Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -39,7 +39,7 @@ import { ReviewCancellationDto } from './dto/cancel-job.dto';
 
 @ApiTags('Admin jobs')
 @Controller('api/v1/admin/jobs')
-@Auth(UserRole.ADMIN)
+@StaffAuth('jobs.view')
 export class AdminJobsController {
   constructor(private readonly jobs: JobsService) {}
 
@@ -115,6 +115,7 @@ export class AdminJobsController {
   }
 
   @Patch('cancellation-requests/:requestId')
+  @StaffAuth('jobs.manage')
   reviewCancellation(
     @Param('requestId', ParseUUIDPipe) requestId: string,
     @Body() dto: ReviewCancellationDto,
@@ -124,6 +125,7 @@ export class AdminJobsController {
   }
 
   @Post()
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Create a job for a customer (admin only)',
     description:
@@ -141,6 +143,7 @@ export class AdminJobsController {
   }
 
   @Patch(':jobId')
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Edit a job (admin only)',
     description:
@@ -157,6 +160,7 @@ export class AdminJobsController {
   }
 
   @Post(':jobId/cancel')
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Cancel a job (admin only)',
     description:
@@ -173,6 +177,7 @@ export class AdminJobsController {
   }
 
   @Post(':jobId/reassign')
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Reassign a job to another technician (admin only)',
     description:
@@ -189,6 +194,7 @@ export class AdminJobsController {
   }
 
   @Post(':jobId/rating')
+  @StaffAuth('ratings.manage')
   @ApiOperation({
     summary: 'Rate a job (admin only)',
     description:
@@ -205,6 +211,7 @@ export class AdminJobsController {
   }
 
   @Delete(':jobId')
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Permanently delete a completed or cancelled job (admin only)',
     description:

@@ -3,6 +3,8 @@ import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { PermissionsGuard } from '../staff/permissions.guard';
+import { STAFF_ROLES } from '../staff/staff-roles';
 import { AdminStatsController } from './admin-stats.controller';
 import { AdminStatsService } from './admin-stats.service';
 
@@ -21,8 +23,8 @@ describe('AdminStatsController', () => {
     const guards =
       Reflect.getMetadata(GUARDS_METADATA, AdminStatsController) ?? [];
 
-    expect(guards).toEqual([AuthGuard('jwt'), RolesGuard]);
-    expect(reflector.get(ROLES_KEY, AdminStatsController)).toEqual(['ADMIN']);
+    expect(guards).toEqual([AuthGuard('jwt'), RolesGuard, PermissionsGuard]);
+    expect(reflector.get(ROLES_KEY, AdminStatsController)).toEqual(STAFF_ROLES);
   });
 
   it('forwards the request to the stats service', async () => {

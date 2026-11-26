@@ -417,7 +417,10 @@ describe('AdminDashboardService', () => {
 
   it('requires an administrator session role on dashboard routes', () => {
     expect(Reflect.getMetadata(ROLES_KEY, AdminDashboardController)).toEqual([
+      'SUPER_ADMIN',
       'ADMIN',
+      'ACCOUNTANT',
+      'SUPPORT',
     ]);
   });
 });

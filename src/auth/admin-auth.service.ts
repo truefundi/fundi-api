@@ -12,6 +12,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UserRole } from '@prisma/client';
+import { isStaffRole } from '../staff/staff-roles';
 import { authenticator } from 'otplib';
 import { compare, hash } from 'bcrypt';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
@@ -196,7 +197,7 @@ export class AdminAuthService {
     // error. `usable` is false for the first four, so the real hash is never touched.
     const usable =
       !!user?.passwordHash &&
-      user.role === UserRole.ADMIN &&
+      isStaffRole(user.role) &&
       user.status === 'ACTIVE';
     const matches = await compare(
       input.password,
@@ -340,7 +341,7 @@ export class AdminAuthService {
       where: { email },
       select: { id: true, email: true, role: true, status: true },
     });
-    if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
+    if (!user || !isStaffRole(user.role) || user.status !== 'ACTIVE') {
       throw new NotFoundException(
         'No active administrator was found for this email.',
       );
@@ -373,7 +374,7 @@ export class AdminAuthService {
       );
     }
     this.ensureActive(user.status);
-    if (user.role !== UserRole.ADMIN) {
+    if (!isStaffRole(user.role)) {
       throw new ForbiddenException('This account is not an administrator.');
     }
 
@@ -444,7 +445,7 @@ export class AdminAuthService {
         status: true,
       },
     });
-    if (user?.role === UserRole.ADMIN && user.status === 'ACTIVE') {
+    if (user && isStaffRole(user.role) && user.status === 'ACTIVE') {
       const otp = await this.authService.issueOtpCode(
         user.id,
         'admin-password-reset',
@@ -469,7 +470,7 @@ export class AdminAuthService {
         status: true,
       },
     });
-    if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
+    if (!user || !isStaffRole(user.role) || user.status !== 'ACTIVE') {
       throw new UnauthorizedException(
         'The email or verification code is incorrect.',
       );
@@ -510,7 +511,7 @@ export class AdminAuthService {
       where: { email },
       select: { id: true, role: true, status: true },
     });
-    if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
+    if (!user || !isStaffRole(user.role) || user.status !== 'ACTIVE') {
       throw new UnauthorizedException(
         'The email or password reset authorization is invalid or expired.',
       );
@@ -559,7 +560,7 @@ export class AdminAuthService {
       where: { id: userId },
       select: { id: true, role: true, status: true, passwordHash: true },
     });
-    if (!user || user.role !== UserRole.ADMIN || user.status !== 'ACTIVE') {
+    if (!user || !isStaffRole(user.role) || user.status !== 'ACTIVE') {
       throw new ForbiddenException(
         'Only an active administrator can change this password.',
       );
@@ -741,7 +742,7 @@ export class AdminAuthService {
       );
     }
     this.ensureActive(user.status);
-    if (user.role !== UserRole.ADMIN) {
+    if (!isStaffRole(user.role)) {
       throw new ForbiddenException('This account is not an administrator.');
     }
     const { sessionId, ...tokens } = await this.generateTokens(

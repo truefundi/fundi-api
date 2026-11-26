@@ -107,12 +107,10 @@ function createHarness(room = makeRoom()) {
       update: jest.fn().mockResolvedValue(room),
     },
     chatRoomMember: {
-      findUnique: jest
-        .fn()
-        .mockResolvedValue({
-          id: 'technician-membership',
-          role: UserRole.TECHNICIAN,
-        }),
+      findUnique: jest.fn().mockResolvedValue({
+        id: 'technician-membership',
+        role: UserRole.TECHNICIAN,
+      }),
       update: jest.fn().mockResolvedValue({
         roomId,
         userId: technicianUserId,
@@ -149,17 +147,42 @@ function createHarness(room = makeRoom()) {
     publish: jest.fn(),
     removeUserFromRoom: jest.fn().mockResolvedValue(undefined),
   };
+  const permissions = { require: jest.fn().mockResolvedValue({}) };
   const service = new ChatService(
     prisma as unknown as PrismaService,
     storage as unknown as StorageService,
     audit as unknown as AuditService,
     jobs as unknown as JobsService,
     realtime as unknown as ChatRealtimeService,
+    permissions as never,
   );
-  return { service, prisma, tx, audit, storage, realtime, createdMessage };
+  return {
+    service,
+    prisma,
+    tx,
+    audit,
+    storage,
+    realtime,
+    createdMessage,
+    permissions,
+  };
 }
 
 describe('ChatService', () => {
+  it('checks staff send access before writing, and rechecks media read access', async () => {
+    const { service, tx, permissions, storage } = createHarness();
+    permissions.require.mockRejectedValue(new Error('Permission revoked'));
+    await expect(
+      service.postText('staff', UserRole.SUPPORT, roomId, 'hello'),
+    ).rejects.toThrow('Permission revoked');
+    expect(permissions.require).toHaveBeenCalledWith('staff', ['chat.send']);
+    expect(tx.chatMessage.create).not.toHaveBeenCalled();
+    await expect(
+      service.downloadMedia('staff', UserRole.ACCOUNTANT, roomId, 'message-1'),
+    ).rejects.toThrow('Permission revoked');
+    expect(permissions.require).toHaveBeenCalledWith('staff', ['chat.view']);
+    expect(storage.getDownloadUrl).not.toHaveBeenCalled();
+  });
   it('persists and broadcasts a message from an assigned room participant', async () => {
     const { service, tx, audit, realtime } = createHarness();
 

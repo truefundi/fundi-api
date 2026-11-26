@@ -1,7 +1,6 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
 import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
-import { Auth } from '../common/decorators/auth.decorator';
+import { StaffAuth } from '../common/decorators/auth.decorator';
 import {
   ApiForbidden,
   ApiNotFound,
@@ -16,7 +15,7 @@ import {
 
 @ApiTags('Admin audit logs')
 @Controller('api/v1/admin/audit-logs')
-@Auth(UserRole.ADMIN)
+@StaffAuth('audit.view')
 export class AdminAuditLogsController {
   constructor(private readonly audit: AuditService) {}
 

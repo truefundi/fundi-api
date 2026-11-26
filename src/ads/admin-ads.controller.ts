@@ -21,15 +21,21 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
-import { Auth, AuthUser, CurrentUser } from '../common/decorators/auth.decorator';
+import {
+  StaffAuth,
+  AuthUser,
+  CurrentUser,
+} from '../common/decorators/auth.decorator';
 import {
   ApiForbidden,
   ApiNotFound,
   ApiTokenRequired,
   ApiValidationFailed,
 } from '../common/decorators/api-error-responses.decorator';
-import { MAX_UPLOAD_BYTES, UploadedFileData } from '../technicians/documents/file.util';
+import {
+  MAX_UPLOAD_BYTES,
+  UploadedFileData,
+} from '../technicians/documents/file.util';
 import { AdsService } from './ads.service';
 import { AdResponseDto } from './dto/ad-response.dto';
 import { CreateAdDto, ListAdsQueryDto, UpdateAdDto } from './dto/ad.dto';
@@ -39,14 +45,15 @@ const UPLOAD_LIMITS = { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } };
 // Dashboard management for promotion cards.
 @ApiTags('Admin ads')
 @Controller('api/v1/admin/ads')
-@Auth(UserRole.ADMIN)
+@StaffAuth('ads.view')
 export class AdminAdsController {
   constructor(private readonly ads: AdsService) {}
 
   @Get()
   @ApiOperation({
     summary: 'List every ad (admin only)',
-    description: 'Includes hidden and out-of-window ads, newest and highest priority first.',
+    description:
+      'Includes hidden and out-of-window ads, newest and highest priority first.',
   })
   @ApiResponse({ status: 200, description: 'A page of ads' })
   @ApiTokenRequired()
@@ -56,8 +63,13 @@ export class AdminAdsController {
   }
 
   @Post()
+  @StaffAuth('ads.manage')
   @ApiOperation({ summary: 'Create an ad (admin only)' })
-  @ApiResponse({ status: 201, description: 'The created ad', type: AdResponseDto })
+  @ApiResponse({
+    status: 201,
+    description: 'The created ad',
+    type: AdResponseDto,
+  })
   @ApiValidationFailed()
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an administrator.')
@@ -66,6 +78,7 @@ export class AdminAdsController {
   }
 
   @Put(':id/image')
+  @StaffAuth('ads.manage')
   @UseInterceptors(FileInterceptor('file', UPLOAD_LIMITS))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -81,7 +94,11 @@ export class AdminAdsController {
       'The bytes are sniffed, so a renamed file is refused. JPEG, PNG, and WebP up to 5 MiB. ' +
       'Replacing a creative deletes the previous object.',
   })
-  @ApiResponse({ status: 200, description: 'The updated ad', type: AdResponseDto })
+  @ApiResponse({
+    status: 200,
+    description: 'The updated ad',
+    type: AdResponseDto,
+  })
   @ApiValidationFailed()
   @ApiNotFound('No ad has this id.')
   @ApiTokenRequired()
@@ -95,12 +112,16 @@ export class AdminAdsController {
   }
 
   @Delete(':id/image')
+  @StaffAuth('ads.manage')
   @ApiOperation({ summary: 'Remove an uploaded ad creative (admin only)' })
   @ApiResponse({ status: 200, description: 'The image was removed' })
   @ApiNotFound('No ad has this id, or it has no uploaded image.')
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an administrator.')
-  removeImage(@CurrentUser() admin: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  removeImage(
+    @CurrentUser() admin: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     return this.ads.removeImage(id, admin.id);
   }
 
@@ -116,6 +137,7 @@ export class AdminAdsController {
   }
 
   @Patch(':id')
+  @StaffAuth('ads.manage')
   @ApiOperation({
     summary: 'Update an ad (admin only)',
     description:
@@ -123,7 +145,11 @@ export class AdminAdsController {
       'schedule without resending the whole card.',
   })
   @ApiParam({ name: 'id', format: 'uuid' })
-  @ApiResponse({ status: 200, description: 'The updated ad', type: AdResponseDto })
+  @ApiResponse({
+    status: 200,
+    description: 'The updated ad',
+    type: AdResponseDto,
+  })
   @ApiValidationFailed()
   @ApiNotFound('No ad has this id.')
   @ApiTokenRequired()
@@ -137,13 +163,17 @@ export class AdminAdsController {
   }
 
   @Delete(':id')
+  @StaffAuth('ads.manage')
   @ApiOperation({ summary: 'Delete an ad (admin only)' })
   @ApiParam({ name: 'id', format: 'uuid' })
   @ApiResponse({ status: 200, description: 'The ad was deleted' })
   @ApiNotFound('No ad has this id.')
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an administrator.')
-  remove(@CurrentUser() admin: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(
+    @CurrentUser() admin: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     return this.ads.remove(id, admin.id);
   }
 }

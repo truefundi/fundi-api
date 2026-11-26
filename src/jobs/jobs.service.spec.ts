@@ -22,6 +22,7 @@ describe('JobsService job reference', () => {
     };
     const service = new JobsService(
       undefined as unknown as PrismaService,
+      { require: jest.fn() } as never,
       undefined as never,
       undefined as never,
       undefined as never,
@@ -99,6 +100,7 @@ describe('JobsService location matching', () => {
       undefined as never,
       undefined as never,
       undefined as never,
+      { require: jest.fn() } as never,
     );
     return { service, prisma };
   };
@@ -322,6 +324,7 @@ describe('JobsService location matching', () => {
       undefined as never,
       undefined as never,
       undefined as never,
+      { require: jest.fn() } as never,
     );
 
     const matches = await service.previewMatchingTechnicians({
@@ -484,6 +487,7 @@ describe('JobsService location matching', () => {
       undefined as never,
       undefined as never,
       undefined as never,
+      { require: jest.fn() } as never,
     );
 
     const matches = await service.previewMatchingTechnicians({
@@ -571,6 +575,7 @@ describe('JobsService cooperation confirmation', () => {
       undefined as never,
       undefined as never,
       undefined as never,
+      { require: jest.fn() } as never,
     );
     jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as never);
     jest.spyOn(service, 'getTechnicianJob').mockResolvedValue({} as never);
@@ -721,6 +726,7 @@ describe('JobsService SOS technician dispatch', () => {
       undefined as never,
       queue as never,
       undefined as never,
+      { require: jest.fn() } as never,
     );
     jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as never);
 
@@ -862,6 +868,7 @@ describe('JobsService normal technician requests', () => {
         notifications as never,
         queue as never,
         undefined as never,
+        { require: jest.fn() } as never,
       );
       jest.spyOn(service, 'getCustomerJob').mockResolvedValue({} as never);
 
@@ -920,6 +927,7 @@ describe('JobsService normal technician requests', () => {
       undefined as never,
       undefined as never,
       undefined as never,
+      { require: jest.fn() } as never,
     );
 
     await service.expireOffer(offer.id);
@@ -985,6 +993,7 @@ describe('JobsService shared work status', () => {
       undefined as never,
       queue as never,
       undefined as never,
+      { require: jest.fn() } as never,
     );
     jest
       .spyOn(service as unknown as { toResponse: jest.Mock }, 'toResponse')
@@ -1041,6 +1050,7 @@ describe('JobsService shared work status', () => {
       { create: jest.fn() } as never,
       undefined as never,
       undefined as never,
+      { require: jest.fn() } as never,
     );
 
     await service.autoCompleteAfterConfirmation(job.id, dueAt.toISOString());
@@ -1077,6 +1087,7 @@ describe('JobsService.summaryForAdmin', () => {
       undefined as unknown as never,
       undefined as unknown as never,
       undefined as unknown as never,
+      { require: jest.fn() } as never,
     );
     return { service, jobCount, disputeCount };
   };
@@ -1125,6 +1136,7 @@ describe('JobsService admin pipeline', () => {
       undefined as unknown as never,
       undefined as unknown as never,
       undefined as unknown as never,
+      { require: jest.fn() } as never,
     );
     return { service, jobCount, jobFindMany };
   };

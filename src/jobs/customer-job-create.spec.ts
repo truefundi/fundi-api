@@ -58,6 +58,7 @@ describe('JobsService customer job creation', () => {
       undefined as unknown as never,
       undefined as unknown as never,
       undefined as unknown as never,
+      { require: jest.fn() } as never,
     );
 
     jest.spyOn(service as any, 'findMatches').mockResolvedValue([]);
@@ -186,6 +187,7 @@ describe('JobsService customer job creation', () => {
       undefined as unknown as never,
       undefined as unknown as never,
       undefined as unknown as never,
+      { require: jest.fn() } as never,
     );
     jest.spyOn(service as any, 'findMatches').mockResolvedValue([]);
     jest

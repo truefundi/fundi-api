@@ -38,6 +38,8 @@ import {
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
+import { isStaffRole } from '../staff/staff-roles';
+import { PermissionsService } from '../staff/permissions.service';
 import { PagedQueryDto } from '../common/dto/paged-query.dto';
 import {
   DEFAULT_PAGE,
@@ -230,6 +232,7 @@ export class JobsService {
     private readonly notifications: NotificationsService,
     @InjectQueue('job-dispatch') private readonly dispatchQueue: Queue,
     private readonly geocoding: GeocodingService,
+    private readonly permissions: PermissionsService,
   ) {}
 
   async confirmCooperation(
@@ -3619,6 +3622,7 @@ export class JobsService {
     jobId: string,
     mediaId: string,
   ) {
+    if (isStaffRole(role)) await this.permissions.require(userId, ['jobs.view']);
     const job = await this.prisma.job.findUnique({
       where: { id: jobId },
       select: {
@@ -3643,7 +3647,7 @@ export class JobsService {
     });
     if (!job) throw new NotFoundException('Job not found.');
     if (
-      role !== UserRole.ADMIN &&
+      !isStaffRole(role) &&
       job.customerId !== userId &&
       !(await this.isAssignedTechnician(job.technicianId, userId)) &&
       job.offers.length === 0

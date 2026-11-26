@@ -1,13 +1,12 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
-import { Auth } from '../common/decorators/auth.decorator';
+import { StaffAuth } from '../common/decorators/auth.decorator';
 import { PagedQueryDto } from '../common/dto/paged-query.dto';
 import { RatingsService } from './ratings.service';
 
 @ApiTags('Admin technician ratings')
 @Controller('api/v1/admin/technicians/:technicianId/ratings')
-@Auth(UserRole.ADMIN)
+@StaffAuth('ratings.view')
 export class AdminTechnicianRatingsController {
   constructor(private readonly ratings: RatingsService) {}
 

@@ -8,9 +8,8 @@ import {
   Post,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
 import {
-  Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -19,7 +18,7 @@ import { RatingsService } from './ratings.service';
 
 @ApiTags('Admin job ratings')
 @Controller('api/v1/admin/jobs/:jobId/ratings')
-@Auth(UserRole.ADMIN)
+@StaffAuth('ratings.view')
 export class AdminJobRatingsController {
   constructor(private readonly ratings: RatingsService) {}
 
@@ -30,6 +29,7 @@ export class AdminJobRatingsController {
   }
 
   @Post()
+  @StaffAuth('ratings.manage')
   @ApiOperation({
     summary: 'Submit a dynamic rating for a customer on their behalf',
   })
@@ -42,6 +42,7 @@ export class AdminJobRatingsController {
   }
 
   @Patch()
+  @StaffAuth('ratings.manage')
   @ApiOperation({ summary: 'Correct a dynamic job rating' })
   update(
     @Param('jobId', ParseUUIDPipe) jobId: string,

@@ -10,7 +10,12 @@ import {
   Query,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
-import { Auth, AuthUser, CurrentUser } from '../common/decorators/auth.decorator';
+import {
+  Auth,
+  StaffAuth,
+  AuthUser,
+  CurrentUser,
+} from '../common/decorators/auth.decorator';
 import {
   CreateAdminCompanyDto,
   UpdateCompanyDto,
@@ -31,21 +36,18 @@ export class CompaniesController {
 
   @Patch('companies/mine')
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
-  updateMine(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: UpdateCompanyDto,
-  ) {
+  updateMine(@CurrentUser() user: AuthUser, @Body() dto: UpdateCompanyDto) {
     return this.companies.updateMine(user.id, dto);
   }
 
   @Get('admin/companies')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('companies.view')
   listForAdmin(@Query() query: ListCompaniesDto) {
     return this.companies.listForAdmin(query);
   }
 
   @Post('admin/companies')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('companies.manage')
   createByAdmin(
     @Body() dto: CreateAdminCompanyDto,
     @CurrentUser() user: AuthUser,
@@ -54,13 +56,13 @@ export class CompaniesController {
   }
 
   @Get('admin/companies/:id')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('companies.view')
   getForAdmin(@Param('id', ParseUUIDPipe) id: string) {
     return this.companies.getForAdmin(id);
   }
 
   @Patch('admin/companies/:id')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('companies.manage')
   updateByAdmin(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateCompanyDto,
@@ -70,7 +72,7 @@ export class CompaniesController {
   }
 
   @Patch('admin/companies/:id/verification-status')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('companies.approve')
   updateVerification(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateCompanyVerificationDto,
@@ -80,7 +82,7 @@ export class CompaniesController {
   }
 
   @Delete('admin/companies/:id')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('companies.manage')
   deleteByAdmin(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,

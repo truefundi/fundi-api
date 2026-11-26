@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { NotificationType, UserRole, UserStatus } from '@prisma/client';
+import { NotificationType } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { EventsGateway } from '../websockets/events.gateway';
+import { PermissionsService } from '../staff/permissions.service';
 
 interface ClaimEvent {
   id: string;
@@ -33,15 +34,17 @@ export class PaymentEventsService {
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
     private readonly notifications: NotificationsService,
+    private readonly permissions: PermissionsService,
   ) {}
 
   async claimCreated(claim: ClaimEvent) {
     try {
       const admins = await this.prisma.user.findMany({
-        where: { role: UserRole.ADMIN, status: UserStatus.ACTIVE },
+        where: this.permissions.recipientsWhere(['payments.view']),
         select: { id: true },
       });
       const data = {
+        requiredPermission: 'payments.view',
         claimId: claim.id,
         customerId: claim.customerId,
         amount: claim.amount,
@@ -50,7 +53,9 @@ export class PaymentEventsService {
         status: claim.status,
       };
       for (const admin of admins) {
-        this.events.notifyUser(admin.id, 'payment-claim:created', data);
+        await this.events.notifyStaff(admin.id, 'payment-claim:created', data, [
+          'payments.view',
+        ]);
       }
       await this.notifications.createManyForUsers({
         userIds: admins.map((admin) => admin.id),

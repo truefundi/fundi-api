@@ -3,6 +3,8 @@ import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { PermissionsGuard } from '../staff/permissions.guard';
+import { STAFF_ROLES } from '../staff/staff-roles';
 import { AdminConversationsController } from './admin-conversations.controller';
 import { ConversationsService } from './conversations.service';
 
@@ -23,10 +25,10 @@ describe('AdminConversationsController', () => {
     const guards =
       Reflect.getMetadata(GUARDS_METADATA, AdminConversationsController) ?? [];
 
-    expect(guards).toEqual([AuthGuard('jwt'), RolesGuard]);
-    expect(reflector.get(ROLES_KEY, AdminConversationsController)).toEqual([
-      'ADMIN',
-    ]);
+    expect(guards).toEqual([AuthGuard('jwt'), RolesGuard, PermissionsGuard]);
+    expect(reflector.get(ROLES_KEY, AdminConversationsController)).toEqual(
+      STAFF_ROLES,
+    );
   });
 
   it('forwards the list query', async () => {

@@ -84,11 +84,11 @@ async function bootstrap() {
     )
     .addTag(
       'admin-auth',
-      'Admin dashboard sign-in: email and password, then an SMS second factor. Sessions are held in httpOnly cookies.',
+      'Staff dashboard sign-in: email/password and authenticator-app TOTP. Sessions use httpOnly cookies.',
     )
     .addTag(
       'users',
-      'Profile and account administration. Routes marked admin need the ADMIN role.',
+      'Profile and account administration. Dashboard routes require explicit staff permissions; staff account changes require SUPER_ADMIN.',
     )
     .build();
 

@@ -5,6 +5,8 @@ import { UserRole, UserStatus } from '@prisma/client';
 import { BearerOnlyGuard } from '../auth/bearer-only.guard';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { PermissionsGuard } from '../staff/permissions.guard';
+import { STAFF_ROLES } from '../staff/staff-roles';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 
@@ -23,8 +25,11 @@ describe('UsersController', () => {
     updateAccount: jest.fn(),
     deleteAccount: jest.fn(),
   };
-  const controller = new UsersController(usersService as unknown as UsersService);
+  const controller = new UsersController(
+    usersService as unknown as UsersService,
+  );
   const reflector = new Reflector();
+  const actor = { id: 'super-admin', role: UserRole.SUPER_ADMIN };
 
   // Keeps cumulative mock call records from leaking between tests.
   beforeEach(() => jest.clearAllMocks());
@@ -45,15 +50,19 @@ describe('UsersController', () => {
     Reflect.getMetadata(GUARDS_METADATA, handler) ?? [];
 
   describe('admin authorization', () => {
-    it.each(adminRoutes)('%s requires the JWT guard and the ADMIN role', (name) => {
-      const handler = UsersController.prototype[name];
+    it.each(adminRoutes)(
+      '%s requires the JWT guard and the ADMIN role',
+      (name) => {
+        const handler = UsersController.prototype[name];
 
-      const guards = guardsOf(handler as (...args: never[]) => unknown);
-      expect(guards).toHaveLength(2);
-      expect(guards[0]).toBe(AuthGuard('jwt'));
-      expect(guards[1]).toBe(RolesGuard);
-      expect(reflector.get(ROLES_KEY, handler)).toEqual(['ADMIN']);
-    });
+        const guards = guardsOf(handler as (...args: never[]) => unknown);
+        expect(guards).toHaveLength(3);
+        expect(guards[0]).toBe(AuthGuard('jwt'));
+        expect(guards[1]).toBe(RolesGuard);
+        expect(guards[2]).toBe(PermissionsGuard);
+        expect(reflector.get(ROLES_KEY, handler)).toEqual(STAFF_ROLES);
+      },
+    );
 
     // CUSTOMER and TECHNICIAN callers are rejected by RolesGuard with a 403
     // before the controller runs (see roles.guard.spec.ts for the behaviour).
@@ -61,17 +70,22 @@ describe('UsersController', () => {
       const guard = new RolesGuard({
         getAllAndOverride: jest.fn().mockReturnValue(['ADMIN']),
       } as unknown as Reflector);
-      const contextWithRole = (role: string, authMethod: 'bearer' | 'cookie' = 'cookie') =>
+      const contextWithRole = (
+        role: string,
+        authMethod: 'bearer' | 'cookie' = 'cookie',
+      ) =>
         ({
-          switchToHttp: () => ({ getRequest: () => ({ user: { role }, authMethod }) }),
+          switchToHttp: () => ({
+            getRequest: () => ({ user: { role }, authMethod }),
+          }),
           getHandler: () => undefined,
           getClass: () => UsersController,
         }) as unknown as Parameters<typeof guard.canActivate>[0];
 
       expect(guard.canActivate(contextWithRole('ADMIN'))).toBe(true);
-      expect(() => guard.canActivate(contextWithRole('ADMIN', 'bearer'))).toThrow(
-        'Administrator sessions must use the admin portal.',
-      );
+      expect(() =>
+        guard.canActivate(contextWithRole('ADMIN', 'bearer')),
+      ).toThrow('Administrator sessions must use the admin portal.');
       expect(() => guard.canActivate(contextWithRole('CUSTOMER'))).toThrow(
         'You do not have permission to perform this action.',
       );
@@ -107,29 +121,36 @@ describe('UsersController', () => {
         status: 'ACTIVE' as UserStatus,
         search: 'john',
       };
-      const expected = { data: [], pagination: { page: 2, limit: 10, total: 0, totalPages: 0 } };
+      const expected = {
+        data: [],
+        pagination: { page: 2, limit: 10, total: 0, totalPages: 0 },
+      };
       usersService.findAll.mockResolvedValue(expected);
 
-      await expect(controller.findAll(query)).resolves.toEqual(expected);
-      expect(usersService.findAll).toHaveBeenCalledWith(query);
+      await expect(controller.findAll(query, actor)).resolves.toEqual(expected);
+      expect(usersService.findAll).toHaveBeenCalledWith(query, actor.id);
     });
 
     it('forwards the status change to the service', async () => {
       const id = '0a1b2c3d-0000-4000-8000-000000000001';
       usersService.updateStatus.mockResolvedValue({ id, status: 'INACTIVE' });
 
-      await controller.updateStatus(id, { status: 'INACTIVE' });
+      await controller.updateStatus(actor, id, { status: 'INACTIVE' });
 
-      expect(usersService.updateStatus).toHaveBeenCalledWith(id, 'INACTIVE');
+      expect(usersService.updateStatus).toHaveBeenCalledWith(
+        id,
+        'INACTIVE',
+        actor.id,
+      );
     });
 
     it('forwards the user lookup to the service', async () => {
       const id = '0a1b2c3d-0000-4000-8000-000000000001';
       usersService.getById.mockResolvedValue({ id });
 
-      await controller.findById(id);
+      await controller.findById(id, actor);
 
-      expect(usersService.getById).toHaveBeenCalledWith(id);
+      expect(usersService.getById).toHaveBeenCalledWith(id, actor.id);
     });
   });
 });

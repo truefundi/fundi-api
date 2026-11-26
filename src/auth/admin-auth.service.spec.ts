@@ -182,6 +182,20 @@ describe('AdminAuthService', () => {
   };
 
   describe('admin password reset', () => {
+    it.each([UserRole.SUPER_ADMIN, UserRole.ACCOUNTANT, UserRole.SUPPORT])(
+      'supports %s password enrollment and session refresh',
+      async (role) => {
+        const { service, prisma, authService, jwt } = createService();
+        prisma.user.findUnique.mockResolvedValue({ ...enrolledAdmin, role });
+        await service.requestPasswordReset('staff@example.com');
+        expect(authService.issueOtpCode).toHaveBeenCalled();
+        await service.refresh('refresh-token');
+        expect(jwt.signAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ role }),
+          expect.anything(),
+        );
+      },
+    );
     it('sends a reset-only code to the active admin phone and returns a generic response', async () => {
       const { service, authService, smsService, redisClient } = createService();
 

@@ -8,18 +8,22 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
-import { Server, Socket } from 'socket.io';
+import { Namespace, Socket } from 'socket.io';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../database/prisma.service';
 import { ADMIN_ACCESS_COOKIE } from '../auth/admin-cookies';
+import { isStaffRole } from '../staff/staff-roles';
+import { StaffAccessEventsService } from '../staff/staff-access-events.service';
+import { PermissionsService } from '../staff/permissions.service';
+import { PermissionKey } from '../staff/permission-catalog';
 
 @WebSocketGateway({
   namespace: '/events',
 })
 export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
-  server: Server;
+  server: Namespace;
 
   private readonly logger = new Logger(EventsGateway.name);
 
@@ -27,7 +31,13 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly accessEvents: StaffAccessEventsService,
+    private readonly permissions: PermissionsService,
   ) {}
+
+  afterInit(namespace: Namespace) {
+    this.accessEvents.bind(namespace, (id) => this.userRoom(id));
+  }
 
   async handleConnection(client: Socket) {
     this.logger.log(`Client connected: ${client.id}`);
@@ -42,6 +52,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         sub: string;
         sid: string;
         typ?: string;
+        role?: string;
       }>(token, {
         secret:
           this.config.get<string>('jwt.accessSecret') ||
@@ -67,7 +78,11 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!user || user.status !== 'ACTIVE') {
         return;
       }
-      if (user.role === 'ADMIN' && !cookieToken) return;
+      if (
+        isStaffRole(user.role) !== !!cookieToken ||
+        isStaffRole(payload.role) !== !!cookieToken
+      )
+        return;
       await client.join(this.userRoom(user.id));
       if (user.role === 'TECHNICIAN') {
         await client.join(this.technicianRoom(user.id));
@@ -112,6 +127,20 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
     this.server.to(this.userRoom(userId)).emit(event, data);
+  }
+
+  async notifyStaff(
+    userId: string,
+    event: string,
+    data: unknown,
+    required: PermissionKey[],
+  ) {
+    try {
+      await this.permissions.require(userId, required);
+      this.notifyUser(userId, event, data);
+    } catch {
+      // Access may have changed after the recipient query.
+    }
   }
 
   private technicianRoom(userId: string) {

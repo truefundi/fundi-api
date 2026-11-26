@@ -3,6 +3,7 @@ import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { EventsGateway } from '../websockets/events.gateway';
 import { NotificationsService } from './notifications.service';
+import { PermissionsService } from '../staff/permissions.service';
 
 describe('NotificationsService', () => {
   let prisma: any;
@@ -30,9 +31,16 @@ describe('NotificationsService', () => {
       log: jest.fn().mockResolvedValue(undefined),
     } as any;
 
-    (prisma.$transaction as jest.Mock).mockImplementation((ops: any[]) => Promise.all(ops));
+    (prisma.$transaction as jest.Mock).mockImplementation((ops: any[]) =>
+      Promise.all(ops),
+    );
 
-    service = new NotificationsService(prisma as PrismaService, events, audit);
+    service = new NotificationsService(
+      prisma as PrismaService,
+      events,
+      audit,
+      new PermissionsService(prisma),
+    );
   });
 
   describe('create', () => {
@@ -59,7 +67,11 @@ describe('NotificationsService', () => {
       });
 
       expect(prisma.notification.create).toHaveBeenCalled();
-      expect(events.notifyUser).toHaveBeenCalledWith('u1', 'notification:new', expect.objectContaining({ id: 'n1' }));
+      expect(events.notifyUser).toHaveBeenCalledWith(
+        'u1',
+        'notification:new',
+        expect.objectContaining({ id: 'n1' }),
+      );
       expect(result.id).toBe('n1');
     });
 
@@ -117,7 +129,9 @@ describe('NotificationsService', () => {
 
   describe('createManyForUsers', () => {
     it('writes one notification per user and emits to each socket', async () => {
-      (prisma.notification.createMany as jest.Mock).mockResolvedValue({ count: 2 });
+      (prisma.notification.createMany as jest.Mock).mockResolvedValue({
+        count: 2,
+      });
 
       await expect(
         service.createManyForUsers({
@@ -129,7 +143,8 @@ describe('NotificationsService', () => {
         }),
       ).resolves.toBe(2);
 
-      const rows = (prisma.notification.createMany as jest.Mock).mock.calls[0][0].data;
+      const rows = (prisma.notification.createMany as jest.Mock).mock
+        .calls[0][0].data;
       expect(rows).toHaveLength(2);
       expect(rows[0]).toMatchObject({
         userId: 'u1',
@@ -142,7 +157,10 @@ describe('NotificationsService', () => {
       expect(events.notifyUser).toHaveBeenCalledWith(
         'u2',
         'notification:new',
-        expect.objectContaining({ userId: 'u2', type: NotificationType.BROADCAST }),
+        expect.objectContaining({
+          userId: 'u2',
+          type: NotificationType.BROADCAST,
+        }),
       );
     });
 
@@ -163,7 +181,16 @@ describe('NotificationsService', () => {
   describe('list', () => {
     it('returns paginated notifications', async () => {
       const items = [
-        { id: 'n1', userId: 'u1', type: NotificationType.SYSTEM, title: 't', body: 'b', data: null, readAt: null, createdAt: new Date() },
+        {
+          id: 'n1',
+          userId: 'u1',
+          type: NotificationType.SYSTEM,
+          title: 't',
+          body: 'b',
+          data: null,
+          readAt: null,
+          createdAt: new Date(),
+        },
       ];
       (prisma.notification.findMany as jest.Mock).mockResolvedValue(items);
       (prisma.notification.count as jest.Mock).mockResolvedValue(1);
@@ -179,7 +206,9 @@ describe('NotificationsService', () => {
 
       await service.list('u1', { limit: 10, offset: 0, unreadOnly: true });
       expect(prisma.notification.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { userId: 'u1', readAt: null } }),
+        expect.objectContaining({
+          where: expect.objectContaining({ userId: 'u1', readAt: null }),
+        }),
       );
     });
   });
@@ -189,7 +218,9 @@ describe('NotificationsService', () => {
       (prisma.notification.count as jest.Mock).mockResolvedValue(5);
       const result = await service.unreadCount('u1');
       expect(result.count).toBe(5);
-      expect(prisma.notification.count).toHaveBeenCalledWith({ where: { userId: 'u1', readAt: null } });
+      expect(prisma.notification.count).toHaveBeenCalledWith({
+        where: expect.objectContaining({ userId: 'u1', readAt: null }),
+      });
     });
   });
 
@@ -197,7 +228,9 @@ describe('NotificationsService', () => {
     it('marks a notification as read and audits', async () => {
       const notification = { id: 'n1', userId: 'u1', readAt: null };
       const updated = { ...notification, readAt: new Date() };
-      (prisma.notification.findFirst as jest.Mock).mockResolvedValue(notification);
+      (prisma.notification.findFirst as jest.Mock).mockResolvedValue(
+        notification,
+      );
       (prisma.notification.update as jest.Mock).mockResolvedValue(updated);
 
       const result = await service.markRead('u1', 'n1');
@@ -214,7 +247,9 @@ describe('NotificationsService', () => {
 
     it('returns existing notification if already read (idempotent)', async () => {
       const notification = { id: 'n1', userId: 'u1', readAt: new Date() };
-      (prisma.notification.findFirst as jest.Mock).mockResolvedValue(notification);
+      (prisma.notification.findFirst as jest.Mock).mockResolvedValue(
+        notification,
+      );
 
       const result = await service.markRead('u1', 'n1');
       expect(prisma.notification.update).not.toHaveBeenCalled();
@@ -224,13 +259,17 @@ describe('NotificationsService', () => {
 
     it('throws NotFoundException if notification does not belong to user', async () => {
       (prisma.notification.findFirst as jest.Mock).mockResolvedValue(null);
-      await expect(service.markRead('u1', 'n1')).rejects.toThrow('Notification not found.');
+      await expect(service.markRead('u1', 'n1')).rejects.toThrow(
+        'Notification not found.',
+      );
     });
   });
 
   describe('markAllRead', () => {
     it('marks all unread notifications as read and audits', async () => {
-      (prisma.notification.updateMany as jest.Mock).mockResolvedValue({ count: 3 });
+      (prisma.notification.updateMany as jest.Mock).mockResolvedValue({
+        count: 3,
+      });
 
       const result = await service.markAllRead('u1');
       expect(result.updated).toBe(3);
@@ -244,7 +283,9 @@ describe('NotificationsService', () => {
     });
 
     it('does not audit when nothing updated', async () => {
-      (prisma.notification.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (prisma.notification.updateMany as jest.Mock).mockResolvedValue({
+        count: 0,
+      });
 
       const result = await service.markAllRead('u1');
       expect(result.updated).toBe(0);

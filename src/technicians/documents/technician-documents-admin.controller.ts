@@ -8,9 +8,8 @@ import {
   Patch,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
 import {
-  Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../../common/decorators/auth.decorator';
@@ -26,21 +25,21 @@ export class TechnicianDocumentsAdminController {
 
   // Lists all documents of one technician profile.
   @Get('technicians/:id/documents')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('documents.view')
   listDocuments(@Param('id', ParseUUIDPipe) profileId: string) {
     return this.documents.listForTechnician(profileId);
   }
 
   // Shows whether a technician meets the approval requirements.
   @Get('technicians/:id/verification-checklist')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('documents.view')
   getChecklist(@Param('id', ParseUUIDPipe) profileId: string) {
     return this.documents.getChecklist(profileId);
   }
 
   // Downloads any technician document for review.
   @Get('technician-documents/:documentId/download')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('documents.view')
   @Header('X-Content-Type-Options', 'nosniff')
   async download(@Param('documentId', ParseUUIDPipe) documentId: string) {
     return toStreamableFile(await this.documents.downloadForAdmin(documentId));
@@ -48,7 +47,7 @@ export class TechnicianDocumentsAdminController {
 
   // Marks a document REVIEWING, ACCEPTED, or DENIED (a note is required to deny).
   @Patch('technician-documents/:documentId/review')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('documents.review')
   review(
     @CurrentUser() admin: AuthUser,
     @Param('documentId', ParseUUIDPipe) documentId: string,

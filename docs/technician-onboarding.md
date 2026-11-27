@@ -656,9 +656,9 @@ fields. Body fields are the union of:
 - `verificationStatus` (admin-only)
 
 **Setting `verificationStatus` to `APPROVED` triggers the approval
-checklist**: the technician must have a profile picture, an accepted
-`NATIONAL_ID` document, and an accepted `TVET_CERTIFICATE` document. If any
-are missing the request returns `400` and nothing is written.
+checklist**: the technician must have an accepted `NATIONAL_ID` document. A
+profile picture and certificates are optional. If the National ID is missing
+or not accepted, the request returns `400` and nothing is written.
 
 Changing `verificationStatus` away from `APPROVED` forces
 `availabilityStatus` to `OFFLINE`.

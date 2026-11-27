@@ -367,12 +367,9 @@ Success response (`200`): the updated document object.
 Setting `verificationStatus` to `APPROVED` (through
 `PATCH /api/v1/admin/technicians/:id` or
 `PATCH /api/v1/admin/technicians/:id/verification-status`) is blocked unless
-the technician has all of the following:
+the technician has an **`ACCEPTED` `NATIONAL_ID`** document.
 
-- a **profile picture**,
-- an **`ACCEPTED` `NATIONAL_ID`** document,
-- an **`ACCEPTED` `CERTIFICATE`** document whose `certificateType` is
-  **`TVET_CERTIFICATE`**.
+A profile picture and certificates are optional and do not block approval.
 
 If anything is missing, the request returns `400` with the list of missing
 items and nothing is changed. The checklist payload is included in the error
@@ -444,31 +441,21 @@ only returned to administrators.
 ```json
 {
   "complete": false,
+  "hasProfilePicture": false,
   "items": [
-    {
-      "key": "PROFILE_PICTURE",
-      "label": "Profile picture",
-      "satisfied": false,
-      "detail": "Not uploaded"
-    },
     {
       "key": "NATIONAL_ID",
       "label": "Accepted National ID document",
       "satisfied": false,
       "detail": "Submitted, waiting for review"
-    },
-    {
-      "key": "CERTIFICATE",
-      "label": "Accepted TVET certificate",
-      "satisfied": false,
-      "detail": "Not uploaded"
     }
   ]
 }
 ```
 
 `complete` is `true` and every item is `satisfied` when the technician can be
-approved. `detail` reflects the current state of the underlying document:
+approved. `hasProfilePicture` is informational only and does not block
+approval. `detail` reflects the current state of the underlying document:
 `"Not uploaded"`, `"Submitted, waiting for review"`, `"Under review"`,
 `"Accepted"`, or `"Denied, update and resubmit"`.
 

@@ -280,4 +280,33 @@ describe('TechnicianDocumentsService', () => {
     );
     expect(responseSpy).toHaveBeenCalled();
   });
+
+  it('treats the profile picture as optional in the approval checklist', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.findUnique.mockResolvedValue({
+      profilePictureObjectKey: null,
+      documents: [
+        {
+          type: DocumentType.NATIONAL_ID,
+          certificateType: null,
+          status: DocumentStatus.ACCEPTED,
+        },
+      ],
+    });
+
+    const checklist = await service.getChecklist(profileId);
+
+    expect(checklist).toEqual({
+      complete: true,
+      hasProfilePicture: false,
+      items: [
+        {
+          key: DocumentType.NATIONAL_ID,
+          label: 'Accepted National ID document',
+          satisfied: true,
+          detail: 'Accepted',
+        },
+      ],
+    });
+  });
 });

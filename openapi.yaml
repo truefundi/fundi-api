@@ -6938,6 +6938,8 @@ components:
       properties:
         complete:
           type: boolean
+        hasProfilePicture:
+          type: boolean
         items:
           type: array
           items:
@@ -6946,7 +6948,6 @@ components:
               key:
                 type: string
                 enum:
-                  - PROFILE_PICTURE
                   - NATIONAL_ID
                   - CERTIFICATE
               label:

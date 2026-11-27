@@ -68,3 +68,15 @@ export function toStreamableFile(file: {
     disposition: `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
   });
 }
+
+// Serves stored image bytes inline so the review UI can preview them.
+export function toInlineFile(file: {
+  buffer: Buffer;
+  mimeType: string;
+}): StreamableFile {
+  return new StreamableFile(file.buffer, {
+    type: file.mimeType,
+    length: file.buffer.length,
+    disposition: 'inline',
+  });
+}

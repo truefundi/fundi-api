@@ -2,7 +2,13 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { json, urlencoded } from 'express';
+import {
+  json,
+  urlencoded,
+  type NextFunction,
+  type Request,
+  type Response,
+} from 'express';
 // Namespace import, not a default import: the project compiles without
 // esModuleInterop, so `import cookieParser from 'cookie-parser'` typechecks but is
 // undefined at runtime.
@@ -46,6 +52,13 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.headers['access-control-request-private-network'] !== undefined) {
+      res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    }
+    next();
+  });
 
   // CORS Configuration
   app.enableCors({

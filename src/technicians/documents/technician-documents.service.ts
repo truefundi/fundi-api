@@ -54,6 +54,7 @@ export interface ChecklistItem {
 
 export interface VerificationChecklist {
   complete: boolean;
+  hasProfilePicture: boolean;
   items: ChecklistItem[];
 }
 
@@ -87,6 +88,7 @@ export class TechnicianDocumentsService {
   async replaceProfilePicture(
     userId: string,
     file: UploadedFileData | undefined,
+    actorId = userId,
   ) {
     const profile = await this.requireProfile(userId);
     const detected = this.validateFile(file, IMAGE_MIME_TYPES);
@@ -107,7 +109,7 @@ export class TechnicianDocumentsService {
             entityType: 'TechnicianProfile',
             entityId: profile.id,
             action: 'PROFILE_PICTURE_UPDATED',
-            actorId: userId,
+            actorId,
           },
           tx,
         );
@@ -150,6 +152,7 @@ export class TechnicianDocumentsService {
     userId: string,
     dto: UploadDocumentDto,
     file: UploadedFileData | undefined,
+    actorId = userId,
   ) {
     const profile = await this.requireProfile(userId);
     const detected = this.validateFile(file, DOCUMENT_MIME_TYPES);
@@ -196,14 +199,14 @@ export class TechnicianDocumentsService {
             },
           });
         }
-        await this.reopenRejectedApplication(tx, profile.id, userId);
+        await this.reopenRejectedApplication(tx, profile.id, actorId);
         await this.audit.log(
           {
             entityType: 'TechnicianDocument',
             entityId: document.id,
             action: 'DOCUMENT_UPLOADED',
             toStatus: DocumentStatus.SUBMITTED,
-            actorId: userId,
+            actorId,
             metadata: {
               technicianId: profile.id,
               type: dto.type,
@@ -586,6 +589,25 @@ export class TechnicianDocumentsService {
     return this.readFile(document);
   }
 
+  // Returns the profile picture bytes; storage URLs are unavailable with the local driver.
+  async downloadProfilePictureForAdmin(profileId: string) {
+    const profile = await this.prisma.technicianProfile.findUnique({
+      where: { id: profileId },
+      select: {
+        profilePictureObjectKey: true,
+        profilePictureMimeType: true,
+      },
+    });
+    if (!profile?.profilePictureObjectKey) {
+      throw new NotFoundException('Profile picture not found.');
+    }
+    return {
+      buffer: await this.storage.get(profile.profilePictureObjectKey),
+      mimeType: profile.profilePictureMimeType ?? 'image/jpeg',
+      fileName: 'profile-picture',
+    };
+  }
+
   // Moves a document through SUBMITTED -> REVIEWING -> ACCEPTED/DENIED; decided documents are final.
   async review(documentId: string, dto: ReviewDocumentDto, adminId: string) {
     const note = dto.reviewNote?.trim() || null;
@@ -710,18 +732,14 @@ export class TechnicianDocumentsService {
     });
     if (!profile) throw new NotFoundException('Technician not found.');
 
-    const items: ChecklistItem[] = [
-      {
-        key: 'PROFILE_PICTURE',
-        label: 'Profile picture',
-        satisfied: Boolean(profile.profilePictureObjectKey),
-        detail: profile.profilePictureObjectKey ? 'Uploaded' : 'Not uploaded',
-      },
-      ...REQUIRED_DOCUMENT_TYPES.map((type) =>
-        this.buildChecklistItem(type, profile.documents),
-      ),
-    ];
-    return { complete: items.every((item) => item.satisfied), items };
+    const items: ChecklistItem[] = REQUIRED_DOCUMENT_TYPES.map((type) =>
+      this.buildChecklistItem(type, profile.documents),
+    );
+    return {
+      complete: items.every((item) => item.satisfied),
+      hasProfilePicture: Boolean(profile.profilePictureObjectKey),
+      items,
+    };
   }
 
   // Rejects approval with a clear list of what is missing.

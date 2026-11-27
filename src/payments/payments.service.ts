@@ -1031,11 +1031,24 @@ export class PaymentsService {
     serviceCategoryId: string,
     client: Prisma.TransactionClient = this.prisma,
   ): Promise<ServiceForPricing> {
+    // Mobile clients may send the service's id, slug or display name.
+    const key = serviceCategoryId.trim();
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        key,
+      );
     const category = await client.serviceCategory.findFirst({
       where: {
-        id: serviceCategoryId,
         isActive: true,
         category: { isActive: true },
+        ...(isUuid
+          ? { id: key }
+          : {
+              OR: [
+                { slug: key.toLowerCase() },
+                { name: { equals: key, mode: 'insensitive' } },
+              ],
+            }),
       },
       select: {
         id: true,

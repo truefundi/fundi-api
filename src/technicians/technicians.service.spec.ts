@@ -96,15 +96,18 @@ describe('TechniciansService', () => {
           name: 'Example Company',
           verificationStatus: VerificationStatus.PENDING,
         }),
+        findUnique: jest.fn().mockResolvedValue(null),
+        update: jest.fn().mockResolvedValue({
+          id: 'company-id',
+          name: 'Example Company',
+          verificationStatus: VerificationStatus.PENDING,
+        }),
+        delete: jest.fn().mockResolvedValue({ id: 'company-id' }),
       },
       technicianCategory: {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
         createMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findMany: jest.fn().mockResolvedValue([]),
-        create: jest.fn().mockResolvedValue(undefined),
-      },
-      serviceCategory: {
-        findFirst: jest.fn().mockResolvedValue({ id: categoryId }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
     };
     const prisma = {
@@ -118,6 +121,9 @@ describe('TechniciansService', () => {
         findFirst: jest.fn().mockResolvedValue(baseProfile()),
         findUnique: jest.fn().mockResolvedValue(baseProfile()),
       },
+      // Ratings and completed jobs behind each profile's stats.
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      job: { groupBy: jest.fn().mockResolvedValue([]) },
       $transaction: jest.fn(
         (callback: (tx: typeof transaction) => Promise<unknown>) =>
           callback(transaction),
@@ -153,7 +159,7 @@ describe('TechniciansService', () => {
   // A complete, valid registration body matching the new required fields.
   const validRegistration = () => ({
     gender: TechnicianGender.FEMALE,
-    nationalIdNumber: '119900001234',
+    nationalIdNumber: '1199080012345678',
     baseAddress: 'Kigali, Rwanda',
     publicLocationLabel: 'Kigali, Rwanda',
     baseLatitude: -1.95,
@@ -203,7 +209,7 @@ describe('TechniciansService', () => {
   it('keeps a signed-in customer in customer mode while their technician profile is pending', async () => {
     const { service, transaction, prisma } = createService();
     prisma.user.findUnique.mockResolvedValue({
-      phoneVerifiedAt: null,
+      phoneVerifiedAt: now,
       role: 'CUSTOMER',
     });
     transaction.technicianProfile.findUnique.mockResolvedValue(null);
@@ -243,6 +249,20 @@ describe('TechniciansService', () => {
         verificationStatus: VerificationStatus.PENDING,
       }),
     });
+  });
+
+  it('refuses an application from a phone that was never verified by SMS', async () => {
+    const { service, transaction, prisma } = createService();
+    for (const role of ['CUSTOMER', 'TECHNICIAN']) {
+      prisma.user.findUnique.mockResolvedValue({ phoneVerifiedAt: null, role });
+      await expect(
+        service.registerMyProfile(userId, validRegistration()),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('Verify your phone number'),
+      });
+    }
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(transaction.user.update).not.toHaveBeenCalled();
   });
 
   it('registers a text-only profile without geocoding it', async () => {
@@ -351,6 +371,189 @@ describe('TechniciansService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
+  it('lets a rejected technician submit a brand-new application for review', async () => {
+    const { service, transaction, audit } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+
+    await service.registerMyProfile(userId, validRegistration());
+
+    expect(transaction.technicianProfile.create).not.toHaveBeenCalled();
+    expect(transaction.technicianCategory.createMany).toHaveBeenCalled();
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith({
+      where: { id: profileId },
+      data: {
+        verificationStatus: VerificationStatus.PENDING,
+        availabilityStatus: TechnicianAvailability.OFFLINE,
+        rejectionReason: null,
+        businessType: TechnicianBusinessType.INDIVIDUAL,
+      },
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'APPLICATION_RESUBMITTED',
+        fromStatus: VerificationStatus.REJECTED,
+        toStatus: VerificationStatus.PENDING,
+      }),
+      transaction,
+    );
+  });
+
+  it('creates the company when a rejected technician re-applies as a company', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+
+    await service.registerMyProfile(userId, {
+      ...validRegistration(),
+      businessType: TechnicianBusinessType.COMPANY,
+      company: {
+        name: 'Example Company',
+        location: 'Kigali, Rwanda',
+        email: 'info@example.com',
+        phoneNumber: '+250788123456',
+      },
+    });
+
+    expect(transaction.company.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        technicianId: profileId,
+        name: 'Example Company',
+        verificationStatus: VerificationStatus.PENDING,
+      }),
+    });
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          businessType: TechnicianBusinessType.COMPANY,
+        }),
+      }),
+    );
+  });
+
+  it('sends a rejected company back for review with its new details', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    transaction.company.findUnique.mockResolvedValue({
+      id: 'company-id',
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+
+    await service.registerMyProfile(userId, {
+      ...validRegistration(),
+      businessType: TechnicianBusinessType.COMPANY,
+      company: {
+        name: 'Renamed Company',
+        location: 'Kigali, Rwanda',
+        email: 'Info@Example.com',
+        phoneNumber: '+250788123456',
+      },
+    });
+
+    expect(transaction.company.create).not.toHaveBeenCalled();
+    expect(transaction.company.update).toHaveBeenCalledWith({
+      where: { id: 'company-id' },
+      data: expect.objectContaining({
+        name: 'Renamed Company',
+        email: 'info@example.com',
+        verificationStatus: VerificationStatus.PENDING,
+        verifiedAt: null,
+      }),
+    });
+  });
+
+  it('removes an unapproved company when a rejected technician re-applies alone', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    transaction.company.findUnique.mockResolvedValue({
+      id: 'company-id',
+      verificationStatus: VerificationStatus.PENDING,
+    });
+
+    await service.registerMyProfile(userId, validRegistration());
+
+    expect(transaction.company.delete).toHaveBeenCalledWith({
+      where: { id: 'company-id' },
+    });
+  });
+
+  it('reapplies even when the rejected profile was left online', async () => {
+    const { service, transaction } = createService();
+    const rejectedOnline = {
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+      availabilityStatus: TechnicianAvailability.ONLINE,
+    };
+    transaction.technicianProfile.findUnique.mockResolvedValue(rejectedOnline);
+    transaction.technicianProfile.findUniqueOrThrow.mockResolvedValue(
+      rejectedOnline,
+    );
+
+    await expect(
+      service.registerMyProfile(userId, validRegistration()),
+    ).resolves.toBeDefined();
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          availabilityStatus: TechnicianAvailability.OFFLINE,
+        }),
+      }),
+    );
+  });
+
+  it('keeps the ID number on file when a rejected technician reapplies without retyping it', async () => {
+    const { service, transaction, nationalIdCrypto } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    const { nationalIdNumber: _omitted, ...withoutId } = validRegistration();
+
+    await expect(
+      service.registerMyProfile(userId, withoutId),
+    ).resolves.toBeDefined();
+    expect(nationalIdCrypto.encrypt).not.toHaveBeenCalled();
+  });
+
+  it('still requires an ID number on reapplication when none is on file', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      nationalIdEncrypted: null,
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    const { nationalIdNumber: _omitted, ...withoutId } = validRegistration();
+
+    await expect(
+      service.registerMyProfile(userId, withoutId),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('nationalIdNumber'),
+    });
+    expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
+  it('checks every required field on a reapplication, as on a first one', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+    });
+    await expect(
+      service.registerMyProfile(userId, { gender: TechnicianGender.FEMALE }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
   it('rejects a service that has both categoryId and customName', async () => {
     const { service, prisma } = createService();
     await expect(
@@ -452,6 +655,47 @@ describe('TechniciansService', () => {
     });
   });
 
+  it('saves a typed catalog service name as that catalog service', async () => {
+    const { service, transaction } = createService();
+    transaction.$queryRaw
+      .mockReset()
+      .mockResolvedValueOnce([{ id: profileId }])
+      .mockResolvedValueOnce([{ id: categoryId, key: 'plumbing' }])
+      .mockResolvedValueOnce([{ id: categoryId }]);
+    await service.updateMyProfile(userId, {
+      serviceExperiences: [{ customName: ' Plumbing ', yearsOfExperience: 4 }],
+    });
+    expect(transaction.technicianCategory.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          technicianId: profileId,
+          categoryId,
+          customName: null,
+          customNameNormalized: '',
+          yearsOfExperience: 4,
+        },
+      ],
+    });
+  });
+
+  it('reports a service listed by id and by name as a duplicate', async () => {
+    const { service, transaction } = createService();
+    transaction.$queryRaw
+      .mockReset()
+      .mockResolvedValueOnce([{ id: profileId }])
+      .mockResolvedValueOnce([{ id: categoryId, key: 'plumbing' }])
+      .mockResolvedValueOnce([{ id: categoryId }]);
+    await expect(
+      service.updateMyProfile(userId, {
+        serviceExperiences: [
+          { categoryId, yearsOfExperience: 4 },
+          { customName: 'plumbing', yearsOfExperience: 2 },
+        ],
+      }),
+    ).rejects.toThrow('Duplicate service category');
+    expect(transaction.technicianCategory.createMany).not.toHaveBeenCalled();
+  });
+
   it('rejects duplicate custom names in the same request', async () => {
     const { service, transaction } = createService();
     transaction.$queryRaw.mockReset().mockResolvedValue([]);
@@ -512,31 +756,6 @@ describe('TechniciansService', () => {
     expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
   });
 
-  it('adds a service without replacing the technician existing services', async () => {
-    const { service, transaction, audit } = createService();
-    transaction.technicianProfile.findUnique.mockResolvedValue({
-      id: profileId,
-    });
-
-    await service.addServiceExperience(userId, {
-      categoryId,
-      yearsOfExperience: 4,
-    });
-
-    expect(transaction.technicianCategory.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        technician: { connect: { id: profileId } },
-        category: { connect: { id: categoryId } },
-        yearsOfExperience: 4,
-      }),
-    });
-    expect(transaction.technicianCategory.deleteMany).not.toHaveBeenCalled();
-    expect(audit.log).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'SERVICE_EXPERIENCE_ADDED' }),
-      transaction,
-    );
-  });
-
   it('rejects an incomplete coordinate pair', async () => {
     const { service, prisma } = createService();
     await expect(
@@ -588,6 +807,79 @@ describe('TechniciansService', () => {
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
+  it('saves the admin reason with a rejection so the technician can read it', async () => {
+    const { service, transaction, audit } = createService();
+    await service.setVerificationStatus(
+      profileId,
+      VerificationStatus.REJECTED,
+      'admin-1',
+      '  Your ID photo is unreadable.  ',
+    );
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          verificationStatus: VerificationStatus.REJECTED,
+          rejectionReason: 'Your ID photo is unreadable.',
+        }),
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          reason: '  Your ID photo is unreadable.  ',
+        }),
+      }),
+      transaction,
+    );
+  });
+
+  it('refuses a rejection without a reason', async () => {
+    const { service, prisma } = createService();
+    for (const reason of [undefined, '   ']) {
+      await expect(
+        service.setVerificationStatus(
+          profileId,
+          VerificationStatus.REJECTED,
+          'admin-1',
+          reason,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    }
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('clears the old rejection reason when the application is approved', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUniqueOrThrow.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+      rejectionReason: 'Old reason',
+    });
+    await service.setVerificationStatus(
+      profileId,
+      VerificationStatus.APPROVED,
+      'admin-1',
+    );
+    expect(transaction.technicianProfile.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ rejectionReason: null }),
+      }),
+    );
+  });
+
+  it('shows the rejection reason to the technician who owns the profile', async () => {
+    const { service, prisma } = createService();
+    prisma.technicianProfile.findUnique.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.REJECTED,
+      rejectionReason: 'Your ID photo is unreadable.',
+    });
+    await expect(service.getMyProfile(userId)).resolves.toMatchObject({
+      verificationStatus: VerificationStatus.REJECTED,
+      rejectionReason: 'Your ID photo is unreadable.',
+    });
   });
 
   // ─── Account status ────────────────────────────────────────────────────
@@ -694,13 +986,73 @@ describe('TechniciansService', () => {
     );
   });
 
+  it('shows real rating and job counts, and none for an unrated technician', async () => {
+    const { service, prisma } = createService();
+    prisma.$queryRaw.mockResolvedValueOnce([
+      { technicianId: profileId, ratingCount: 3, averageScore: 4.333 },
+    ]);
+    prisma.job.groupBy.mockResolvedValueOnce([
+      { technicianId: profileId, _count: { _all: 5 } },
+    ]);
+    const rated = await service.listAvailable({}, 'anonymous');
+    expect(rated.data[0].stats).toEqual({
+      averageRating: 4.3,
+      ratingCount: 3,
+      jobsCompleted: 5,
+    });
+
+    const unrated = await service.listAvailable({}, 'anonymous');
+    expect(unrated.data[0].stats).toEqual({
+      averageRating: null,
+      ratingCount: 0,
+      jobsCompleted: 0,
+    });
+  });
+
+  it('approves the services waiting with an application when it is approved', async () => {
+    const { service, transaction } = createService();
+    await service.setVerificationStatus(
+      profileId,
+      VerificationStatus.APPROVED,
+      'admin-1',
+    );
+    expect(transaction.technicianCategory.updateMany).toHaveBeenCalledWith({
+      where: { technicianId: profileId, status: VerificationStatus.PENDING },
+      data: expect.objectContaining({
+        status: VerificationStatus.APPROVED,
+        reviewedById: 'admin-1',
+      }),
+    });
+  });
+
+  it('keeps an approved technician from replacing their services in one go', async () => {
+    const { service, transaction } = createService();
+    transaction.technicianProfile.findUniqueOrThrow.mockResolvedValue({
+      ...baseProfile(),
+      verificationStatus: VerificationStatus.APPROVED,
+    });
+    await expect(
+      service.updateMyProfile(userId, {
+        serviceExperiences: [{ categoryId, yearsOfExperience: 2 }],
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(transaction.technicianCategory.deleteMany).not.toHaveBeenCalled();
+  });
+
   it('filters discovery by category when categoryId is supplied', async () => {
     const { service, prisma } = createService();
     await service.listAvailable({ categoryId }, 'authenticated');
     expect(prisma.technicianProfile.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          AND: [{ categories: { some: { categoryId } } }],
+          // Only services an admin approved get a technician found.
+          AND: [
+            {
+              categories: {
+                some: { categoryId, status: VerificationStatus.APPROVED },
+              },
+            },
+          ],
         }),
       }),
     );

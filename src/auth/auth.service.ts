@@ -34,7 +34,11 @@ import { SmsService } from '../sms/sms.service';
 import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { PinRegisterDto } from './dto/pin-register.dto';
-import { UserRole, type User } from '@prisma/client';
+import { Prisma, UserRole, type User } from '@prisma/client';
+import {
+  normalizeRwandaPhoneNumber,
+  RWANDA_PHONE_NUMBER_PATTERN,
+} from '../common/validation/rwanda-phone-number';
 
 const PASSWORD_ATTEMPT_SCRIPT = `
 local attempts = tonumber(redis.call('GET', KEYS[1]) or '0')
@@ -374,6 +378,80 @@ export class AuthService {
       await tx.refreshToken.deleteMany({ where: { userId: user.id } });
     });
     return { message: 'Password reset successfully. You can now sign in.' };
+  }
+
+  // Replaces a forgotten PIN after consuming an SMS OTP, then signs the user in.
+  // Signing in replaces every other session, so a lost phone is logged out too.
+  async resetPin(
+    phoneNumber: string,
+    otp: string,
+    newPin: string,
+    deviceId?: string,
+  ) {
+    this.assertPin(newPin);
+    const user = await this.prisma.user.findUnique({ where: { phoneNumber } });
+    if (!user) {
+      throw new UnauthorizedException('The phone number or OTP is incorrect.');
+    }
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+    await this.verifyOtpCode(user.id, otp);
+    await this.clearPasswordAttempts(user.id);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        pinHash: await bcrypt.hash(newPin, this.passwordBcryptRounds),
+        // The OTP just proved the phone, as it does at sign-in.
+        ...(user.phoneVerifiedAt ? {} : { phoneVerifiedAt: new Date() }),
+      },
+    });
+    return this.createUserSession(user, deviceId);
+  }
+
+  // Changes the PIN of a signed-in account; the current PIN is required when one exists.
+  async changePin(
+    userId: string,
+    currentPin: string | undefined,
+    newPin: string,
+  ) {
+    this.assertPin(newPin);
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Account not found.');
+    this.rejectAdminPhoneLogin(user.role);
+    this.ensureActive(user.status);
+
+    if (user.pinHash) {
+      if (!currentPin) {
+        throw new BadRequestException('Enter your current PIN.');
+      }
+      const attempts = await this.consumePasswordAttempt(user.id);
+      if (attempts === -1) {
+        throw new ForbiddenException(
+          'Too many incorrect PIN attempts. Wait before trying again.',
+        );
+      }
+      if (!(await bcrypt.compare(currentPin, user.pinHash))) {
+        if (attempts >= this.passwordMaxAttempts) {
+          throw new ForbiddenException(
+            'Too many incorrect PIN attempts. Wait before trying again.',
+          );
+        }
+        throw new UnauthorizedException('Your current PIN is incorrect.');
+      }
+      if (currentPin === newPin) {
+        throw new BadRequestException(
+          'Choose a PIN different from your current one.',
+        );
+      }
+    }
+    await this.clearPasswordAttempts(user.id);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { pinHash: await bcrypt.hash(newPin, this.passwordBcryptRounds) },
+    });
+    return {
+      message: user.pinHash ? 'Your PIN was changed.' : 'Your PIN is set.',
+    };
   }
 
   // Starts passkey enrollment for the currently authenticated account.
@@ -790,6 +868,25 @@ export class AuthService {
     );
   }
 
+  /**
+   * Whether the customer's account phone is already verified. When it is, a
+   * job can be submitted without a fresh per-job code.
+   */
+  async customerJobPhoneStatus(customerId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: customerId },
+      select: { phoneNumber: true, phoneVerifiedAt: true, role: true },
+    });
+    if (!user || user.role === UserRole.ADMIN) {
+      throw new NotFoundException('Account not found.');
+    }
+    return {
+      phoneNumber: user.phoneNumber,
+      verified: Boolean(user.phoneVerifiedAt),
+      verifiedAt: user.phoneVerifiedAt,
+    };
+  }
+
   async requestCustomerJobOtp(
     customerId: string,
     requestedPhoneNumber?: string,
@@ -808,17 +905,10 @@ export class AuthService {
       throw new NotFoundException('Account not found.');
     }
     this.ensureActive(user.status);
+    // Customers and technicians may verify a different number; once the code
+    // is confirmed it becomes the account's sign-in number.
     const phoneNumber = requestedPhoneNumber?.trim() || user.phoneNumber;
-    if (user.role !== UserRole.CUSTOMER && phoneNumber !== user.phoneNumber) {
-      throw new BadRequestException(
-        'Only customer accounts can verify a different phone number.',
-      );
-    }
-    if (
-      user.role === UserRole.CUSTOMER &&
-      user.phoneVerifiedAt &&
-      phoneNumber === user.phoneNumber
-    ) {
+    if (user.phoneVerifiedAt && phoneNumber === user.phoneNumber) {
       return {
         verified: true,
         phoneNumber: user.phoneNumber,
@@ -854,6 +944,7 @@ export class AuthService {
     return {
       verificationId: verification.id,
       expiresAt: verification.expiresAt,
+      phoneNumber,
       message: `OTP sent. It expires in ${this.otpLifetimeMinutes()} minutes.`,
     };
   }
@@ -917,18 +1008,29 @@ export class AuthService {
         }
         const user = await tx.user.findUnique({
           where: { id: customerId },
-          select: { role: true },
+          select: { role: true, phoneNumber: true },
         });
-        if (!user) throw new NotFoundException('Account not found.');
+        if (!user || user.role === UserRole.ADMIN) {
+          throw new NotFoundException('Account not found.');
+        }
+        // The verified number becomes the sign-in number for customers and
+        // technicians alike. The old number is released (phoneNumber is the only
+        // unique hold on it), so another person can register or verify it.
         await tx.user.update({
           where: { id: customerId },
           data: {
             phoneVerifiedAt: verifiedAt,
-            ...(user.role === UserRole.CUSTOMER
-              ? { phoneNumber: verification.phoneNumber }
-              : {}),
+            phoneNumber: verification.phoneNumber,
           },
         });
+        // Payouts that went to the old number follow the person, so they never
+        // reach whoever is given that number next.
+        if (user.phoneNumber !== verification.phoneNumber) {
+          await tx.technicianProfile.updateMany({
+            where: { userId: customerId, paymentNumber: user.phoneNumber },
+            data: { paymentNumber: verification.phoneNumber },
+          });
+        }
       });
     } catch (error) {
       if (this.isPrismaError(error, 'P2002')) {

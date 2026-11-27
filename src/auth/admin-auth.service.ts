@@ -131,12 +131,10 @@ export class AdminAuthService {
   private readonly loginLockoutSeconds: number;
   private readonly twoFactorPendingSeconds: number;
   private readonly twoFactorMaxTries: number;
+  private readonly twoFactorAttemptWindowSeconds: number;
   private readonly totpIssuer: string;
   private readonly totpWindow: number;
   private readonly bcryptRounds: number;
-  // Sliding window for the per-account wrong-code tally, matching the mobile OTP
-  // behaviour so a slow trickle of guesses cannot accumulate forever.
-  private readonly twoFactorAttemptWindowSeconds = 900;
   // Seconds in one TOTP step. Fixed by the standard, not configurable.
   private readonly totpStepSeconds = 30;
 
@@ -162,14 +160,12 @@ export class AdminAuthService {
       'adminAuth.twoFactorPendingSeconds',
       300,
     );
-    this.twoFactorMaxTries = this.configService.get<number>(
-      'adminAuth.twoFactorMaxTries',
-      5,
+    this.twoFactorMaxTries = this.configService.get<number>('adminAuth.twoFactorMaxTries', 5);
+    this.twoFactorAttemptWindowSeconds = this.configService.get<number>(
+      'adminAuth.twoFactorAttemptWindowSeconds',
+      900,
     );
-    this.totpIssuer = this.configService.get<string>(
-      'adminAuth.totpIssuer',
-      'Fundi',
-    );
+    this.totpIssuer = this.configService.get<string>('adminAuth.totpIssuer', 'Fundi');
     this.totpWindow = this.configService.get<number>('adminAuth.totpWindow', 1);
     this.bcryptRounds = this.configService.get<number>(
       'adminAuth.bcryptRounds',
@@ -280,7 +276,7 @@ export class AdminAuthService {
     }
     if (claim === -2) {
       throw tooManyRequests(
-        'Too many incorrect verification codes. Wait a few minutes and sign in again.',
+        'Too many incorrect verification codes. Wait for the lockout window to expire, then sign in again.',
       );
     }
 

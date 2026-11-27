@@ -11,26 +11,29 @@ import { TechnicianDocumentsController } from './documents/technician-documents.
 import { TechnicianDocumentsAdminController } from './documents/technician-documents-admin.controller';
 import { TechnicianDocumentsService } from './documents/technician-documents.service';
 import { NationalIdCryptoService } from './national-id-crypto.service';
+import {
+  TechnicianServicesAdminController,
+  TechnicianServicesController,
+} from './services/technician-services.controller';
+import { TechnicianServicesService } from './services/technician-services.service';
 
 // Groups the technician profile endpoints, document handling, and persistence services.
 @Module({
-  imports: [
-    DatabaseModule,
-    StorageModule,
-    NotificationsModule,
-    AuthModule,
-  ],
+  imports: [DatabaseModule, StorageModule, NotificationsModule, AuthModule],
   controllers: [
     TechniciansController,
     TechniciansAdminController,
     TechniciansPublicController,
     TechnicianDocumentsController,
     TechnicianDocumentsAdminController,
+    TechnicianServicesController,
+    TechnicianServicesAdminController,
   ],
   providers: [
     TechniciansService,
     TechnicianDocumentsService,
     NationalIdCryptoService,
+    TechnicianServicesService,
   ],
   exports: [TechniciansService],
 })

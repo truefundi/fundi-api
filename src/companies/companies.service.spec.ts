@@ -18,6 +18,7 @@ describe('CompaniesService', () => {
     phoneNumber: '+250788123456',
     description: null as string | null,
     verificationStatus: VerificationStatus.PENDING,
+    rejectionReason: null as string | null,
     verifiedAt: null as Date | null,
     verifiedById: null as string | null,
     createdAt: new Date('2026-11-18T07:00:00.000Z'),
@@ -75,6 +76,7 @@ describe('CompaniesService', () => {
         data: expect.objectContaining({
           name: 'Updated Plumbing Ltd',
           verificationStatus: VerificationStatus.PENDING,
+          rejectionReason: null,
           verifiedAt: null,
           verifiedBy: { disconnect: true },
         }),
@@ -128,6 +130,54 @@ describe('CompaniesService', () => {
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'VERIFICATION_STATUS_UPDATED' }),
       tx,
+    );
+  });
+
+  it('keeps the admin reason when rejecting a company', async () => {
+    const { service, tx, audit } = createService();
+
+    const result = await service.updateVerification(
+      company.id,
+      {
+        verificationStatus: VerificationStatus.REJECTED,
+        reason: 'The registration number does not match RDB records.',
+      },
+      'admin-1',
+    );
+
+    expect(tx.company.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          verificationStatus: VerificationStatus.REJECTED,
+          rejectionReason: 'The registration number does not match RDB records.',
+          verifiedAt: null,
+        }),
+      }),
+    );
+    expect(result.rejectionReason).toBe(
+      'The registration number does not match RDB records.',
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { reason: 'The registration number does not match RDB records.' },
+      }),
+      tx,
+    );
+  });
+
+  it('clears the rejection reason once a company is approved', async () => {
+    const { service, tx } = createService();
+
+    await service.updateVerification(
+      company.id,
+      { verificationStatus: VerificationStatus.APPROVED },
+      'admin-1',
+    );
+
+    expect(tx.company.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ rejectionReason: null }),
+      }),
     );
   });
 

@@ -43,7 +43,8 @@ export class TechniciansAdminController {
   // Lists technician accounts with paging, filters, and search.
   @Get()
   @ApiOperation({
-    summary: 'List technicians with pagination, filters, and search (admin only)',
+    summary:
+      'List technicians with pagination, filters, and search (admin only)',
     description:
       'Returns one page of technician profiles, newest first, wrapped in a `{ data, pagination }` envelope. ' +
       'All filters combine and are applied inside the database query.',
@@ -60,14 +61,16 @@ export class TechniciansAdminController {
   // Searches all matching technician identity/profile fields and category membership.
   @Get('search')
   @ApiOperation({
-    summary: 'Search technicians across profile, identity, and category fields (admin only)',
+    summary:
+      'Search technicians across profile, identity, and category fields (admin only)',
     description:
       'Accepts every list filter plus a broad `query` sweep (name, contacts, addresses, service names, exact coordinates) ' +
       'Results are paginated in a `{ data, pagination }` envelope.',
   })
   @ApiResponse({
     status: 200,
-    description: 'One page of matching technician profiles plus pagination metadata',
+    description:
+      'One page of matching technician profiles plus pagination metadata',
     type: PaginatedTechniciansResponseDto,
   })
   search(@Query() query: SearchTechniciansDto) {
@@ -78,7 +81,6 @@ export class TechniciansAdminController {
   searchByUser(@Query() query: SearchTechniciansByUserDto) {
     return this.technicians.searchByUserDetails(query);
   }
-
 
   // Changes verification state; non-approved technicians are forced offline.
   @Patch(':id/verification-status')
@@ -91,6 +93,7 @@ export class TechniciansAdminController {
       id,
       dto.verificationStatus,
       user.id,
+      dto.reason,
     );
   }
 

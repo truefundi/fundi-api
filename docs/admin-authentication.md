@@ -286,21 +286,22 @@ Two further restrictions exist because cookies travel automatically. `PATCH` and
 
 ## Settings
 
-| Variable                      | Default              | Meaning                                                                                                                        |
-| ----------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `ADMIN_BCRYPT_ROUNDS`         | `12`                 | Password hashing work factor.                                                                                                  |
-| `ADMIN_MAX_LOGIN_ATTEMPTS`    | `5`                  | Wrong passwords before lockout.                                                                                                |
-| `ADMIN_LOGIN_LOCKOUT_SECONDS` | `900`                | Lockout window. A correct password is refused during it.                                                                       |
-| `ADMIN_2FA_PENDING_SECONDS`   | `300`                | How long a password-verified sign-in stays open waiting for a code. Not a code lifetime — it only bounds an abandoned sign-in. |
-| `ADMIN_2FA_MAX_TRIES`         | `5`                  | Incorrect codes allowed per account, on a sliding 15-minute window.                                                            |
-| `ADMIN_TOTP_ISSUER`           | `Fundi`              | Label shown in the app. Must match in both the `otpauth://` label and its query parameter.                                     |
-| `ADMIN_TOTP_WINDOW`           | `1`                  | Clock-drift tolerance in 30-second steps either side.                                                                          |
-| `ADMIN_TOTP_ENCRYPTION_KEY`   | none                 | 64 hex characters. Encrypts the authenticator secret at rest. Sign-in fails with `503` until set.                              |
-| `ADMIN_ACCESS_EXPIRES_IN`     | `1d`                 | Access token lifetime.                                                                                                         |
-| `ADMIN_REFRESH_EXPIRES_IN`    | `5d`                 | Refresh token and matching database row.                                                                                       |
-| `ADMIN_COOKIE_SAME_SITE`      | `lax`                | Cookie `SameSite` flag.                                                                                                        |
-| `ADMIN_COOKIE_SECURE`         | `true` in production | Cookie `Secure` flag.                                                                                                          |
-| `ADMIN_COOKIE_DOMAIN`         | unset                | Cookie domain. Leave unset to keep cookies host-only.                                                                          |
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ADMIN_BCRYPT_ROUNDS` | `12` | Password hashing work factor. |
+| `ADMIN_MAX_LOGIN_ATTEMPTS` | `5` | Wrong passwords before lockout. |
+| `ADMIN_LOGIN_LOCKOUT_SECONDS` | `900` | Lockout window. A correct password is refused during it. |
+| `ADMIN_2FA_PENDING_SECONDS` | `300` | How long a password-verified sign-in stays open waiting for a code. Not a code lifetime — it only bounds an abandoned sign-in. |
+| `ADMIN_2FA_MAX_TRIES` | `5` | Incorrect codes allowed per account, on a sliding lockout window. |
+| `ADMIN_2FA_ATTEMPT_WINDOW_SECONDS` | `900` | Duration of the sliding incorrect-code lockout window, in seconds. |
+| `ADMIN_TOTP_ISSUER` | `Fundi` | Label shown in the app. Must match in both the `otpauth://` label and its query parameter. |
+| `ADMIN_TOTP_WINDOW` | `1` | Clock-drift tolerance in 30-second steps either side. |
+| `ADMIN_TOTP_ENCRYPTION_KEY` | none | 64 hex characters. Encrypts the authenticator secret at rest. Sign-in fails with `503` until set. |
+| `ADMIN_ACCESS_EXPIRES_IN` | `1d` | Access token lifetime. |
+| `ADMIN_REFRESH_EXPIRES_IN` | `5d` | Refresh token and matching database row. |
+| `ADMIN_COOKIE_SAME_SITE` | `lax` | Cookie `SameSite` flag. |
+| `ADMIN_COOKIE_SECURE` | `true` in production | Cookie `Secure` flag. |
+| `ADMIN_COOKIE_DOMAIN` | unset | Cookie domain. Leave unset to keep cookies host-only. |
 
 These lifetimes are deliberately shorter than the phone defaults in [authentication.md](authentication.md) (`7d` access, `30d` refresh), because a dashboard session is worth more if stolen and is easier to end.
 

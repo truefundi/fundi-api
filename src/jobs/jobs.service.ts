@@ -5,8 +5,10 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ChatRealtimeService } from '../chat/chat-realtime.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   ConversationMessageType,
@@ -17,7 +19,6 @@ import {
   JobMediaType,
   JobOfferStatus,
   JobPriority,
-  JobProgressStatus,
   JobWorkStatus,
   JobCooperationStatus,
   JobRequestType,
@@ -64,7 +65,6 @@ import { AdminRateJobDto } from './dto/admin-rate-job.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import {
   DropJobDto,
-  JobProgressDto,
   JobWorkStatusDto,
   RejectJobOfferDto,
 } from './dto/job-action.dto';
@@ -109,6 +109,7 @@ const JOB_INCLUDE = {
         select: { id: true, name: true, phoneNumber: true, email: true },
       },
       categories: {
+        where: { status: VerificationStatus.APPROVED },
         include: {
           category: { select: { id: true, name: true, slug: true } },
         },
@@ -195,6 +196,11 @@ interface MediaInput {
   validated: ValidatedJobUpload;
 }
 
+/** The technician just marked the work finished (the client must confirm). */
+function newlyFinished(status: JobWorkStatus, side: 'customer' | 'technician') {
+  return side === 'technician' && status === JobWorkStatus.COMPLETED;
+}
+
 @Injectable()
 export class JobsService {
   private readonly logger = new Logger(JobsService.name);
@@ -230,7 +236,21 @@ export class JobsService {
     private readonly notifications: NotificationsService,
     @InjectQueue('job-dispatch') private readonly dispatchQueue: Queue,
     private readonly geocoding: GeocodingService,
+    // Optional so unit tests can build the service without the chat socket.
+    @Optional() private readonly chatRealtime?: ChatRealtimeService,
   ) {}
+
+  /** Tells an open chat that its job changed, so the screen reloads at once. */
+  private async publishToJobChat(jobId: string) {
+    if (!this.chatRealtime) return;
+    const rooms = await this.prisma.chatRoom.findMany({
+      where: { jobId },
+      select: { id: true },
+    });
+    for (const room of rooms) {
+      this.chatRealtime.publish(room.id, 'chat:job:updated', { id: jobId });
+    }
+  }
 
   async confirmCooperation(
     userId: string,
@@ -265,78 +285,112 @@ export class JobsService {
         return;
       }
 
-      const payment = await tx.bookingPayment.findFirst({
-        where: { jobId, status: BookingPaymentStatus.PAUSED },
-        select: { id: true },
-      });
-      if (!payment) {
-        throw new ConflictException(
-          'The assigned job does not have a paused booking payment.',
-        );
-      }
-
-      const now = new Date();
-      const customerConfirmedAt =
-        side === 'customer'
-          ? (job.customerConfirmedAt ?? now)
-          : job.customerConfirmedAt;
-      const technicianConfirmedAt =
-        side === 'technician'
-          ? (job.technicianConfirmedAt ?? now)
-          : job.technicianConfirmedAt;
-      const bothConfirmed = Boolean(
-        customerConfirmedAt && technicianConfirmedAt,
-      );
-
-      if (bothConfirmed) {
-        const expiredPayment = await tx.bookingPayment.updateMany({
-          where: { id: payment.id, status: BookingPaymentStatus.PAUSED },
-          data: {
-            status: BookingPaymentStatus.EXPIRED,
-            validUntil: now,
-            remainingValiditySeconds: 0,
-          },
-        });
-        if (!expiredPayment.count) {
-          throw new ConflictException(
-            'The booking payment changed before cooperation was confirmed.',
-          );
-        }
-      }
-
-      await tx.job.update({
-        where: { id: jobId },
-        data: {
-          customerConfirmedAt,
-          technicianConfirmedAt,
-          ...(bothConfirmed && {
-            cooperationStatus: JobCooperationStatus.CONFIRMED,
-          }),
-        },
-      });
-      await this.audit.log(
-        {
-          entityType: 'Job',
-          entityId: jobId,
-          action: bothConfirmed
-            ? 'JOB_COOPERATION_CONFIRMED'
-            : 'JOB_COOPERATION_CONFIRMATION_RECORDED',
-          actorId: userId,
-          fromStatus: job.cooperationStatus,
-          toStatus: bothConfirmed
-            ? JobCooperationStatus.CONFIRMED
-            : JobCooperationStatus.PENDING,
-          metadata: {
-            confirmedBy: side,
-            bookingPaymentExpired: bothConfirmed,
-          },
-        },
-        tx,
-      );
+      await this.recordCooperation(tx, job, [side], userId);
     });
     return side === 'customer'
       ? this.getCustomerJob(userId, jobId)
       : this.getTechnicianJob(userId, jobId);
+  }
+
+  /**
+   * Confirms cooperation for both sides as part of a price agreement: one side
+   * offered the price and the other accepted it, so the agreement is the
+   * confirmation. Runs inside the caller's transaction so the agreed price and
+   * the confirmed job commit together. Returns false when the job is already
+   * confirmed.
+   */
+  async confirmCooperationForAgreement(
+    tx: Prisma.TransactionClient,
+    jobId: string,
+    actorId: string,
+  ): Promise<boolean> {
+    await tx.$queryRaw`SELECT "id" FROM "jobs" WHERE "id" = ${jobId} FOR UPDATE`;
+    const job = await tx.job.findUnique({ where: { id: jobId } });
+    if (!job) throw new NotFoundException('Job not found.');
+    if (job.cooperationStatus === JobCooperationStatus.CONFIRMED) return false;
+    if (
+      (job.status !== JobStatus.ASSIGNED && job.status !== JobStatus.PAUSED) ||
+      !job.technicianId
+    ) {
+      throw new ConflictException(
+        'A price can only be agreed while a technician is assigned.',
+      );
+    }
+    await this.recordCooperation(tx, job, ['customer', 'technician'], actorId);
+    return true;
+  }
+
+  private async recordCooperation(
+    tx: Prisma.TransactionClient,
+    job: Job,
+    sides: Array<'customer' | 'technician'>,
+    actorId: string,
+  ): Promise<void> {
+    const jobId = job.id;
+    const payment = await tx.bookingPayment.findFirst({
+      where: { jobId, status: BookingPaymentStatus.PAUSED },
+      select: { id: true },
+    });
+    if (!payment) {
+      throw new ConflictException(
+        'The assigned job does not have a paused booking payment.',
+      );
+    }
+
+    const now = new Date();
+    const customerConfirmedAt = sides.includes('customer')
+      ? (job.customerConfirmedAt ?? now)
+      : job.customerConfirmedAt;
+    const technicianConfirmedAt = sides.includes('technician')
+      ? (job.technicianConfirmedAt ?? now)
+      : job.technicianConfirmedAt;
+    const bothConfirmed = Boolean(customerConfirmedAt && technicianConfirmedAt);
+
+    if (bothConfirmed) {
+      const expiredPayment = await tx.bookingPayment.updateMany({
+        where: { id: payment.id, status: BookingPaymentStatus.PAUSED },
+        data: {
+          status: BookingPaymentStatus.EXPIRED,
+          validUntil: now,
+          remainingValiditySeconds: 0,
+        },
+      });
+      if (!expiredPayment.count) {
+        throw new ConflictException(
+          'The booking payment changed before cooperation was confirmed.',
+        );
+      }
+    }
+
+    await tx.job.update({
+      where: { id: jobId },
+      data: {
+        customerConfirmedAt,
+        technicianConfirmedAt,
+        ...(bothConfirmed && {
+          cooperationStatus: JobCooperationStatus.CONFIRMED,
+        }),
+      },
+    });
+    await this.audit.log(
+      {
+        entityType: 'Job',
+        entityId: jobId,
+        action: bothConfirmed
+          ? 'JOB_COOPERATION_CONFIRMED'
+          : 'JOB_COOPERATION_CONFIRMATION_RECORDED',
+        actorId,
+        fromStatus: job.cooperationStatus,
+        toStatus: bothConfirmed
+          ? JobCooperationStatus.CONFIRMED
+          : JobCooperationStatus.PENDING,
+        metadata: {
+          confirmedBy: sides.length > 1 ? 'price-agreement' : sides[0],
+          bookingPaymentExpired: bothConfirmed,
+        },
+      },
+      tx,
+    );
   }
 
   async denyPartnership(
@@ -447,6 +501,34 @@ export class JobsService {
             'A priced service category is required for booking payments.',
           );
         }
+        // A request is created once. Sending the same request again (a retry, a
+        // double tap, a second copy on the phone) must not open a second job.
+        const duplicate = await tx.job.findFirst({
+          where: {
+            customerId,
+            customerHiddenAt: null,
+            requestType,
+            serviceCategoryId: selection.serviceCategoryId,
+            status: {
+              in: [JobStatus.OPEN, JobStatus.ASSIGNED, JobStatus.PAUSED],
+            },
+            description: {
+              equals: dto.description.trim(),
+              mode: 'insensitive',
+            },
+            locationAddress: {
+              equals: dto.locationAddress.trim(),
+              mode: 'insensitive',
+            },
+          },
+          select: { id: true, reference: true },
+        });
+        if (duplicate) {
+          throw new ConflictException({
+            message: `You already have this request open (${duplicate.reference}). Continue it instead of sending it again.`,
+            existingJobId: duplicate.id,
+          });
+        }
         const now = new Date();
         const payment = await tx.bookingPayment.findFirst({
           where: {
@@ -489,14 +571,14 @@ export class JobsService {
           select: { role: true, phoneVerifiedAt: true },
         });
         if (!account) throw new NotFoundException('Account not found.');
+        // Confirming a code makes it the account's verified number, so a verified
+        // account (customer or technician hiring) needs no per-job code. A code
+        // sent along anyway is only recorded while still usable: the booking fee
+        // may be confirmed by an admin long after the code's few minutes ran out,
+        // and that must not turn a paid request away.
         const accountPhoneIsVerified =
-          account.role === UserRole.CUSTOMER &&
-          account.phoneVerifiedAt !== null;
-        if (!dto.phoneVerificationId && !accountPhoneIsVerified) {
-          throw new ConflictException(
-            'Verify your phone number for this job request before submitting it.',
-          );
-        }
+          account.role !== UserRole.ADMIN && account.phoneVerifiedAt !== null;
+        let phoneVerificationId: string | null = null;
         if (dto.phoneVerificationId) {
           const phoneVerification =
             await tx.customerPhoneVerification.findFirst({
@@ -509,11 +591,12 @@ export class JobsService {
               },
               select: { id: true },
             });
-          if (!phoneVerification) {
-            throw new ConflictException(
-              'Verify your phone number for this job request before submitting it.',
-            );
-          }
+          phoneVerificationId = phoneVerification?.id ?? null;
+        }
+        if (!phoneVerificationId && !accountPhoneIsVerified) {
+          throw new ConflictException(
+            'Verify your phone number for this job request before submitting it.',
+          );
         }
         const reference = await this.nextJobReference(tx);
         await tx.job.create({
@@ -522,12 +605,13 @@ export class JobsService {
             reference,
             customerId,
             ...selection,
-            phoneVerificationId: dto.phoneVerificationId ?? null,
+            phoneVerificationId,
             description: dto.description.trim(),
             locationAddress: dto.locationAddress.trim(),
             latitude: dto.latitude,
             longitude: dto.longitude,
-            offeredAmount: dto.offeredAmount,
+            // The price is agreed later in the chat; 0 means "not set yet".
+            offeredAmount: dto.offeredAmount ?? 0,
             priority: dto.priority ?? JobPriority.NORMAL,
             requestType,
             dispatchStatus: JobDispatchStatus.PENDING,
@@ -558,10 +642,10 @@ export class JobsService {
             'The booking payment has already been used.',
           );
         }
-        if (dto.phoneVerificationId) {
+        if (phoneVerificationId) {
           const consumed = await tx.customerPhoneVerification.updateMany({
             where: {
-              id: dto.phoneVerificationId,
+              id: phoneVerificationId,
               customerId,
               verifiedAt: { not: null },
               consumedAt: null,
@@ -588,7 +672,7 @@ export class JobsService {
               matchCount: candidates.length,
               paymentId: payment.id,
               requestType,
-              phoneVerificationId: dto.phoneVerificationId ?? null,
+              phoneVerificationId,
             },
           },
           tx,
@@ -674,12 +758,24 @@ export class JobsService {
       dto.serviceCategoryId,
       dto.otherServiceName,
     );
-    const candidates = await this.findMatches({
-      ...selection,
-      latitude: dto.latitude,
-      longitude: dto.longitude,
-    });
+    const candidates = await this.findMatches(
+      {
+        ...selection,
+        latitude: dto.latitude,
+        longitude: dto.longitude,
+      },
+      dto.includeOffline === true,
+    );
     return this.toMatchingTechnicianResponses(candidates);
+  }
+
+  async geocodeLocation(location: string) {
+    const [result] = await this.geocoding.geocodeMany([location.trim()]);
+    return {
+      displayName: result.displayName,
+      latitude: result.latitude,
+      longitude: result.longitude,
+    };
   }
 
   async previewMatchingTechniciansByGeocodedLocation(
@@ -788,7 +884,12 @@ export class JobsService {
           user: {
             is: { status: UserStatus.ACTIVE, role: UserRole.TECHNICIAN },
           },
-          categories: { some: { categoryId: category.id } },
+          categories: {
+            some: {
+              categoryId: category.id,
+              status: VerificationStatus.APPROVED,
+            },
+          },
           OR: dto.locations.flatMap((location) => [
             { baseAddress: { contains: location, mode: 'insensitive' } },
             {
@@ -898,7 +999,11 @@ export class JobsService {
       },
       include: {
         user: { select: { fullName: true } },
+        company: {
+          select: { id: true, name: true, verificationStatus: true },
+        },
         categories: {
+          where: { status: VerificationStatus.APPROVED },
           include: {
             category: { select: { id: true, name: true, slug: true } },
           },
@@ -906,6 +1011,21 @@ export class JobsService {
       },
     });
     const byId = new Map(profiles.map((profile) => [profile.id, profile]));
+    const profilePictureUrls = new Map<string, string | null>();
+    await Promise.all(
+      profiles.map(async (profile) => {
+        if (profile.profilePictureObjectKey) {
+          try {
+            const url = await this.storage.getDownloadUrl(
+              profile.profilePictureObjectKey,
+            );
+            profilePictureUrls.set(profile.id, url);
+          } catch {
+            profilePictureUrls.set(profile.id, null);
+          }
+        }
+      }),
+    );
     return candidates.map((candidate) => {
       const profile = byId.get(candidate.technicianId);
       if (!profile) {
@@ -932,6 +1052,15 @@ export class JobsService {
           yearsOfExperience: row.yearsOfExperience,
         })),
         publicLocationLabel: profile.publicLocationLabel,
+        profilePictureUrl: profilePictureUrls.get(profile.id) ?? null,
+        // ONLINE technicians get a normal request; OFFLINE ones the two-hour one.
+        availabilityStatus: profile.availabilityStatus,
+        // An approved company is requested through POST /jobs/mine/:jobId/company-requests.
+        company:
+          profile.businessType === TechnicianBusinessType.COMPANY &&
+          profile.company?.verificationStatus === VerificationStatus.APPROVED
+            ? { id: profile.company.id, name: profile.company.name }
+            : null,
       };
     });
   }
@@ -1024,6 +1153,37 @@ export class JobsService {
             : 'The selected technician is no longer available.',
         );
       }
+      // The same technician must not receive a second request from this client
+      // while the first is still waiting for them or being worked on.
+      const alreadyWithTechnician = await tx.job.findFirst({
+        where: {
+          id: { not: jobId },
+          customerId,
+          customerHiddenAt: null,
+          status: {
+            in: [JobStatus.OPEN, JobStatus.ASSIGNED, JobStatus.PAUSED],
+          },
+          OR: [
+            { technicianId: selectedTechnician.id },
+            {
+              offers: {
+                some: {
+                  technicianId: selectedTechnician.id,
+                  status: JobOfferStatus.OFFERED,
+                  expiresAt: { gt: now },
+                },
+              },
+            },
+          ],
+        },
+        select: { id: true, reference: true },
+      });
+      if (alreadyWithTechnician) {
+        throw new ConflictException({
+          message: `This technician already has your request ${alreadyWithTechnician.reference}. Continue that request instead.`,
+          existingJobId: alreadyWithTechnician.id,
+        });
+      }
       if (companyId) {
         const company = await tx.company.findFirst({
           where: {
@@ -1095,6 +1255,7 @@ export class JobsService {
               currency: true,
               otherServiceName: true,
               serviceCategory: { select: { name: true } },
+              customer: { select: { id: true, fullName: true } },
             },
           },
         },
@@ -1166,13 +1327,14 @@ export class JobsService {
       offeredAmount: offer.job.offeredAmount,
       currency: offer.job.currency,
       priority: offer.job.priority,
+      customer: offer.job.customer,
     });
     await this.notifications
       .create({
         userId: offer.technician.userId,
         type: NotificationType.JOB_OFFER,
-        title: 'New job offer',
-        body: 'You have a new job offer.',
+        title: 'New service request',
+        body: 'A client sent you a service request. Open it to accept or decline.',
         data: {
           offerId: offer.id,
           jobId: offer.jobId,
@@ -1242,9 +1404,9 @@ export class JobsService {
 
   /**
    * Customer accepts the technician's outstanding price offer, which agrees the
-   * price and closes the negotiation. The dispatch-time technician acceptance (the
-   * job assignment itself) is a separate step; this closes the money conversation
-   * the technician opened with their offer.
+   * price, closes the negotiation and confirms cooperation for both sides (the
+   * booking fee is used up). The dispatch-time technician acceptance (the job
+   * assignment itself) is a separate step.
    */
   async acceptTechnicianOffer(customerId: string, jobId: string) {
     const job = await this.findJob(jobId);
@@ -1332,12 +1494,13 @@ export class JobsService {
           closedAt: now,
         },
       });
+      await this.confirmCooperationForAgreement(tx, jobId, customerId);
       await tx.conversationMessage.create({
         data: {
           conversationId: conversation.id,
           senderRole: ConversationSender.SYSTEM,
           type: ConversationMessageType.SYSTEM,
-          text: `Agreed at ${offer.amount} ${offer.currency}.`,
+          text: `Agreed at ${offer.amount} ${offer.currency}. The job is confirmed.`,
         },
       });
       await this.audit.log(
@@ -1613,21 +1776,50 @@ export class JobsService {
     this.assertCustomerOwnsJob(job, customerId);
     this.assertEditable(job);
     if (job.requestType === JobRequestType.SOS) {
+      // Everyone was asked and nobody accepted: start a new round.
+      if (
+        job.status === JobStatus.OPEN &&
+        !job.technicianId &&
+        job.dispatchStatus === JobDispatchStatus.EXHAUSTED
+      ) {
+        await this.prisma.job.update({
+          where: { id: jobId },
+          data: { sosRoundStartedAt: new Date() },
+        });
+      }
       await this.dispatchNextSosTechnician(jobId);
       return this.getCustomerJob(customerId, jobId);
     }
-    await this.prisma.job.updateMany({
-      where: {
-        id: jobId,
-        customerId,
-        serviceCategoryId: job.serviceCategoryId,
-        status: JobStatus.OPEN,
-        technicianId: null,
-        dispatchStatus: JobDispatchStatus.EXHAUSTED,
-      },
-      data: { dispatchStatus: JobDispatchStatus.PENDING },
+    if (job.technicianId || job.dispatchStatus === JobDispatchStatus.OFFERED) {
+      throw new ConflictException(
+        'This job already has an active technician request.',
+      );
+    }
+    // Route the request to the best eligible technician who has not already
+    // been asked about this job, so a decline or a missed request moves on
+    // without the customer having to pick again.
+    const candidates = await this.findMatches({
+      serviceCategoryId: job.serviceCategoryId,
+      otherServiceName: job.otherServiceName,
+      latitude: job.latitude,
+      longitude: job.longitude,
     });
-    return this.getCustomerJob(customerId, jobId);
+    const asked = await this.prisma.jobOffer.findMany({
+      where: { jobId },
+      select: { technicianId: true },
+    });
+    const askedIds = new Set(asked.map((offer) => offer.technicianId));
+    const next = candidates.find(
+      (candidate) => !askedIds.has(candidate.technicianId),
+    );
+    if (!next) {
+      throw new ConflictException(
+        'No other technician is available for this request right now. Try again shortly.',
+      );
+    }
+    return this.proposeTechnician(customerId, jobId, {
+      technicianId: next.technicianId,
+    });
   }
 
   async cancelJob(
@@ -2263,8 +2455,6 @@ export class JobsService {
           status: JobStatus.ASSIGNED,
           dispatchStatus: JobDispatchStatus.STOPPED,
           assignedAt: now,
-          technicianProgress: JobProgressStatus.PENDING,
-          customerProgress: JobProgressStatus.PENDING,
           workStatus: JobWorkStatus.PENDING,
           workStatusReason: null,
           cooperationStatus: JobCooperationStatus.PENDING,
@@ -2452,6 +2642,7 @@ export class JobsService {
           include: {
             serviceCategory: { select: { id: true, name: true, slug: true } },
             media: { orderBy: { createdAt: 'asc' } },
+            customer: { select: { id: true, fullName: true } },
           },
         },
       },
@@ -2460,6 +2651,8 @@ export class JobsService {
     return Promise.all(
       offers.map(async (offer) => ({
         id: offer.id,
+        // Who is asking, so the technician's inbox can show the client by name.
+        customer: offer.job.customer,
         status: offer.status,
         round: offer.round,
         matchScore: offer.matchScore,
@@ -2591,7 +2784,6 @@ export class JobsService {
               status: JobStatus.ASSIGNED,
               cooperationStatus: JobCooperationStatus.PENDING,
               dispatchStatus: JobDispatchStatus.STOPPED,
-              technicianProgress: JobProgressStatus.STARTED,
               workStatus: JobWorkStatus.PENDING,
               workStatusReason: null,
               completionConfirmationDueAt: null,
@@ -2697,8 +2889,8 @@ export class JobsService {
         .create({
           userId: job.customerId,
           type: NotificationType.JOB_ASSIGNED,
-          title: 'Technician assigned',
-          body: 'A technician accepted your job and will contact you shortly.',
+          title: 'Technician accepted your request',
+          body: 'Your technician accepted. Agree on a price in the chat to confirm the job.',
           data: { jobId: job.id, dedupeKey: `job-assigned:${job.id}` },
         })
         .catch(() => undefined);
@@ -2830,6 +3022,11 @@ export class JobsService {
     dto: JobWorkStatusDto,
   ) {
     const reason = dto.reason?.trim() || null;
+    if (side === 'customer' && dto.status !== JobWorkStatus.COMPLETED) {
+      throw new BadRequestException(
+        'The technician updates the work status; confirm the job once it is marked finished.',
+      );
+    }
     if (dto.status === JobWorkStatus.ON_HOLD && !reason) {
       throw new BadRequestException(
         'A reason is required when placing a job on hold.',
@@ -2859,12 +3056,7 @@ export class JobsService {
         );
       }
 
-      const customerConfirmingCompletion =
-        side === 'customer' && dto.status === JobWorkStatus.COMPLETED;
-      const customerPreviouslyMarkedComplete =
-        side === 'technician' &&
-        dto.status === JobWorkStatus.COMPLETED &&
-        job.customerProgress === JobProgressStatus.COMPLETED;
+      const customerConfirmingCompletion = side === 'customer';
       if (customerConfirmingCompletion) {
         if (
           job.workStatus !== JobWorkStatus.COMPLETED ||
@@ -2881,14 +3073,11 @@ export class JobsService {
 
       const now = new Date();
       const newCompletionDueAt =
-        side === 'technician' &&
-        dto.status === JobWorkStatus.COMPLETED &&
-        !customerPreviouslyMarkedComplete
+        side === 'technician' && dto.status === JobWorkStatus.COMPLETED
           ? new Date(now.getTime() + JOB_COMPLETION_CONFIRMATION_SECONDS * 1000)
           : null;
       const dueAt = newCompletionDueAt ?? job.completionConfirmationDueAt;
-      const completed =
-        customerConfirmingCompletion || customerPreviouslyMarkedComplete;
+      const completed = customerConfirmingCompletion;
       const nextJobStatus = completed
         ? JobStatus.COMPLETED
         : dto.status === JobWorkStatus.ON_HOLD
@@ -2925,24 +3114,8 @@ export class JobsService {
               customerResumeRequestedAt: null,
               technicianResumeRequestedAt: null,
             }),
-          ...(completed && {
-            customerProgress: JobProgressStatus.COMPLETED,
-            technicianProgress: JobProgressStatus.COMPLETED,
-            completionConfirmedAt: now,
-          }),
-          ...(side === 'technician' &&
-            dto.status === JobWorkStatus.COMPLETED && {
-              technicianProgress: JobProgressStatus.COMPLETED,
-              completionConfirmationDueAt: dueAt,
-            }),
-          ...(dto.status === JobWorkStatus.IN_PROGRESS && {
-            ...(side === 'customer' && {
-              customerProgress: JobProgressStatus.IN_PROGRESS,
-            }),
-            ...(side === 'technician' && {
-              technicianProgress: JobProgressStatus.IN_PROGRESS,
-            }),
-          }),
+          ...(completed && { completionConfirmedAt: now }),
+          ...(newCompletionDueAt && { completionConfirmationDueAt: dueAt }),
           ...(completed && {
             completedAt: now,
             completionConfirmationDueAt: null,
@@ -2978,19 +3151,43 @@ export class JobsService {
     });
 
     const updated = await this.findJob(jobId);
+    const recipients = [updated.customerId, updated.technician?.userId].filter(
+      (id): id is string => Boolean(id),
+    );
+    for (const recipient of recipients) {
+      this.events.notifyUser(recipient, 'job:updated', {
+        jobId,
+        status: updated.status,
+        workStatus: updated.workStatus,
+        completionConfirmationDueAt: updated.completionConfirmationDueAt,
+      });
+    }
     if (updated.status === JobStatus.COMPLETED) {
-      for (const recipient of [
-        updated.customerId,
-        updated.technician?.userId,
-      ]) {
-        if (recipient) {
-          this.events.notifyUser(recipient, 'job:updated', {
-            jobId,
-            status: updated.status,
-            workStatus: updated.workStatus,
-          });
-        }
+      for (const recipient of recipients) {
+        await this.notifications
+          .create({
+            userId: recipient,
+            type: NotificationType.JOB_COMPLETED,
+            title: 'Job completed',
+            body: 'The client confirmed the job is done.',
+            data: { jobId, dedupeKey: `job-completed:${jobId}` },
+          })
+          .catch(() => undefined);
       }
+    } else if (newlyFinished(dto.status, side)) {
+      await this.notifications
+        .create({
+          userId: updated.customerId,
+          type: NotificationType.SYSTEM,
+          title: 'Job marked finished',
+          body: `Confirm the work is done. The job completes on its own in ${JOB_COMPLETION_CONFIRMATION_SECONDS / 60} minutes.`,
+          data: {
+            kind: 'JOB_COMPLETION_CONFIRMATION',
+            jobId,
+            dedupeKey: `job-finished:${jobId}:${updated.completionConfirmationDueAt?.getTime() ?? ''}`,
+          },
+        })
+        .catch(() => undefined);
     }
     return this.toResponse(updated, side);
   }
@@ -3038,8 +3235,6 @@ export class JobsService {
           status: JobStatus.COMPLETED,
           completedAt: now,
           completionAutoCompletedAt: now,
-          customerProgress: JobProgressStatus.COMPLETED,
-          technicianProgress: JobProgressStatus.COMPLETED,
           dispatchStatus: JobDispatchStatus.STOPPED,
         },
       });
@@ -3062,6 +3257,11 @@ export class JobsService {
     });
 
     if (!completed) return;
+    await this.publishToJobChat(jobId).catch((error: unknown) => {
+      this.logger.warn(
+        `Could not tell the chat that job ${jobId} was auto-completed: ${this.errorMessage(error)}`,
+      );
+    });
     for (const recipient of [
       completed.customerId,
       completed.technician?.userId,
@@ -3091,184 +3291,6 @@ export class JobsService {
           });
       }
     }
-  }
-
-  async updateProgress(
-    userId: string,
-    jobId: string,
-    side: 'customer' | 'technician',
-    dto: JobProgressDto,
-  ) {
-    const where: Prisma.JobWhereInput =
-      side === 'customer'
-        ? { id: jobId, customerId: userId, status: JobStatus.ASSIGNED }
-        : {
-            id: jobId,
-            technician: { is: { userId } },
-            status: JobStatus.ASSIGNED,
-          };
-    await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "jobs" WHERE "id" = ${jobId} FOR UPDATE`;
-      const job = await tx.job.findFirst({ where });
-      if (!job) throw new NotFoundException('Assigned job not found.');
-      const current =
-        side === 'customer' ? job.customerProgress : job.technicianProgress;
-      this.assertProgressTransition(current, dto.status);
-      const nextCustomer =
-        side === 'customer' ? dto.status : job.customerProgress;
-      const nextTechnician =
-        side === 'technician' ? dto.status : job.technicianProgress;
-      const status =
-        nextCustomer === JobProgressStatus.FAILED ||
-        nextTechnician === JobProgressStatus.FAILED
-          ? JobStatus.FAILED
-          : nextCustomer === JobProgressStatus.COMPLETED &&
-              nextTechnician === JobProgressStatus.COMPLETED
-            ? JobStatus.COMPLETED
-            : JobStatus.ASSIGNED;
-      const awaitingCustomerConfirmation =
-        side === 'technician' &&
-        dto.status === JobProgressStatus.COMPLETED &&
-        nextCustomer !== JobProgressStatus.COMPLETED;
-      const now = new Date();
-      const completionDueAt = awaitingCustomerConfirmation
-        ? new Date(now.getTime() + JOB_COMPLETION_CONFIRMATION_SECONDS * 1000)
-        : null;
-      if (completionDueAt) {
-        await this.dispatchQueue.add(
-          'auto-complete-job',
-          { jobId, dueAt: completionDueAt.toISOString() },
-          {
-            jobId: `job-auto-complete-${jobId}-${completionDueAt.getTime()}`,
-            delay: JOB_COMPLETION_CONFIRMATION_SECONDS * 1000,
-            attempts: 3,
-            removeOnComplete: true,
-          },
-        );
-      }
-      await tx.job.update({
-        where: { id: jobId },
-        data: {
-          ...(side === 'customer'
-            ? { customerProgress: dto.status }
-            : { technicianProgress: dto.status }),
-          status,
-          ...(nextTechnician === JobProgressStatus.COMPLETED && {
-            workStatus: JobWorkStatus.COMPLETED,
-          }),
-          completionConfirmationDueAt:
-            status === JobStatus.COMPLETED
-              ? null
-              : (completionDueAt ?? job.completionConfirmationDueAt),
-          ...(status === JobStatus.COMPLETED && {
-            completionConfirmedAt: now,
-            completionAutoCompletedAt: null,
-          }),
-          dispatchStatus:
-            status === JobStatus.ASSIGNED
-              ? job.dispatchStatus
-              : JobDispatchStatus.STOPPED,
-          completedAt:
-            status === JobStatus.COMPLETED || status === JobStatus.FAILED
-              ? now
-              : null,
-        },
-      });
-      if (status === JobStatus.COMPLETED || status === JobStatus.FAILED) {
-        const history = await tx.jobAssignmentHistory.findFirst({
-          where: { jobId, endedAt: null },
-          orderBy: { acceptedAt: 'desc' },
-        });
-        if (history) {
-          await tx.jobAssignmentHistory.update({
-            where: { id: history.id },
-            data: {
-              endedAt: new Date(),
-              endReason: status,
-            },
-          });
-          await tx.chatRoom.updateMany({
-            where: { assignmentHistoryId: history.id },
-            data: {
-              status:
-                status === JobStatus.COMPLETED
-                  ? ChatRoomStatus.COMPLETED
-                  : ChatRoomStatus.DISABLED,
-              disabledAt: new Date(),
-              disabledById: null,
-              disabledReason:
-                status === JobStatus.COMPLETED
-                  ? 'Both participants marked the job completed.'
-                  : 'The job ended without completion.',
-            },
-          });
-        }
-        if (status === JobStatus.COMPLETED) {
-          await tx.bookingPayment.updateMany({
-            where: {
-              jobId,
-              status: {
-                in: [BookingPaymentStatus.PAUSED, BookingPaymentStatus.EXPIRED],
-              },
-            },
-            data: {
-              status: BookingPaymentStatus.COMPLETED,
-              remainingValiditySeconds: null,
-            },
-          });
-          if (job.technicianId) {
-            await this.refreshTechnicianAvailability(tx, job.technicianId);
-          }
-        }
-      }
-      await this.audit.log(
-        {
-          entityType: 'Job',
-          entityId: jobId,
-          action: `${side.toUpperCase()}_PROGRESS_UPDATED`,
-          actorId: userId,
-          metadata: {
-            status: dto.status,
-            customerProgress: nextCustomer,
-            technicianProgress: nextTechnician,
-          },
-        },
-        tx,
-      );
-    });
-    const updated = await this.findJob(jobId);
-    if (
-      this.notifications &&
-      (updated.status === JobStatus.COMPLETED ||
-        updated.status === JobStatus.FAILED)
-    ) {
-      const completed = updated.status === JobStatus.COMPLETED;
-      const recipients = [
-        updated.customerId,
-        updated.technician?.userId,
-      ].filter((id): id is string => Boolean(id));
-      for (const recipient of new Set(recipients)) {
-        await this.notifications
-          .create({
-            userId: recipient,
-            type: completed
-              ? NotificationType.JOB_COMPLETED
-              : NotificationType.JOB_CANCELLED,
-            title: completed ? 'Job completed' : 'Job ended',
-            body: completed
-              ? 'The job has been marked as completed by both parties.'
-              : 'The job was marked as failed.',
-            data: {
-              jobId,
-              dedupeKey: completed
-                ? `job-completed:${jobId}`
-                : `job-failed:${jobId}`,
-            },
-          })
-          .catch(() => undefined);
-      }
-    }
-    return this.toResponse(updated, side);
   }
 
   async getTechnicianJob(technicianUserId: string, jobId: string) {
@@ -3792,10 +3814,23 @@ export class JobsService {
 
       const previousOffers = await tx.jobOffer.findMany({
         where: { jobId },
-        select: { technicianId: true },
+        select: { technicianId: true, status: true, offeredAt: true },
       });
+      // Within a round nobody is asked twice. A technician who declined or
+      // dropped the job is never asked again; one who only let an offer from
+      // an earlier round expire can be asked again after the customer retries.
+      const roundStart = current.sosRoundStartedAt;
       const previouslyOffered = new Set(
-        previousOffers.map((previous) => previous.technicianId),
+        previousOffers
+          .filter(
+            (previous) =>
+              !roundStart ||
+              previous.status === JobOfferStatus.REJECTED ||
+              previous.status === JobOfferStatus.DROPPED ||
+              previous.status === JobOfferStatus.ACCEPTED ||
+              (previous.offeredAt ?? roundStart) >= roundStart,
+          )
+          .map((previous) => previous.technicianId),
       );
       let candidate: MatchCandidate | undefined;
       let selectedTechnician: { id: string; userId: string } | null = null;
@@ -3880,6 +3915,7 @@ export class JobsService {
               currency: true,
               otherServiceName: true,
               serviceCategory: { select: { name: true } },
+              customer: { select: { id: true, fullName: true } },
             },
           },
         },
@@ -3951,6 +3987,7 @@ export class JobsService {
       offeredAmount: offer.job.offeredAmount,
       currency: offer.job.currency,
       priority: offer.job.priority,
+      customer: offer.job.customer,
       requestType: JobRequestType.SOS,
     });
   }
@@ -3993,6 +4030,7 @@ export class JobsService {
         AND tp."baseLocation" IS NOT NULL
         AND u."status" = 'ACTIVE'
         AND u."role" = 'TECHNICIAN'
+        AND tc."status" = 'APPROVED'
         AND (tc."categoryId" IS NULL OR sc."isActive" = TRUE)
         AND ST_DWithin(
           tp."baseLocation",
@@ -4159,30 +4197,61 @@ export class JobsService {
     const showContactDetails =
       viewer === 'admin' ||
       job.cooperationStatus === JobCooperationStatus.CONFIRMED;
-    const activeSosOffer =
-      viewer === 'customer' &&
-      job.requestType === JobRequestType.SOS &&
-      job.status === JobStatus.OPEN
+    // While a job is still open, the customer sees which technician their request is
+    // waiting on (any request type), or who last declined or let it lapse.
+    const offerSelect = {
+      id: true,
+      status: true,
+      matchScore: true,
+      distanceMeters: true,
+      expiresAt: true,
+      respondedAt: true,
+      technician: {
+        select: {
+          id: true,
+          profilePictureObjectKey: true,
+          user: { select: { fullName: true } },
+        },
+      },
+    } satisfies Prisma.JobOfferSelect;
+    const openForCustomer =
+      viewer === 'customer' && job.status === JobStatus.OPEN;
+    const activeOffer = openForCustomer
+      ? await this.prisma.jobOffer.findFirst({
+          where: {
+            jobId: job.id,
+            status: JobOfferStatus.OFFERED,
+            expiresAt: { gt: new Date() },
+          },
+          select: offerSelect,
+        })
+      : null;
+    const lastOffer =
+      openForCustomer && !activeOffer
         ? await this.prisma.jobOffer.findFirst({
             where: {
               jobId: job.id,
-              status: JobOfferStatus.OFFERED,
-              expiresAt: { gt: new Date() },
+              status: { in: [JobOfferStatus.REJECTED, JobOfferStatus.EXPIRED] },
             },
-            select: {
-              id: true,
-              matchScore: true,
-              distanceMeters: true,
-              expiresAt: true,
-              technician: {
-                select: {
-                  id: true,
-                  user: { select: { fullName: true } },
-                },
-              },
-            },
+            orderBy: [{ respondedAt: 'desc' }, { offeredAt: 'desc' }],
+            select: offerSelect,
           })
         : null;
+    const offerResponse = async (offer: NonNullable<typeof activeOffer>) => ({
+      id: offer.id,
+      status: offer.status,
+      technicianId: offer.technician.id,
+      technicianName: offer.technician.user.fullName,
+      technicianProfilePictureUrl: offer.technician.profilePictureObjectKey
+        ? await this.storage
+            .getDownloadUrl(offer.technician.profilePictureObjectKey)
+            .catch(() => null)
+        : null,
+      matchAccuracy: offer.matchScore,
+      distanceMeters: Math.round(offer.distanceMeters),
+      expiresAt: offer.expiresAt,
+      respondedAt: offer.respondedAt,
+    });
     const currentTechnician = job.technician
       ? {
           id: job.technician.id,
@@ -4245,20 +4314,13 @@ export class JobsService {
         technicianConfirmedAt: job.technicianConfirmedAt,
       },
       dispatchStatus: job.dispatchStatus,
-      ...(job.requestType === JobRequestType.SOS && {
-        activeOffer: activeSosOffer
-          ? {
-              id: activeSosOffer.id,
-              technicianId: activeSosOffer.technician.id,
-              technicianName: activeSosOffer.technician.user.fullName,
-              matchAccuracy: activeSosOffer.matchScore,
-              distanceMeters: Math.round(activeSosOffer.distanceMeters),
-              expiresAt: activeSosOffer.expiresAt,
-            }
-          : null,
+      // SOS jobs always carried activeOffer; customers now get it for every request type.
+      ...((viewer === 'customer' || job.requestType === JobRequestType.SOS) && {
+        activeOffer: activeOffer ? await offerResponse(activeOffer) : null,
       }),
-      customerProgress: job.customerProgress,
-      technicianProgress: job.technicianProgress,
+      ...(viewer === 'customer' && {
+        lastOffer: lastOffer ? await offerResponse(lastOffer) : null,
+      }),
       pauseRequests: {
         customerRequested: Boolean(job.customerPauseRequestedAt),
         technicianRequested: Boolean(job.technicianPauseRequestedAt),
@@ -4442,6 +4504,29 @@ export class JobsService {
     }
     const confirmedCooperation =
       job.cooperationStatus === JobCooperationStatus.CONFIRMED;
+    // The price negotiation belonged to this assignment: close it so nobody can
+    // keep messaging or offering into it while the job has no technician. The
+    // next technician's acceptance reopens it with fresh offer limits.
+    await tx.priceOffer.updateMany({
+      where: {
+        conversation: { is: { jobId: job.id } },
+        status: PriceOfferStatus.PENDING,
+      },
+      data: { status: PriceOfferStatus.SUPERSEDED, respondedAt: now },
+    });
+    await tx.conversation.updateMany({
+      where: {
+        jobId: job.id,
+        status: {
+          in: [ConversationStatus.PENDING, ConversationStatus.NEGOTIATING],
+        },
+      },
+      data: {
+        status: ConversationStatus.DECLINED,
+        declineReason: reason,
+        closedAt: now,
+      },
+    });
     await tx.job.update({
       where: { id: job.id },
       data: {
@@ -4451,8 +4536,6 @@ export class JobsService {
           ? JobDispatchStatus.STOPPED
           : JobDispatchStatus.PENDING,
         ...(confirmedCooperation ? {} : { dispatchRound: { increment: 1 } }),
-        technicianProgress: JobProgressStatus.PENDING,
-        customerProgress: JobProgressStatus.PENDING,
         assignedAt: null,
         ...(confirmedCooperation
           ? {}
@@ -4526,6 +4609,112 @@ export class JobsService {
         },
       },
     });
+    await this.openNegotiationForAssignment(tx, jobId, technicianUserId);
+  }
+
+  /**
+   * Opens the job's price negotiation the moment a technician is assigned.
+   * Accepting the job offer is the technician's acceptance of the request, so
+   * the conversation starts in NEGOTIATING and either side can make the first
+   * offer straight away. A conversation left by a previous technician is
+   * reopened; its history stays and its offers are no longer outstanding.
+   */
+  async openNegotiationForAssignment(
+    tx: Prisma.TransactionClient,
+    jobId: string,
+    technicianUserId: string,
+  ): Promise<void> {
+    const now = new Date();
+    const job = await tx.job.findUniqueOrThrow({
+      where: { id: jobId },
+      select: {
+        description: true,
+        locationAddress: true,
+        latitude: true,
+        longitude: true,
+        otherServiceName: true,
+        serviceCategory: { select: { name: true } },
+      },
+    });
+    const existing = await tx.conversation.findUnique({
+      where: { jobId },
+      select: { id: true, status: true },
+    });
+    let conversationId: string;
+    if (!existing) {
+      const created = await tx.conversation.create({
+        data: {
+          jobId,
+          status: ConversationStatus.NEGOTIATING,
+          lastMessageAt: now,
+        },
+        select: { id: true },
+      });
+      conversationId = created.id;
+      await tx.conversationMessage.create({
+        data: {
+          conversationId,
+          senderRole: ConversationSender.SYSTEM,
+          type: ConversationMessageType.SERVICE_REQUEST,
+          metadata: {
+            service: job.serviceCategory?.name ?? job.otherServiceName,
+            description: job.description,
+            locationAddress: job.locationAddress,
+            latitude: job.latitude,
+            longitude: job.longitude,
+          },
+        },
+      });
+    } else {
+      conversationId = existing.id;
+      await tx.priceOffer.updateMany({
+        where: { conversationId, status: PriceOfferStatus.PENDING },
+        data: { status: PriceOfferStatus.SUPERSEDED, respondedAt: now },
+      });
+      await tx.conversation.update({
+        where: { id: conversationId },
+        data: {
+          status: ConversationStatus.NEGOTIATING,
+          agreedAmount: null,
+          offerCount: 0,
+          declinedById: null,
+          declineReason: null,
+          closedAt: null,
+          lastMessageAt: now,
+        },
+      });
+      if (existing.status !== ConversationStatus.PENDING) {
+        await tx.conversationMessage.create({
+          data: {
+            conversationId,
+            senderRole: ConversationSender.SYSTEM,
+            type: ConversationMessageType.SYSTEM,
+            text: 'A new technician took the request.',
+          },
+        });
+      }
+    }
+    await tx.conversationMessage.create({
+      data: {
+        conversationId,
+        senderId: technicianUserId,
+        senderRole: ConversationSender.TECHNICIAN,
+        type: ConversationMessageType.TECHNICIAN_RESPONSE,
+        metadata: { decision: 'ACCEPTED' },
+      },
+    });
+    await this.audit.log(
+      {
+        entityType: 'Conversation',
+        entityId: conversationId,
+        action: 'JOB_REQUEST_ACCEPTED',
+        actorId: technicianUserId,
+        fromStatus: existing?.status ?? null,
+        toStatus: ConversationStatus.NEGOTIATING,
+        metadata: { jobId, openedOnAssignment: true },
+      },
+      tx,
+    );
   }
 
   private async findJob(jobId: string): Promise<JobWithDetails> {
@@ -4715,28 +4904,6 @@ export class JobsService {
     if (!allowed[current].includes(next)) {
       throw new ConflictException(
         `Work status cannot change from ${current} to ${next}.`,
-      );
-    }
-  }
-
-  private assertProgressTransition(
-    current: JobProgressStatus,
-    next: JobProgressStatus,
-  ) {
-    const allowed: Record<JobProgressStatus, JobProgressStatus[]> = {
-      PENDING: [JobProgressStatus.STARTED, JobProgressStatus.FAILED],
-      STARTED: [
-        JobProgressStatus.IN_PROGRESS,
-        JobProgressStatus.COMPLETED,
-        JobProgressStatus.FAILED,
-      ],
-      IN_PROGRESS: [JobProgressStatus.COMPLETED, JobProgressStatus.FAILED],
-      COMPLETED: [],
-      FAILED: [],
-    };
-    if (!allowed[current].includes(next)) {
-      throw new ConflictException(
-        `Progress cannot change from ${current} to ${next}.`,
       );
     }
   }

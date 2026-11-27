@@ -21,10 +21,7 @@ import {
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
-import {
-  JobProgressDto,
-  JobWorkStatusDto,
-} from '../jobs/dto/job-action.dto';
+import { JobWorkStatusDto } from '../jobs/dto/job-action.dto';
 import { ChatService } from './chat.service';
 import { AdminChatBlockDto, ChatReasonDto } from './dto/chat-action.dto';
 import {
@@ -199,15 +196,6 @@ export class ChatController {
     @Body() dto: ChatReasonDto,
   ) {
     return this.chat.cancelJob(user.id, roomId, dto.reason);
-  }
-
-  @Patch('rooms/:roomId/progress')
-  updateProgress(
-    @CurrentUser() user: AuthUser,
-    @Param('roomId', ParseUUIDPipe) roomId: string,
-    @Body() dto: JobProgressDto,
-  ) {
-    return this.chat.updateProgress(user.id, roomId, dto.status);
   }
 
   @Patch('rooms/:roomId/status')

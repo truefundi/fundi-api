@@ -77,13 +77,25 @@ export interface TechnicianResponse {
   businessType: string;
   yearsOfExperience: number;
   serviceExperiences: Array<{
+    id: string;
     categoryId: string | null;
     category: { id: string; name: string; slug: string } | null;
     customName: string | null;
     yearsOfExperience: number;
+    /** Owner and admin views only: where this service's review stands. */
+    status?: VerificationStatus;
+    reviewNote?: string | null;
+    reviewedAt?: Date | null;
   }>;
   verificationStatus: string;
+  /** Why the application was rejected; owner and admin views only. */
+  rejectionReason?: string | null;
   availabilityStatus: string;
+  /**
+   * Owner and admin views only: an individual technician was taken offline
+   * because they reached three active jobs; they come back online when one ends.
+   */
+  capacityAutoOffline?: boolean;
   location: {
     address: string;
     publicLocationLabel: string | null;
@@ -91,12 +103,27 @@ export interface TechnicianResponse {
     longitude: number | null;
   };
   profilePictureUrl: string | null;
+  /** From customers' ratings and finished jobs; never estimated. */
+  stats: TechnicianStats;
   paymentMethod: string | null;
   paymentNumber: string | null;
   nationalIdNumber?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface TechnicianStats {
+  /** Mean of every rating score (1-5), one decimal; null until the first rating. */
+  averageRating: number | null;
+  ratingCount: number;
+  jobsCompleted: number;
+}
+
+const NO_STATS: TechnicianStats = {
+  averageRating: null,
+  ratingCount: 0,
+  jobsCompleted: 0,
+};
 
 // Envelope shared by every technician list endpoint: one page of profiles
 // plus pagination metadata — the same shape GET /users returns.
@@ -128,9 +155,11 @@ export class TechniciansService {
       select: { phoneVerifiedAt: true, role: true },
     });
     if (!user) throw new NotFoundException('User account not found.');
-    if (user.role === UserRole.TECHNICIAN && !user.phoneVerifiedAt) {
+    // Applying needs a phone confirmed by SMS (signing in with a PIN does not
+    // confirm it). Verify via POST /api/v1/jobs/phone-verification/request.
+    if (!user.phoneVerifiedAt) {
       throw new ConflictException(
-        'Verify your phone number before completing a technician profile.',
+        'Verify your phone number with the SMS code before applying.',
       );
     }
     const businessType = this.registrationBusinessType(dto);
@@ -142,14 +171,32 @@ export class TechniciansService {
       const profile = await this.runSerializable(async (tx) => {
         const existing = await tx.technicianProfile.findUnique({
           where: { userId },
-          select: { id: true },
+          select: {
+            id: true,
+            verificationStatus: true,
+            nationalIdEncrypted: true,
+          },
         });
         if (existing) {
+          // A rejected applicant starts over: the same full application as a
+          // first-timer, sent back to review. Anyone else edits with PUT.
+          if (existing.verificationStatus === VerificationStatus.REJECTED) {
+            return this.resubmitRejectedApplication(
+              tx,
+              existing,
+              profileDto,
+              userId,
+              businessType,
+              company,
+            );
+          }
           throw new ConflictException(
             'A technician profile already exists. Use PUT to update it.',
           );
         }
         this.assertRequiredProfileFieldsForCreate(profileDto);
+        // Applying keeps the account's role; once approved, the user switches
+        // with PATCH /api/v1/users/me/role.
         const created = await tx.technicianProfile.create({
           data: {
             ...this.buildProfileCreateData(userId, profileDto),
@@ -185,6 +232,70 @@ export class TechniciansService {
     } catch (error) {
       this.throwWriteError(error);
     }
+  }
+
+  /**
+   * Turns a rejected application into a new one: every required field is
+   * checked as on a first application (the ID number on file may be kept),
+   * the details and trades are replaced, and it goes back to PENDING review.
+   */
+  private async resubmitRejectedApplication(
+    tx: Prisma.TransactionClient,
+    existing: { id: string; nationalIdEncrypted: string | null },
+    dto: UpdateTechnicianProfileDto,
+    userId: string,
+    businessType: TechnicianBusinessType,
+    company?: CompanyDetailsDto,
+  ) {
+    this.assertRequiredProfileFieldsForCreate(dto, {
+      nationalIdOnFile: !!existing.nationalIdEncrypted,
+    });
+    if (dto.availabilityStatus === TechnicianAvailability.ONLINE) {
+      throw new BadRequestException(
+        'A new application must be submitted offline.',
+      );
+    }
+    await this.lockProfile(tx, existing.id);
+    // Under review again, so off duty, whatever availability was left behind.
+    await this.saveProfileFields(
+      tx,
+      existing.id,
+      { ...dto, availabilityStatus: TechnicianAvailability.OFFLINE },
+      userId,
+      'owner',
+    );
+    await tx.technicianProfile.update({
+      where: { id: existing.id },
+      data: {
+        verificationStatus: VerificationStatus.PENDING,
+        availabilityStatus: TechnicianAvailability.OFFLINE,
+        rejectionReason: null,
+        businessType,
+      },
+    });
+    await this.syncResubmittedCompany(
+      tx,
+      existing.id,
+      businessType,
+      company,
+      userId,
+    );
+    await this.audit.log(
+      {
+        entityType: 'TechnicianProfile',
+        entityId: existing.id,
+        action: 'APPLICATION_RESUBMITTED',
+        actorId: userId,
+        fromStatus: VerificationStatus.REJECTED,
+        toStatus: VerificationStatus.PENDING,
+        metadata: { keptNationalId: !dto.nationalIdNumber },
+      },
+      tx,
+    );
+    return tx.technicianProfile.findUniqueOrThrow({
+      where: { id: existing.id },
+      include: PROFILE_INCLUDE,
+    });
   }
 
   async registerPublicTechnician(dto: RegisterTechnicianDto) {
@@ -262,6 +373,72 @@ export class TechniciansService {
       );
     }
     return businessType;
+  }
+
+  /**
+   * A rejected applicant re-applying may change how they work. A company in
+   * the new application is created, or its details replaced and sent back for
+   * review; applying as an individual removes a company that was never approved.
+   */
+  private async syncResubmittedCompany(
+    tx: Prisma.TransactionClient,
+    technicianId: string,
+    businessType: TechnicianBusinessType,
+    details: CompanyDetailsDto | undefined,
+    actorId: string,
+  ) {
+    const current = await tx.company.findUnique({ where: { technicianId } });
+    if (businessType === TechnicianBusinessType.COMPANY && details) {
+      if (!current) {
+        await this.createRegisteredCompany(tx, technicianId, details, actorId);
+        return;
+      }
+      const updated = await tx.company.update({
+        where: { id: current.id },
+        data: {
+          name: details.name.trim(),
+          location: details.location.trim(),
+          email: details.email.trim().toLowerCase(),
+          phoneNumber: details.phoneNumber,
+          description: details.description?.trim() || null,
+          verificationStatus: VerificationStatus.PENDING,
+          rejectionReason: null,
+          verifiedAt: null,
+          verifiedById: null,
+        },
+      });
+      await this.audit.log(
+        {
+          entityType: 'Company',
+          entityId: updated.id,
+          action: 'RESUBMITTED',
+          actorId,
+          fromStatus: current.verificationStatus,
+          toStatus: VerificationStatus.PENDING,
+          metadata: { technicianId, name: updated.name },
+        },
+        tx,
+      );
+      return;
+    }
+    if (
+      businessType === TechnicianBusinessType.INDIVIDUAL &&
+      current &&
+      current.verificationStatus !== VerificationStatus.APPROVED
+    ) {
+      await tx.company.delete({ where: { id: current.id } });
+      await this.audit.log(
+        {
+          entityType: 'Company',
+          entityId: current.id,
+          action: 'REMOVED',
+          actorId,
+          fromStatus: current.verificationStatus,
+          metadata: { technicianId, reason: 'Re-applied as an individual.' },
+        },
+        tx,
+      );
+    }
   }
 
   private async createRegisteredCompany(
@@ -342,94 +519,6 @@ export class TechniciansService {
     availabilityStatus: TechnicianAvailability,
   ) {
     return this.updateMyProfile(userId, { availabilityStatus });
-  }
-
-  async addServiceExperience(userId: string, dto: ServiceExperienceDto) {
-    this.assertServiceExperiences([dto]);
-    try {
-      const profile = await this.runSerializable(async (tx) => {
-        const current = await tx.technicianProfile.findUnique({
-          where: { userId },
-          select: { id: true },
-        });
-        if (!current) {
-          throw new NotFoundException('Technician profile not found.');
-        }
-        await this.lockProfile(tx, current.id);
-        const existing = await tx.technicianCategory.findMany({
-          where: { technicianId: current.id },
-          select: { categoryId: true, customNameNormalized: true },
-        });
-        if (existing.length >= 10) {
-          throw new BadRequestException(
-            'A technician can list at most 10 services.',
-          );
-        }
-
-        let data: Prisma.TechnicianCategoryCreateInput;
-        if (dto.categoryId) {
-          const category = await tx.serviceCategory.findFirst({
-            where: { id: dto.categoryId, isActive: true },
-            select: { id: true },
-          });
-          if (!category) {
-            throw new BadRequestException(
-              'The selected service category is invalid or inactive.',
-            );
-          }
-          if (existing.some((item) => item.categoryId === category.id)) {
-            throw new ConflictException(
-              'This service category is already listed for the technician.',
-            );
-          }
-          data = {
-            technician: { connect: { id: current.id } },
-            category: { connect: { id: category.id } },
-            yearsOfExperience: dto.yearsOfExperience,
-            customName: null,
-            customNameNormalized: '',
-          };
-        } else {
-          const customName = dto.customName!.trim();
-          const normalized = customName.toLowerCase();
-          if (
-            existing.some((item) => item.customNameNormalized === normalized)
-          ) {
-            throw new ConflictException(
-              'This custom service is already listed for the technician.',
-            );
-          }
-          data = {
-            technician: { connect: { id: current.id } },
-            yearsOfExperience: dto.yearsOfExperience,
-            customName,
-            customNameNormalized: normalized,
-          };
-        }
-
-        await tx.technicianCategory.create({ data });
-        await this.audit.log(
-          {
-            entityType: 'TechnicianProfile',
-            entityId: current.id,
-            action: 'SERVICE_EXPERIENCE_ADDED',
-            actorId: userId,
-            metadata: {
-              categoryId: dto.categoryId ?? null,
-              customName: dto.customName?.trim() ?? null,
-            },
-          },
-          tx,
-        );
-        return tx.technicianProfile.findUniqueOrThrow({
-          where: { id: current.id },
-          include: PROFILE_INCLUDE,
-        });
-      });
-      return this.toResponse(profile, 'owner');
-    } catch (error) {
-      this.throwWriteError(error);
-    }
   }
 
   // ─── Discovery (authenticated + anonymous) ─────────────────────────────
@@ -641,7 +730,7 @@ export class TechniciansService {
 
   async updateByAdmin(
     profileId: string,
-    dto: AdminUpdateTechnicianDto,
+    dto: AdminUpdateTechnicianDto & { rejectionReason?: string },
     actorId: string,
   ) {
     this.assertUpdateHasFields(dto);
@@ -670,8 +759,18 @@ export class TechniciansService {
     profileId: string,
     verificationStatus: VerificationStatus,
     actorId: string,
+    reason?: string,
   ) {
-    return this.updateByAdmin(profileId, { verificationStatus }, actorId);
+    if (verificationStatus === VerificationStatus.REJECTED && !reason?.trim()) {
+      throw new BadRequestException(
+        'Give a reason when rejecting an application.',
+      );
+    }
+    return this.updateByAdmin(
+      profileId,
+      { verificationStatus, rejectionReason: reason },
+      actorId,
+    );
   }
 
   async setAvailabilityByAdmin(
@@ -778,8 +877,9 @@ export class TechniciansService {
         take: limit,
       }),
     ]);
+    const stats = await this.loadStats(profiles.map((p) => p.id));
     const data = await Promise.all(
-      profiles.map((p) => this.toResponse(p, viewer)),
+      profiles.map((p) => this.toResponse(p, viewer, stats.get(p.id))),
     );
     return {
       data,
@@ -839,7 +939,14 @@ export class TechniciansService {
     this.assertTextFiltersAreValid(dto);
     const filters: Prisma.TechnicianProfileWhereInput[] = [];
     if (dto.categoryId) {
-      filters.push({ categories: { some: { categoryId: dto.categoryId } } });
+      filters.push({
+        categories: {
+          some: {
+            categoryId: dto.categoryId,
+            status: VerificationStatus.APPROVED,
+          },
+        },
+      });
     }
     const category = dto.category?.trim();
     if (category) {
@@ -891,7 +998,14 @@ export class TechniciansService {
       filters.push({ availabilityStatus: query.availabilityStatus });
     }
     if (query.categoryId) {
-      filters.push({ categories: { some: { categoryId: query.categoryId } } });
+      filters.push({
+        categories: {
+          some: {
+            categoryId: query.categoryId,
+            status: VerificationStatus.APPROVED,
+          },
+        },
+      });
     }
     const category = query.category?.trim();
     if (category) {
@@ -990,6 +1104,7 @@ export class TechniciansService {
     profileId: string,
     dto: UpdateTechnicianProfileDto & {
       verificationStatus?: VerificationStatus;
+      rejectionReason?: string;
     },
     actorId: string,
     viewer: Viewer,
@@ -1093,6 +1208,15 @@ export class TechniciansService {
         ...(requestedVerification !== current.verificationStatus && {
           verificationStatus: requestedVerification,
         }),
+        // A rejection carries the admin's reason; any other decision clears it.
+        ...(viewer === 'admin' &&
+          (dto.verificationStatus !== undefined ||
+            dto.rejectionReason !== undefined) && {
+            rejectionReason:
+              requestedVerification === VerificationStatus.REJECTED
+                ? dto.rejectionReason?.trim() || current.rejectionReason || null
+                : null,
+          }),
         availabilityStatus: nextAvailability,
         ...(dto.availabilityStatus !== undefined && {
           capacityAutoOffline: false,
@@ -1101,11 +1225,40 @@ export class TechniciansService {
     });
 
     if (dto.serviceExperiences !== undefined) {
+      // Once approved, services are added and reviewed one at a time
+      // (POST /technicians/profile/services), so approved ones are never reset.
+      if (
+        viewer === 'owner' &&
+        current.verificationStatus === VerificationStatus.APPROVED
+      ) {
+        throw new BadRequestException(
+          'Your services are reviewed one at a time now: add or change them from your services list.',
+        );
+      }
       await this.replaceServiceExperiences(
         tx,
         current.id,
         dto.serviceExperiences,
+        viewer === 'admin' &&
+          requestedVerification === VerificationStatus.APPROVED
+          ? { status: VerificationStatus.APPROVED, reviewedById: actorId }
+          : undefined,
       );
+    }
+    if (
+      viewer === 'admin' &&
+      requestedVerification === VerificationStatus.APPROVED &&
+      current.verificationStatus !== VerificationStatus.APPROVED
+    ) {
+      await tx.technicianCategory.updateMany({
+        where: { technicianId: current.id, status: VerificationStatus.PENDING },
+        data: {
+          status: VerificationStatus.APPROVED,
+          reviewNote: null,
+          reviewedById: actorId,
+          reviewedAt: new Date(),
+        },
+      });
     }
     await this.writePostgisLocation(tx, current.id, dto, clearCoordinates);
     await this.audit.log(
@@ -1119,18 +1272,54 @@ export class TechniciansService {
         fromStatus: current.verificationStatus,
         toStatus: requestedVerification,
         actorId,
-        metadata: { changedFields: Object.keys(dto) },
+        metadata: {
+          changedFields: Object.keys(dto),
+          ...(dto.rejectionReason ? { reason: dto.rejectionReason } : {}),
+        },
       },
       tx,
     );
   }
 
+  /**
+   * A service typed by name that is in the catalog is saved as that catalog
+   * service, so jobs for it (matched by category id) reach the technician.
+   */
+  async linkCatalogNames(
+    tx: Prisma.TransactionClient,
+    items: ServiceExperienceDto[],
+  ): Promise<ServiceExperienceDto[]> {
+    const names = [
+      ...new Set(
+        items
+          .filter((item) => !item.categoryId && item.customName?.trim())
+          .map((item) => item.customName!.trim().toLowerCase()),
+      ),
+    ];
+    if (!names.length) return items;
+    const rows = await tx.$queryRaw<Array<{ id: string; key: string }>>`
+      SELECT "id", LOWER(BTRIM("name")) AS "key" FROM "service_categories"
+      WHERE "isActive" = TRUE AND LOWER(BTRIM("name")) IN (${Prisma.join(names)})`;
+    const byName = new Map(rows.map((row) => [row.key, row.id]));
+    return items.map((item) => {
+      const id =
+        !item.categoryId && item.customName
+          ? byName.get(item.customName.trim().toLowerCase())
+          : undefined;
+      return id
+        ? { categoryId: id, yearsOfExperience: item.yearsOfExperience }
+        : item;
+    });
+  }
+
   private async replaceServiceExperiences(
     tx: Prisma.TransactionClient,
     profileId: string,
-    items: ServiceExperienceDto[],
+    requested: ServiceExperienceDto[],
+    /** Admin edits of an approved profile save the services as approved. */
+    review?: { status: VerificationStatus; reviewedById: string },
   ) {
-    if (items.length > 10) {
+    if (requested.length > 10) {
       throw new BadRequestException(
         'A technician can list at most 10 services.',
       );
@@ -1139,11 +1328,15 @@ export class TechniciansService {
     await tx.technicianCategory.deleteMany({
       where: { technicianId: profileId },
     });
-    if (!items.length) return;
+    if (!requested.length) return;
 
-    const realCategoryIds = items
-      .map((i) => i.categoryId)
-      .filter((id): id is string => !!id);
+    const items = await this.linkCatalogNames(tx, requested);
+    // Distinct ids: a repeated service is reported as a duplicate below.
+    const realCategoryIds = [
+      ...new Set(
+        items.map((i) => i.categoryId).filter((id): id is string => !!id),
+      ),
+    ];
 
     if (realCategoryIds.length) {
       const rows = await tx.$queryRaw<Array<{ id: string }>>`
@@ -1191,7 +1384,16 @@ export class TechniciansService {
       };
     });
 
-    await tx.technicianCategory.createMany({ data });
+    await tx.technicianCategory.createMany({
+      data: review
+        ? data.map((row) => ({
+            ...row,
+            status: review.status,
+            reviewedById: review.reviewedById,
+            reviewedAt: new Date(),
+          }))
+        : data,
+    });
   }
 
   private buildProfileCreateData(
@@ -1221,10 +1423,13 @@ export class TechniciansService {
 
   private assertRequiredProfileFieldsForCreate(
     dto: UpdateTechnicianProfileDto,
+    options: { nationalIdOnFile?: boolean } = {},
   ) {
     const missing: string[] = [];
     if (!dto.gender) missing.push('gender');
-    if (!dto.nationalIdNumber) missing.push('nationalIdNumber');
+    if (!dto.nationalIdNumber && !options.nationalIdOnFile) {
+      missing.push('nationalIdNumber');
+    }
     const hasCoordinates =
       typeof dto.baseLatitude === 'number' &&
       typeof dto.baseLongitude === 'number';
@@ -1361,22 +1566,90 @@ export class TechniciansService {
     return this.storage.getDownloadUrl(profile.profilePictureObjectKey);
   }
 
+  /** Ratings and completed jobs per technician, for a page of profiles at once. */
+  private async loadStats(
+    profileIds: string[],
+  ): Promise<Map<string, TechnicianStats>> {
+    const stats = new Map<string, TechnicianStats>();
+    if (!profileIds.length) return stats;
+    const [ratings, completed] = await Promise.all([
+      this.prisma.$queryRaw<
+        Array<{
+          technicianId: string;
+          ratingCount: number;
+          averageScore: number | null;
+        }>
+      >`
+        SELECT jr."technicianId",
+               COUNT(DISTINCT jr."id")::int AS "ratingCount",
+               AVG(rr."score")::float AS "averageScore"
+        FROM "job_ratings" jr
+        LEFT JOIN "rating_responses" rr ON rr."jobRatingId" = jr."id"
+        WHERE jr."technicianId" IN (${Prisma.join(profileIds)})
+        GROUP BY jr."technicianId"`,
+      this.prisma.job.groupBy({
+        by: ['technicianId'],
+        where: {
+          technicianId: { in: profileIds },
+          status: JobStatus.COMPLETED,
+        },
+        _count: { _all: true },
+      }),
+    ]);
+    for (const id of profileIds) stats.set(id, { ...NO_STATS });
+    for (const row of ratings) {
+      const entry = stats.get(row.technicianId);
+      if (!entry) continue;
+      entry.ratingCount = Number(row.ratingCount);
+      entry.averageRating =
+        row.averageScore === null
+          ? null
+          : Math.round(Number(row.averageScore) * 10) / 10;
+    }
+    for (const row of completed) {
+      const entry = row.technicianId ? stats.get(row.technicianId) : undefined;
+      if (entry) entry.jobsCompleted = row._count._all;
+    }
+    return stats;
+  }
+
   private async toResponse(
     profile: ProfileWithDetails,
     viewer: Viewer,
+    knownStats?: TechnicianStats,
   ): Promise<TechnicianResponse> {
+    const stats =
+      knownStats ??
+      (await this.loadStats([profile.id])).get(profile.id) ??
+      NO_STATS;
     const isOwner = viewer === 'owner';
     const isAdmin = viewer === 'admin';
 
-    const serviceExperiences = profile.categories.map((row) => ({
+    // Customers only see services Fundi approved; the owner and admins see
+    // every service with where its review stands.
+    const shownServices =
+      isOwner || isAdmin
+        ? profile.categories
+        : profile.categories.filter(
+            (row) => row.status === VerificationStatus.APPROVED,
+          );
+    const serviceExperiences = shownServices.map((row) => ({
+      id: row.id,
       categoryId: row.categoryId,
       category: row.category,
       customName: row.customName,
       yearsOfExperience: row.yearsOfExperience,
+      ...(isOwner || isAdmin
+        ? {
+            status: row.status,
+            reviewNote: row.reviewNote,
+            reviewedAt: row.reviewedAt,
+          }
+        : {}),
     }));
 
-    const totalYearsOfExperience = profile.categories.length
-      ? Math.max(...profile.categories.map((c) => c.yearsOfExperience))
+    const totalYearsOfExperience = shownServices.length
+      ? Math.max(...shownServices.map((c) => c.yearsOfExperience))
       : 0;
 
     const profilePictureUrl = await this.profilePictureUrl(profile);
@@ -1403,7 +1676,9 @@ export class TechniciansService {
         yearsOfExperience: totalYearsOfExperience,
         serviceExperiences,
         verificationStatus: profile.verificationStatus,
+        rejectionReason: profile.rejectionReason ?? null,
         availabilityStatus: profile.availabilityStatus,
+        capacityAutoOffline: profile.capacityAutoOffline,
         location: {
           address: profile.baseAddress,
           publicLocationLabel: profile.publicLocationLabel,
@@ -1411,6 +1686,7 @@ export class TechniciansService {
           longitude: profile.baseLongitude,
         },
         profilePictureUrl,
+        stats,
         paymentMethod: profile.paymentMethod,
         paymentNumber: profile.paymentNumber,
         createdAt: profile.createdAt,
@@ -1445,6 +1721,7 @@ export class TechniciansService {
           longitude: profile.baseLongitude,
         },
         profilePictureUrl,
+        stats,
         paymentMethod: null,
         paymentNumber: null,
         createdAt: profile.createdAt,
@@ -1479,6 +1756,7 @@ export class TechniciansService {
         longitude: profile.baseLongitude,
       },
       profilePictureUrl,
+      stats,
       paymentMethod: null,
       paymentNumber: null,
       createdAt: profile.createdAt,

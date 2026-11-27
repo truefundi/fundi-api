@@ -61,9 +61,10 @@ export class UpdateTechnicianProfileDto {
       : value,
   )
   @IsString()
-  @MinLength(5)
-  @MaxLength(32)
-  @Matches(/^[A-Z0-9]+$/)
+  // A Rwandan national ID is 16 digits; every applicant types their own.
+  @Matches(/^\d{16}$/, {
+    message: 'nationalIdNumber must be exactly 16 digits.',
+  })
   nationalIdNumber?: string;
 
   @IsOptional()

@@ -2,21 +2,24 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { DatabaseModule } from '../database/database.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { AdminJobRatingsController } from './admin-job-ratings.controller';
 import { AdminTechnicianRatingsController } from './admin-technician-ratings.controller';
 import { JobRatingsController } from './job-ratings.controller';
+import { PublicTechnicianReviewsController } from './public-technician-reviews.controller';
 import { RatingItemsAdminController } from './rating-items-admin.controller';
 import { RatingsService } from './ratings.service';
 import { TechnicianRatingsController } from './technician-ratings.controller';
 
 @Module({
-  imports: [DatabaseModule, AuditModule, AuthModule],
+  imports: [DatabaseModule, AuditModule, AuthModule, NotificationsModule],
   controllers: [
     RatingItemsAdminController,
     JobRatingsController,
     AdminJobRatingsController,
     AdminTechnicianRatingsController,
     TechnicianRatingsController,
+    PublicTechnicianReviewsController,
   ],
   providers: [RatingsService],
 })

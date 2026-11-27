@@ -1,6 +1,8 @@
 import { Transform } from 'class-transformer';
 import {
   IsEmail,
+  IsNotEmpty,
+  ValidateIf,
   IsEnum,
   IsOptional,
   IsString,
@@ -95,4 +97,16 @@ export class UpdateCompanyDto {
 export class UpdateCompanyVerificationDto {
   @IsEnum(VerificationStatus)
   verificationStatus!: VerificationStatus;
+
+  /** Why the company is rejected. Required with REJECTED; shown to the owner. */
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @ValidateIf(
+    (dto: UpdateCompanyVerificationDto) =>
+      dto.verificationStatus === VerificationStatus.REJECTED ||
+      dto.reason !== undefined,
+  )
+  @IsString()
+  @IsNotEmpty({ message: 'Give a reason when rejecting a company.' })
+  @MaxLength(1000)
+  reason?: string;
 }

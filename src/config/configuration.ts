@@ -143,6 +143,10 @@ export default () => {
       twoFactorPendingSeconds:
         Number(process.env.ADMIN_2FA_PENDING_SECONDS) || 300,
       twoFactorMaxTries: Number(process.env.ADMIN_2FA_MAX_TRIES) || 5,
+      twoFactorAttemptWindowSeconds:
+        Number(process.env.ADMIN_2FA_ATTEMPT_WINDOW_SECONDS) || 900,
+      // Label the authenticator app shows, and the issuer in the otpauth:// URI. It has
+      // to match in both the label and the query parameter or the scan is rejected.
       totpIssuer: process.env.ADMIN_TOTP_ISSUER || 'Fundi',
       totpWindow: Number(process.env.ADMIN_TOTP_WINDOW) || 1,
       accessExpiresIn: process.env.ADMIN_ACCESS_EXPIRES_IN || '1d',
@@ -174,7 +178,10 @@ export default () => {
       userAgent: process.env.GEOCODING_USER_AGENT || 'FundiBackend/0.1.0',
     },
     cors: {
-      origins: (process.env.CORS_ORIGINS || 'http://localhost:3000')
+      origins: (
+        process.env.CORS_ORIGINS ||
+        'http://localhost:3000,http://localhost:8081'
+      )
         .split(',')
         .map((origin) => origin.trim())
         .filter(Boolean),

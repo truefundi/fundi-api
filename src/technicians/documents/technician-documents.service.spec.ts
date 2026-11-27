@@ -58,6 +58,9 @@ describe('TechnicianDocumentsService', () => {
       technicianDocumentService: {
         create: jest.fn().mockResolvedValue(undefined),
       },
+      technicianProfile: {
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
     };
     const prisma = {
       technicianProfile: {
@@ -74,7 +77,7 @@ describe('TechnicianDocumentsService', () => {
         count: jest.fn().mockResolvedValue(0),
       },
       serviceCategory: {
-        findFirst: jest.fn().mockResolvedValue({ id: 'service-category' }),
+        findFirst: jest.fn().mockResolvedValue(null),
       },
       $transaction: jest.fn(
         (callback: (tx: typeof transaction) => Promise<unknown>) =>
@@ -106,6 +109,51 @@ describe('TechnicianDocumentsService', () => {
     originalname: 'replacement.png',
     size: 8,
   };
+
+  describe('certificate service', () => {
+    const resolve = (
+      service: TechnicianDocumentsService,
+      customCategoryName: string,
+    ) =>
+      (
+        service as unknown as {
+          resolveCertificateCategory: (dto: object) => Promise<unknown>;
+        }
+      ).resolveCertificateCategory({
+        type: 'CERTIFICATE',
+        title: 'Certificate 1',
+        certificateType: 'TVET_CERTIFICATE',
+        customCategoryName,
+      });
+
+    it('links a typed catalog service name to that service', async () => {
+      const { service, prisma } = createService();
+      prisma.serviceCategory.findFirst.mockResolvedValue({
+        id: 'cat-plumbing',
+      });
+      await expect(resolve(service, ' plumbing ')).resolves.toEqual({
+        categoryId: 'cat-plumbing',
+        customCategoryName: null,
+        customCategoryNormalized: null,
+      });
+      expect(prisma.serviceCategory.findFirst).toHaveBeenCalledWith({
+        where: {
+          isActive: true,
+          name: { equals: 'plumbing', mode: 'insensitive' },
+        },
+        select: { id: true },
+      });
+    });
+
+    it('keeps a name that is not in the catalog', async () => {
+      const { service } = createService();
+      await expect(resolve(service, 'Solar Panels')).resolves.toEqual({
+        categoryId: null,
+        customCategoryName: 'Solar Panels',
+        customCategoryNormalized: 'solar panels',
+      });
+    });
+  });
 
   it('replaces a denied document and resubmits the same record', async () => {
     const { service, transaction, audit, storage } = createService();
@@ -149,6 +197,37 @@ describe('TechnicianDocumentsService', () => {
     expect(storage.delete).toHaveBeenCalledWith(oldObjectKey);
   });
 
+  it('puts a rejected application back into review when a denied document is resubmitted', async () => {
+    const { service, transaction, audit } = createService();
+    transaction.technicianProfile.updateMany.mockResolvedValue({ count: 1 });
+
+    await service.updateDeniedDocument(userId, documentId, {}, replacementFile);
+
+    expect(transaction.technicianProfile.updateMany).toHaveBeenCalledWith({
+      where: { id: profileId, verificationStatus: 'REJECTED' },
+      data: { verificationStatus: 'PENDING' },
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'VERIFICATION_REOPENED',
+        fromStatus: 'REJECTED',
+        toStatus: 'PENDING',
+      }),
+      transaction,
+    );
+  });
+
+  it('leaves a pending application alone when a denied document is resubmitted', async () => {
+    const { service, audit } = createService();
+
+    await service.updateDeniedDocument(userId, documentId, {}, replacementFile);
+
+    expect(audit.log).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'VERIFICATION_REOPENED' }),
+      expect.anything(),
+    );
+  });
+
   it('rejects attempts to update a document that is not denied', async () => {
     const { service, storage } = createService(DocumentStatus.SUBMITTED);
 
@@ -175,6 +254,9 @@ describe('TechnicianDocumentsService', () => {
       certificateType: 'DIPLOMA',
       serviceCategories: [],
     };
+    prisma.serviceCategory.findFirst.mockResolvedValue({
+      id: 'service-category',
+    } as never);
     prisma.technicianDocument.findFirst
       .mockReset()
       .mockResolvedValueOnce(document)

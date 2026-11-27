@@ -297,8 +297,24 @@ services. The body uses the same service shape as an entry in
 }
 ```
 
-Use `customName` instead of `categoryId` for a service not in the catalogue.
-The endpoint rejects duplicate services and enforces the existing limit of ten.
+Use `customName` instead of `categoryId` for a service not in the catalogue
+(a typed name that matches an active category is linked to it). The endpoint
+rejects duplicate services and enforces the existing limit of ten.
+
+Handled by the per-service review (`TechnicianServicesController`): the
+profile must already be `APPROVED`, and the new service starts `PENDING`. It is
+matched to jobs only after an admin approves it through
+`PATCH /api/v1/admin/technician-services/:serviceId/review`. While the
+application itself is under review, services are listed in the application
+(`serviceExperiences`) instead. `GET`, `PATCH /:serviceId` (resubmit) and
+`DELETE /:serviceId` (withdraw) live on the same path.
+
+A certificate already on file can back the new service instead of a new
+upload: `POST /api/v1/technicians/profile/documents/:documentId/services` with
+`{ "categoryId": "..." }` (catalog services only). The admin list,
+`GET /api/v1/admin/technician-services`, shows each service with every
+certificate that covers it, including ones reused from another service; those
+carry `reused: true`.
 
 ### `PATCH /api/v1/technicians/availability`
 

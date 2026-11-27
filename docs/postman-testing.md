@@ -1020,8 +1020,7 @@ No request body is required. The job response exposes `cooperationStatus`
 (`PENDING` until both confirmations, then `CONFIRMED`) and each party's
 confirmation time. When the second party confirms, the booking payment
 immediately becomes `EXPIRED`; the job's current work status remains unchanged,
-and the progress endpoints remain responsible for tracking and completing the
-work. Until both confirm, the payment stays `PAUSED` with its remaining
+and the work status endpoint tracks and completes the work. Until both confirm, the payment stays `PAUSED` with its remaining
 validity preserved.
 
 ### List my jobs
@@ -1048,14 +1047,14 @@ body.
 
 Latitude and longitude must be sent together.
 
-### Update customer progress
+### Confirm the job is done
 
-**PATCH** `{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/progress` — customer bearer
-token.
+**PATCH** `{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/status` — customer bearer
+token, after the technician marked the work `COMPLETED`.
 
 ```json
 {
-  "status": "IN_PROGRESS"
+  "status": "COMPLETED"
 }
 ```
 
@@ -1169,14 +1168,15 @@ The `reason` field is optional.
 `{{baseUrl}}/api/v1/jobs/technician/mine/{{jobId}}/confirm-cooperation` —
 no body. The booking payment expires when the job owner also confirms.
 
-### Update technician progress
+### Update the work status
 
 **PATCH**
-`{{baseUrl}}/api/v1/jobs/technician/mine/{{jobId}}/progress`
+`{{baseUrl}}/api/v1/jobs/technician/mine/{{jobId}}/status`
 
 ```json
 {
-  "status": "COMPLETED"
+  "status": "ON_HOLD",
+  "reason": "Waiting for a replacement part."
 }
 ```
 

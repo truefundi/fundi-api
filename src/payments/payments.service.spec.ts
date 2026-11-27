@@ -146,6 +146,25 @@ describe('PaymentsService mock booking payments', () => {
     jest.useFakeTimers().setSystemTime(fixedNow);
   });
 
+  it('looks a service up by id when the client sends its UUID', async () => {
+    const { service, prisma } = createService();
+    const serviceId = 'b1785204-f59a-4cc3-a9f9-94932e4a6d30';
+
+    await service.createMockPayment('customer-1', {
+      serviceCategoryId: serviceId,
+    });
+
+    expect(prisma.serviceCategory.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          isActive: true,
+          category: { isActive: true },
+          id: serviceId,
+        },
+      }),
+    );
+  });
+
   it('charges the service category SOS fee and records the request type', async () => {
     const { service, paymentCreate, prisma } = createService();
 
@@ -166,12 +185,16 @@ describe('PaymentsService mock booking payments', () => {
       amount: 2000,
       requestType: JobRequestType.SOS,
     });
+    // Not a UUID, so it is matched as a slug or display name (mobile clients send either).
     expect(prisma.serviceCategory.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          id: 'category-1',
           isActive: true,
           category: { isActive: true },
+          OR: [
+            { slug: 'category-1' },
+            { name: { equals: 'category-1', mode: 'insensitive' } },
+          ],
         },
       }),
     );
@@ -747,6 +770,33 @@ describe('PaymentsService mock booking payments', () => {
     (tx.paymentClaim.findFirst as jest.Mock).mockResolvedValue({
       id: 'claim-waiting',
     });
+
+    await expect(
+      service.submitPaymentClaim('customer-1', {
+        serviceCategoryId: 'category-1',
+        amount: 1000,
+        paymentMethod: PaymentClaimMethod.MTN,
+        paymentNumber: '+250788123456',
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ existingClaimId: 'claim-waiting' }),
+    });
+    expect(tx.paymentClaim.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        customerId: 'customer-1',
+        serviceCategoryId: 'category-1',
+        paymentMethod: PaymentClaimMethod.MTN,
+        paymentNumber: '+250788123456',
+        status: PaymentClaimStatus.PENDING,
+      }),
+      select: { id: true },
+    });
+    expect(claimCreate).not.toHaveBeenCalled();
+  });
+
+  it('returns the claim already waiting instead of queueing the same payment twice', async () => {
+    const { service, claimCreate, tx } = createService();
+    (tx.paymentClaim.findFirst as jest.Mock).mockResolvedValue({ id: 'claim-waiting' });
 
     await expect(
       service.submitPaymentClaim('customer-1', {

@@ -17,7 +17,6 @@ import {
 } from '../common/decorators/auth.decorator';
 import {
   DropJobDto,
-  JobProgressDto,
   JobWorkStatusDto,
   RejectJobOfferDto,
 } from './dto/job-action.dto';
@@ -70,15 +69,6 @@ export class TechnicianJobsController {
     @Param('jobId', ParseUUIDPipe) jobId: string,
   ) {
     return this.jobs.confirmCooperation(user.id, jobId, 'technician');
-  }
-
-  @Patch('mine/:jobId/progress')
-  updateProgress(
-    @CurrentUser() user: AuthUser,
-    @Param('jobId', ParseUUIDPipe) jobId: string,
-    @Body() dto: JobProgressDto,
-  ) {
-    return this.jobs.updateProgress(user.id, jobId, 'technician', dto);
   }
 
   @Patch('mine/:jobId/status')

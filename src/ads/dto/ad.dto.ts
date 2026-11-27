@@ -81,6 +81,18 @@ export class CreateAdDto {
   callToAction?: string;
 
   @ApiPropertyOptional({
+    example: 'https://homeshub.rw',
+    description: 'Where tapping the ad leads. Must be an https link.',
+    maxLength: 2048,
+  })
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
+  @MaxLength(2048)
+  targetUrl?: string;
+
+  @ApiPropertyOptional({
     enum: AdBadge,
     default: AdBadge.LIVE,
     description: 'Badge rendered on the card.',

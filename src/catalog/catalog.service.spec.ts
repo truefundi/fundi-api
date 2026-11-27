@@ -170,6 +170,67 @@ describe('CatalogService', () => {
     expect(result).not.toHaveProperty('visitFee');
   });
 
+  it('lists what a customer pays to book, without exposing the charges', async () => {
+    const { service, prisma } = createService();
+    prisma.serviceCategory.findMany.mockResolvedValueOnce([
+      {
+        ...serviceRecord,
+        serviceCharges: [
+          serviceCharge,
+          {
+            ...serviceCharge,
+            id: 'charge-2',
+            name: 'Platform fee',
+            chargeType: ServiceChargeType.FIXED,
+            value: 300,
+            sortOrder: 1,
+          },
+          {
+            ...serviceCharge,
+            id: 'charge-3',
+            name: 'Commission',
+            chargeType: ServiceChargeType.FIXED,
+            value: 200,
+            payer: ServiceChargePayer.FUNDI,
+            sortOrder: 2,
+          },
+        ],
+      },
+    ]);
+
+    const [result] = await service.listActiveServices();
+
+    expect(prisma.serviceCategory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          serviceCharges: expect.anything(),
+        }),
+      }),
+    );
+    // 1000 + 10% + 300 (the FUNDI charge is not the customer's); SOS: 2500 + 250 + 300.
+    expect(result).toMatchObject({
+      bookingFee: 1000,
+      customerBookingFee: 1400,
+      sosBookingFee: 2500,
+      customerSosBookingFee: 3050,
+    });
+    expect(result).not.toHaveProperty('serviceCharges');
+  });
+
+  it('gives no customer SOS total when the service has no SOS fee', async () => {
+    const { service, prisma } = createService();
+    prisma.serviceCategory.findMany.mockResolvedValueOnce([
+      { ...serviceRecord, sosBookingFee: null, serviceCharges: [] },
+    ]);
+
+    const [result] = await service.listActiveServices();
+
+    expect(result).toMatchObject({
+      customerBookingFee: 1000,
+      customerSosBookingFee: null,
+    });
+  });
+
   it('gets services with their complete parent category', async () => {
     const { service, prisma } = createService();
     const result = await service.getActiveServiceById(serviceRecord.id);

@@ -15,7 +15,7 @@ import {
 } from '../../common/validation/rwanda-phone-number';
 
 export class CreateMockPaymentDto {
-  @IsUUID('4')
+  @IsString()
   serviceCategoryId!: string;
 
   @IsOptional()

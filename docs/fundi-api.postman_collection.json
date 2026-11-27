@@ -79,6 +79,11 @@
       "type": "string"
     },
     {
+      "key": "companyId",
+      "value": "",
+      "type": "string"
+    },
+    {
       "key": "jobId",
       "value": "",
       "type": "string"
@@ -1869,6 +1874,41 @@
           "response": []
         },
         {
+          "name": "Reuse a certificate for another service",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/technicians/profile/documents/{{documentId}}/services",
+            "description": "Links a certificate already on file (not denied) to another catalog service, instead of uploading it again.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{technicianToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"categoryId\": \"{{categoryId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Download my document",
           "request": {
             "method": "GET",
@@ -2430,6 +2470,76 @@
           "response": []
         },
         {
+          "name": "Send request to an offline technician",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/offline-requests",
+            "description": "For a technician listed with availabilityStatus OFFLINE (matching-technicians?includeOffline=true). They have two hours to reply.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"technicianId\": \"{{technicianId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Send request to a company",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/company-requests",
+            "description": "For a match whose company is set: the request goes to the company's owner and is recorded on the job.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{customerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{companyId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
           "name": "Confirm cooperation with assigned technician",
           "request": {
             "method": "POST",
@@ -2525,7 +2635,7 @@
           "response": []
         },
         {
-          "name": "Update customer progress",
+          "name": "Confirm the job is done",
           "request": {
             "method": "PATCH",
             "header": [
@@ -2535,8 +2645,8 @@
                 "type": "text"
               }
             ],
-            "url": "{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/progress",
-            "description": "",
+            "url": "{{baseUrl}}/api/v1/jobs/mine/{{jobId}}/status",
+            "description": "Customer: confirm the work the technician marked COMPLETED (within the 10-minute window). Any other status is refused.",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -2549,7 +2659,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"status\": \"IN_PROGRESS\"\n}",
+              "raw": "{\n  \"status\": \"COMPLETED\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -3051,7 +3161,7 @@
           "response": []
         },
         {
-          "name": "Update technician job progress",
+          "name": "Update work status",
           "request": {
             "method": "PATCH",
             "header": [
@@ -3061,8 +3171,8 @@
                 "type": "text"
               }
             ],
-            "url": "{{baseUrl}}/api/v1/jobs/technician/mine/{{jobId}}/progress",
-            "description": "",
+            "url": "{{baseUrl}}/api/v1/jobs/technician/mine/{{jobId}}/status",
+            "description": "Technician: HEADING_TO_LOCATION, ARRIVED, IN_PROGRESS, ON_HOLD (reason required) or COMPLETED (starts the customer's 10-minute confirmation window).",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -3075,7 +3185,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"status\": \"COMPLETED\"\n}",
+              "raw": "{\n  \"status\": \"ON_HOLD\",\n  \"reason\": \"Waiting for a replacement part\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -3841,7 +3951,7 @@
           "response": []
         },
         {
-          "name": "Update job progress",
+          "name": "Update work status",
           "request": {
             "method": "PATCH",
             "header": [
@@ -3851,16 +3961,17 @@
                 "type": "text"
               }
             ],
-            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/progress",
+            "url": "{{baseUrl}}/api/v1/chat/rooms/{{chatRoomId}}/status",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"status\": \"COMPLETED\"\n}",
+              "raw": "{\n  \"status\": \"IN_PROGRESS\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
-            }
+            },
+            "description": "Same as the job work-status routes, from the chat room: the technician moves the work; the customer only confirms COMPLETED."
           },
           "response": []
         },

@@ -12,7 +12,6 @@ import {
   JobStatus,
   JobPriority,
   JobDispatchStatus,
-  JobProgressStatus,
   JobOfferStatus,
   JobWorkStatus,
 } from '@prisma/client';
@@ -126,12 +125,6 @@ async function main() {
         status,
         dispatchStatus: JobDispatchStatus.PENDING,
         workStatus: completedAt ? JobWorkStatus.COMPLETED : JobWorkStatus.PENDING,
-        customerProgress: completedAt
-          ? JobProgressStatus.COMPLETED
-          : JobProgressStatus.PENDING,
-        technicianProgress: completedAt
-          ? JobProgressStatus.COMPLETED
-          : JobProgressStatus.PENDING,
         completedAt,
         completionConfirmedAt: completedAt,
       },
@@ -151,7 +144,6 @@ async function main() {
         data: {
           technicianId: tech.profile.id,
           assignedAt: new Date(),
-          technicianProgress: JobProgressStatus.STARTED,
         },
       });
       

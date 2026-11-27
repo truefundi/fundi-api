@@ -57,7 +57,6 @@ describe('configuration production secrets', () => {
   const load = () => {
     let loaded: (() => unknown) | undefined;
     jest.isolateModules(() => {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
       loaded = require('./configuration').default;
     });
     return loaded!;

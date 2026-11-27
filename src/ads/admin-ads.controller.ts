@@ -23,7 +23,7 @@ import {
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { UserRole } from '@prisma/client';
-import { Auth, AuthUser, CurrentUser } from '../common/decorators/auth.decorator';
+import { Auth } from '../common/decorators/auth.decorator';
 import {
   StaffAuth,
   AuthUser,

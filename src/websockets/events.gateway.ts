@@ -12,6 +12,10 @@ import { Server, Socket } from 'socket.io';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../database/prisma.service';
+import {
+  DEV_ACCESS_SECRET_FALLBACK,
+  getRequiredSecret,
+} from '../common/crypto/jwt-secrets';
 import { ADMIN_ACCESS_COOKIE } from '../auth/admin-cookies';
 
 @WebSocketGateway({
@@ -43,9 +47,11 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         sid: string;
         typ?: string;
       }>(token, {
-        secret:
-          this.config.get<string>('jwt.accessSecret') ||
-          'default_dev_access_secret_32chars',
+        secret: getRequiredSecret(
+          this.config,
+          'jwt.accessSecret',
+          DEV_ACCESS_SECRET_FALLBACK,
+        ),
       });
       // Only access tokens are accepted here, never a refresh token presented as one.
       if (!payload.sub || !payload.sid || payload.typ !== 'access') return;

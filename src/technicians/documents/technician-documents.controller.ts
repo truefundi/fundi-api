@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { CertificateType, DocumentType, UserRole } from '@prisma/client';
 import {
   Auth,
@@ -44,7 +45,8 @@ export class TechnicianDocumentsController {
 
   // Uploads or replaces the profile picture (JPEG, PNG or WebP, up to 5 MiB).
   @Put('picture')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  @Auth(UserRole.TECHNICIAN)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(FileInterceptor('file', UPLOAD_LIMITS))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -64,7 +66,7 @@ export class TechnicianDocumentsController {
 
   // Removes the profile picture.
   @Delete('picture')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  @Auth(UserRole.TECHNICIAN)
   async deletePicture(@CurrentUser() user: AuthUser) {
     await this.documents.removeProfilePicture(user.id);
     return this.technicians.getMyProfile(user.id);
@@ -72,14 +74,15 @@ export class TechnicianDocumentsController {
 
   // Shows what is still missing before an administrator can approve the technician.
   @Get('verification-checklist')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  @Auth(UserRole.TECHNICIAN)
   getChecklist(@CurrentUser() user: AuthUser) {
     return this.documents.getChecklistForUser(user.id);
   }
 
   // Uploads a KYC document (JPEG, PNG, WebP or PDF, up to 5 MiB).
   @Post('documents')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  @Auth(UserRole.TECHNICIAN)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(FileInterceptor('file', UPLOAD_LIMITS))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -123,7 +126,7 @@ export class TechnicianDocumentsController {
   }
 
   @Post('documents/:documentId/services')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  @Auth(UserRole.TECHNICIAN)
   reuseDocumentForService(
     @CurrentUser() user: AuthUser,
     @Param('documentId', ParseUUIDPipe) documentId: string,
@@ -134,7 +137,8 @@ export class TechnicianDocumentsController {
 
   // Replaces and resubmits a document that an administrator denied.
   @Patch('documents/:documentId')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  @Auth(UserRole.TECHNICIAN)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(FileInterceptor('file', UPLOAD_LIMITS))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -161,14 +165,14 @@ export class TechnicianDocumentsController {
 
   // Lists the technician's own documents and their review status.
   @Get('documents')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  @Auth(UserRole.TECHNICIAN)
   listDocuments(@CurrentUser() user: AuthUser) {
     return this.documents.listMine(user.id);
   }
 
   // Downloads one of the technician's own documents.
   @Get('documents/:documentId/download')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  @Auth(UserRole.TECHNICIAN)
   @Header('X-Content-Type-Options', 'nosniff')
   async downloadDocument(
     @CurrentUser() user: AuthUser,
@@ -181,7 +185,7 @@ export class TechnicianDocumentsController {
 
   // Deletes a document that is still SUBMITTED or was DENIED.
   @Delete('documents/:documentId')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  @Auth(UserRole.TECHNICIAN)
   deleteDocument(
     @CurrentUser() user: AuthUser,
     @Param('documentId', ParseUUIDPipe) documentId: string,

@@ -153,10 +153,11 @@ model ServiceCategory {
   technicians       TechnicianCategory[]
   documents         TechnicianDocument[]
   technicianDocuments TechnicianDocumentService[]
-  bookingPayments   BookingPayment[]
-  serviceCharges    ServiceCharge[]
-  paymentClaims     PaymentClaim[]
-  category          CatalogCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  bookingPayments     BookingPayment[]
+  serviceCharges      ServiceCharge[]
+  paymentClaims       PaymentClaim[]
+  paymentTransactions PaymentTransaction[]
+  category            CatalogCategory             @relation(fields: [categoryId], references: [id], onDelete: Restrict)
 
   @@index([categoryId])
   @@map("service_categories")

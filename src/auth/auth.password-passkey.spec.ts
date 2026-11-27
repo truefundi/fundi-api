@@ -130,6 +130,9 @@ describe('AuthService password and passkey flows', () => {
     const configuration = {
       get: jest.fn((key: string, fallback: unknown) => {
         const values: Record<string, unknown> = {
+          'jwt.accessSecret': 'unit-test-access-secret-key-32ch',
+          'jwt.refreshSecret': 'unit-test-refresh-secret-key-32c',
+          'jwt.tokenHashSecret': 'unit-test-token-hash-secret-32ch',
           'webauthn.rpId': 'example.com',
           'webauthn.rpName': 'Fundi',
           'webauthn.origins': ['https://app.example.com'],

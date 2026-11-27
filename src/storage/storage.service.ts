@@ -29,6 +29,12 @@ export class StorageService implements OnModuleInit {
   private signer?: S3Client;
 
   constructor() {
+    const environment = process.env.NODE_ENV || 'development';
+    if (environment !== 'development' && process.env.STORAGE_DRIVER !== 's3') {
+      throw new Error(
+        `STORAGE_DRIVER=s3 is required when NODE_ENV is "${environment}".`,
+      );
+    }
     this.driver = process.env.STORAGE_DRIVER === 's3' ? 's3' : 'local';
     this.localRoot = path.resolve(process.env.STORAGE_LOCAL_DIR || './uploads');
     this.bucket = process.env.S3_BUCKET ?? '';
@@ -59,7 +65,7 @@ export class StorageService implements OnModuleInit {
     }
   }
 
-  // Checks the configured storage on startup and logs a clear message instead of failing later.
+  // Checks the configured storage on startup and fails fast when S3 is unreachable.
   async onModuleInit() {
     if (this.driver === 's3') {
       try {
@@ -68,6 +74,9 @@ export class StorageService implements OnModuleInit {
       } catch (error) {
         this.logger.error(
           `Cannot reach S3 bucket "${this.bucket}": ${(error as Error).message}`,
+        );
+        throw new Error(
+          `S3 startup verification failed for bucket "${this.bucket}": ${(error as Error).message}`,
         );
       }
       return;

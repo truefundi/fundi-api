@@ -70,7 +70,14 @@ describe('AuthService phone OTP flow', () => {
         .mockResolvedValueOnce('refresh-token'),
     };
     const config = {
-      get: jest.fn((_key: string, fallback: string) => fallback),
+      get: jest.fn((key: string, fallback: string) => {
+        const defaults: Record<string, string> = {
+          'jwt.accessSecret': 'unit-test-access-secret-key-32ch',
+          'jwt.refreshSecret': 'unit-test-refresh-secret-key-32c',
+          'jwt.tokenHashSecret': 'unit-test-token-hash-secret-32ch',
+        };
+        return defaults[key] ?? fallback;
+      }),
     };
     return {
       service: new AuthService(
@@ -416,12 +423,15 @@ describe('AuthService refresh token exchange', () => {
         .mockResolvedValueOnce('new-access-token')
         .mockResolvedValueOnce('new-refresh-token'),
     };
-    // No default is forced here: an unset key falls through to the service's own
-    // fallback, so these tests cover the shipped default rather than the mock.
     const config = {
-      get: jest.fn(
-        (key: string, fallback: string) => settings[key] ?? fallback,
-      ),
+      get: jest.fn((key: string, fallback: string) => {
+        const defaults: Record<string, string> = {
+          'jwt.accessSecret': 'unit-test-access-secret-key-32ch',
+          'jwt.refreshSecret': 'unit-test-refresh-secret-key-32c',
+          'jwt.tokenHashSecret': 'unit-test-token-hash-secret-32ch',
+        };
+        return settings[key] ?? defaults[key] ?? fallback;
+      }),
     };
     const service = new AuthService(
       jwt as unknown as JwtService,

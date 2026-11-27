@@ -24,6 +24,12 @@ import type {
   WebAuthnCredential,
 } from '@simplewebauthn/server';
 import { PrismaService } from '../database/prisma.service';
+import {
+  DEV_ACCESS_SECRET_FALLBACK,
+  DEV_REFRESH_SECRET_FALLBACK,
+  DEV_TOKEN_HASH_SECRET_FALLBACK,
+  getRequiredSecret,
+} from '../common/crypto/jwt-secrets';
 import { SmsService } from '../sms/sms.service';
 import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
@@ -697,12 +703,16 @@ export class AuthService {
     const sessionId = randomUUID();
     const payload = { sub: userId, phoneNumber, role, sid: sessionId };
 
-    const accessSecret =
-      this.configService.get<string>('jwt.accessSecret') ||
-      'default_dev_access_secret_32chars';
-    const refreshSecret =
-      this.configService.get<string>('jwt.refreshSecret') ||
-      'default_dev_refresh_secret_32chars';
+    const accessSecret = getRequiredSecret(
+      this.configService,
+      'jwt.accessSecret',
+      DEV_ACCESS_SECRET_FALLBACK,
+    );
+    const refreshSecret = getRequiredSecret(
+      this.configService,
+      'jwt.refreshSecret',
+      DEV_REFRESH_SECRET_FALLBACK,
+    );
 
     // `typ` pins each token to its purpose. Without it a refresh token is a valid
     // JWT for the access-secret check whenever the two secrets are configured the
@@ -1283,10 +1293,12 @@ export class AuthService {
 
   // Hashes OTP and refresh-token secrets before storing them in the database.
   private hash(value: string) {
-    const secret =
-      this.configService.get<string>('jwt.tokenHashSecret') ||
-      this.configService.get<string>('jwt.refreshSecret') ||
-      'development_token_hash_secret_change_before_production';
+    const secret = getRequiredSecret(
+      this.configService,
+      'jwt.tokenHashSecret',
+      DEV_TOKEN_HASH_SECRET_FALLBACK,
+      'jwt.refreshSecret',
+    );
     return createHmac('sha256', secret).update(value).digest('hex');
   }
 

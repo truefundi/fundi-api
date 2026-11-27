@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { JobRequestType, UserRole } from '@prisma/client';
 import {
   Auth,
@@ -67,6 +68,7 @@ export class JobsController {
   ) {}
 
   @Post('phone-verification/request')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   requestPhoneVerification(
     @CurrentUser() user: AuthUser,
     @Body() dto?: RequestJobPhoneDto,
@@ -75,6 +77,7 @@ export class JobsController {
   }
 
   @Post('phone-verification/verify')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   verifyPhone(@CurrentUser() user: AuthUser, @Body() dto: VerifyJobPhoneDto) {
     return this.auth.verifyCustomerJobOtp(user.id, dto.verificationId, dto.otp);
   }
@@ -99,6 +102,7 @@ export class JobsController {
   }
 
   @Post()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -155,6 +159,7 @@ export class JobsController {
   }
 
   @Post('sos')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
@@ -331,6 +336,7 @@ export class JobsController {
   }
 
   @Post('mine/:jobId/media')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
   @ApiConsumes('multipart/form-data')
   @ApiBody({

@@ -19,6 +19,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { UsersService } from '../users/users.service';
 import { RegisterDto } from './dto/register.dto';
@@ -46,6 +47,7 @@ import {
 } from '../common/decorators/api-error-responses.decorator';
 
 @ApiTags('auth')
+@Throttle({ default: { limit: 10, ttl: 60_000 } })
 @Controller('api/v1/auth')
 export class AuthController {
   constructor(
@@ -55,6 +57,7 @@ export class AuthController {
 
   // Customer registration is immediate; technician registration requires OTP verification.
   @Post('register')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Register a customer or start technician phone verification',
@@ -71,6 +74,7 @@ export class AuthController {
   }
 
   @Post('register/pin')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Register a customer account with a phone number and PIN',
@@ -85,6 +89,7 @@ export class AuthController {
 
   // Starts login only for an existing active account.
   @Post('login')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Send a login OTP to a registered phone number',
@@ -101,6 +106,7 @@ export class AuthController {
 
   // Replaces the current OTP while enforcing the three-resend limit.
   @Post('resend-otp')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Resend the pending login OTP up to three times',

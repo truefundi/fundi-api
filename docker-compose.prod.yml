@@ -1,0 +1,169 @@
+# Production Docker Compose stack for Fundi Backend on a Linux VPS.
+# Note: The Next.js web app deploys separately on Vercel.
+#
+# Usage inside the cloned fundi-api repository on the VPS:
+#   cp .env.prod.example .env.prod   # fill in real production secrets
+#   chmod 600 .env.prod
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml exec api npx prisma migrate deploy
+
+name: fundi-prod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  traefik:
+    image: traefik:v3.3.4
+    container_name: fundi-prod-traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=fundi-internal"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--ping=true"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+    networks:
+      - fundi-internal
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    mem_limit: 256m
+    cpus: 0.50
+    logging: *default-logging
+
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: fundi-prod-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    # Bound strictly to loopback (127.0.0.1) for local SSH tunnel/backup access — never 0.0.0.0.
+    ports:
+      - "127.0.0.1:${POSTGRES_LOCAL_PORT:-5432}:5432"
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    networks:
+      - fundi-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 1g
+    cpus: 1.00
+    logging: *default-logging
+
+  redis:
+    image: redis:7.4.2-alpine
+    container_name: fundi-prod-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
+    # Bound strictly to loopback (127.0.0.1) — never 0.0.0.0.
+    ports:
+      - "127.0.0.1:${REDIS_LOCAL_PORT:-6379}:6379"
+    volumes:
+      - redis_prod_data:/data
+    networks:
+      - fundi-internal
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    mem_limit: 512m
+    cpus: 0.50
+    logging: *default-logging
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fundi-prod-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public&connection_limit=${DB_POOL_LIMIT:-15}&pool_timeout=15
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required}
+      TOKEN_HASH_SECRET: ${TOKEN_HASH_SECRET:?TOKEN_HASH_SECRET is required}
+      JWT_ACCESS_EXPIRES_IN: ${JWT_ACCESS_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      ADMIN_TOTP_ENCRYPTION_KEY: ${ADMIN_TOTP_ENCRYPTION_KEY:?ADMIN_TOTP_ENCRYPTION_KEY is required}
+      NATIONAL_ID_ENCRYPTION_KEY: ${NATIONAL_ID_ENCRYPTION_KEY:?NATIONAL_ID_ENCRYPTION_KEY is required}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:?WEBAUTHN_RP_ID is required}
+      WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-Fundi}
+      WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:?WEBAUTHN_ORIGIN is required}
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
+      ADMIN_COOKIE_SAME_SITE: ${ADMIN_COOKIE_SAME_SITE:-lax}
+      ADMIN_COOKIE_SECURE: "true"
+      ADMIN_COOKIE_DOMAIN: ${ADMIN_COOKIE_DOMAIN:-}
+      STORAGE_DRIVER: s3
+      S3_BUCKET: ${S3_BUCKET:?S3_BUCKET is required}
+      S3_ENDPOINT: ${S3_ENDPOINT:?S3_ENDPOINT is required}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?S3_ACCESS_KEY_ID is required}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?S3_SECRET_ACCESS_KEY is required}
+      MOCK_PAYMENT_KEY: ${MOCK_PAYMENT_KEY:-}
+      MOCK_PAYMENT_SECRET: ${MOCK_PAYMENT_SECRET:-}
+      SMS_MODE: ${SMS_MODE:-provider}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fundi-api.rule=Host(`${API_DOMAIN:?API_DOMAIN is required}`)"
+      - "traefik.http.routers.fundi-api.entrypoints=websecure"
+      - "traefik.http.routers.fundi-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.fundi-api.loadbalancer.server.port=3000"
+    networks:
+      - fundi-internal
+    mem_limit: 1g
+    cpus: 1.00
+    logging: *default-logging
+
+networks:
+  fundi-internal:
+    name: fundi-internal
+    driver: bridge
+
+volumes:
+  postgres_prod_data:
+  redis_prod_data:
+  traefik_letsencrypt:

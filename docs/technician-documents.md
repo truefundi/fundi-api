@@ -193,7 +193,7 @@ Success response (`201`): the created document object (see
 | `400`  | `type=CERTIFICATE` and both or neither of `categoryId` / `customCategoryName`                                        |
 | `400`  | `categoryId` is not an active category                                                                               |
 | `401`  | Missing or invalid token                                                                                             |
-| `403`  | Caller is not a `CUSTOMER` or `TECHNICIAN`                                                                            |
+| `403`  | Caller is not a `TECHNICIAN`                                                                                         |
 | `404`  | No technician profile registered yet                                                                                 |
 | `409`  | Duplicate title, second live `NATIONAL_ID`, or duplicate live certificate for the same `(category, certificateType)` |
 | `409`  | More than 10 non-denied documents                                                                                    |

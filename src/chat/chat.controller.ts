@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { UserRole } from '@prisma/client';
 import {
   Auth,
@@ -77,6 +78,7 @@ export class ChatController {
   }
 
   @Post('rooms/:roomId/messages/media')
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('file', {
       limits: {

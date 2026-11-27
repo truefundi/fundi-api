@@ -10,6 +10,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { UserRole } from '@prisma/client';
 import {
   Auth,
@@ -37,6 +38,7 @@ export class TechniciansController {
   // ─── Technician self-service ──────────────────────────────────────────
 
   @Post('register')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async registerPublic(@Body() dto: RegisterTechnicianDto) {
     const profile = await this.technicians.registerPublicTechnician(dto);
     const otp = await this.auth.requestTechnicianRegistrationOtp(

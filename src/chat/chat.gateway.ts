@@ -17,6 +17,11 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import Redis from 'ioredis';
 import { Namespace, Socket } from 'socket.io';
 import { PrismaService } from '../database/prisma.service';
+import { parseRedisOptions } from '../redis/redis-options';
+import {
+  DEV_ACCESS_SECRET_FALLBACK,
+  getRequiredSecret,
+} from '../common/crypto/jwt-secrets';
 import { ChatService } from './chat.service';
 import {
   ChatRealtimeService,
@@ -31,7 +36,6 @@ interface ChatSocketIdentity {
 
 @WebSocketGateway({
   namespace: '/chat',
-  cors: { origin: '*' },
 })
 export class ChatGateway
   implements
@@ -82,9 +86,11 @@ export class ChatGateway
         sub: string;
         sid: string;
       }>(token, {
-        secret:
-          this.config.get<string>('jwt.accessSecret') ||
-          'default_dev_access_secret_32chars',
+        secret: getRequiredSecret(
+          this.config,
+          'jwt.accessSecret',
+          DEV_ACCESS_SECRET_FALLBACK,
+        ),
       });
       if (!payload.sub || !payload.sid) {
         client.disconnect(true);
@@ -272,11 +278,8 @@ export class ChatGateway
   }
 
   private createRedisClient(): Redis {
-    const host = this.config.get<string>('redis.host', 'localhost');
-    const port = this.config.get<number>('redis.port', 6379);
     return new Redis({
-      host,
-      port,
+      ...parseRedisOptions(this.config),
       lazyConnect: true,
       maxRetriesPerRequest: null,
     });

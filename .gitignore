@@ -3,11 +3,15 @@ node_modules/
 
 # Environment variables
 .env
+.env.prod
+.env.production
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 *.env
+.postman
+postman
 
 # Build outputs
 dist/
@@ -44,3 +48,19 @@ temp/
 # Prisma SQLite/Local DBs
 *.db
 *.sqlite
+
+# Postman local collections/workspaces
+.postman/
+postman/
+
+# Local demo assets: presentation material, not part of the product
+docs/demo-walkthrough.md
+demo-files/
+
+# Local file storage when STORAGE_DRIVER=local (the development default)
+uploads/
+
+# Local scripts that are not part of the product
+scripts/
+
+.github/agents

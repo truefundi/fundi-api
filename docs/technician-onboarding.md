@@ -1,0 +1,862 @@
+# Technician Onboarding API
+
+This document covers technician profile management: creating and updating a
+profile, going online, discovery, and administrator oversight. Document
+uploads and profile pictures are covered in
+[`technician-documents.md`](./technician-documents.md).
+
+Three concepts are kept deliberately separate:
+
+- **`user.status`** — whether the account can authenticate at all (`ACTIVE`, `INACTIVE`, `SUSPENDED`).
+- **`verificationStatus`** — the administrator's approval state (`PENDING`, `APPROVED`, `REJECTED`).
+- **`availabilityStatus`** — whether the technician is taking work (`ONLINE`, `OFFLINE`).
+
+A technician must be **active**, **approved**, and **online** to appear in
+discovery listings.
+
+Individual technicians can handle up to three assigned or paused jobs. Reaching
+that limit automatically takes them offline; availability is restored when an
+active job ends if the system took them offline for capacity. Company profiles
+are not subject to this individual limit.
+
+The profile includes a required national ID number; the API encrypts it at rest
+and returns only a masked value to the technician and administrators. Public
+registration can create the account and pending profile together, then send a
+phone OTP. The profile remains offline and pending approval until its required
+National ID card is accepted. Other documents are optional.
+
+## Authentication
+
+Every route below requires a Bearer access token unless marked **Public**.
+
+| Role required                                          | Routes                                                                                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| **Public** (no auth)                                   | `POST /api/v1/technicians/register`                                                                                            |
+| `CUSTOMER` or `TECHNICIAN`                             | `POST /api/v1/technicians/profile`                                                                                             |
+| `CUSTOMER` or `TECHNICIAN`                             | `GET`/`PUT /api/v1/technicians/profile`, `/api/v1/technicians/profile/*` document and picture routes                           |
+| `TECHNICIAN`                                           | `/api/v1/technicians/availability`                                                                                             |
+| Any signed-in role (`CUSTOMER`, `TECHNICIAN`, `ADMIN`) | `/api/v1/technicians`, `/api/v1/technicians/approved`, `/api/v1/technicians/available/:id`, `/api/v1/technicians/approved/:id` |
+| **Public** (no auth)                                   | `/api/v1/public/technicians*`                                                                                                  |
+| `ADMIN`                                                | `/api/v1/admin/technicians*`                                                                                                   |
+
+Send `Content-Type: application/json` on every non-multipart request.
+
+## Field visibility
+
+Every technician object returned by the API has the **same key set**, but
+some values are redacted depending on who is asking.
+
+| Field                                                                                                                  | Owner / Admin | Signed-in non-owner | Anonymous |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------- | ------------------- | --------- |
+| `paymentMethod`                                                                                                        | ✅ value      | `null`              | `null`    |
+| `paymentNumber`                                                                                                        | ✅ value      | `null`              | `null`    |
+| `user.phoneNumber`                                                                                                     | ✅ value      | ✅ value            | `null`    |
+| `user.email`                                                                                                           | ✅ value      | ✅ value            | `null`    |
+| `user.status`                                                                                                          | ✅ value      | ✅ value            | `null`    |
+| `user.createdAt` / `user.updatedAt`                                                                                    | ✅ value      | ✅ value            | `null`    |
+| `profilePictureUrl`, `location`, `serviceExperiences`, `yearsOfExperience`, `verificationStatus`, `availabilityStatus` | ✅ value      | ✅ value            | ✅ value  |
+
+`yearsOfExperience` is **derived**: it is the maximum years-of-experience
+across all of the technician's service entries, or `0` when there are none.
+
+## Service experiences
+
+A technician advertises their work through a list of **service experiences**.
+Each entry is either:
+
+- a real catalog service, referenced by `categoryId`, **or**
+- a custom service name (`customName`) for work that is not yet in the catalogue.
+
+Each entry also carries its own `yearsOfExperience`.
+
+Rules enforced by the API:
+
+- At most **10** entries.
+- Each entry has **either** `categoryId` **or** `customName` — never both, never neither.
+- A real `categoryId` must reference an **active service** whose parent
+  category is active. The field retains its legacy name; it is not the ID of
+  the parent category.
+- No duplicate `categoryId` and no duplicate `customName` (case-insensitive) within one technician.
+- Sending `serviceExperiences` **replaces** the technician's whole list atomically.
+
+## Technician self-service
+
+### `POST /api/v1/technicians/register`
+
+Public registration for a new technician. Creates the account and profile in
+one transaction, then sends a registration phone OTP. Duplicate phone
+numbers, email addresses, technician ID numbers, and profile/user
+relationships are rejected by database uniqueness constraints. The user ID
+is generated by the backend and is not accepted from the request.
+
+The new profile is `PENDING` and `OFFLINE`. The technician must verify the OTP
+using `POST /api/v1/auth/verify-otp` before logging in to upload documents or
+use authenticated profile routes. If OTP delivery fails after the account is
+created, use the normal login OTP flow to recover the account.
+
+**Request**
+
+When the location is text-only, include both coordinate keys as `null` or
+omit them. Numeric coordinates may also be sent with the text labels.
+
+```json
+{
+  "user": {
+    "fullName": "Amina Example",
+    "phoneNumber": "+250788123456",
+    "email": "amina@example.com"
+  },
+  "profile": {
+    "gender": "FEMALE",
+    "nationalIdNumber": "1199080012345678",
+    "baseAddress": "Kigali, Rwanda",
+    "publicLocationLabel": "Kigali",
+    "paymentMethod": "MOMO",
+    "paymentNumber": "+250788123456",
+    "serviceExperiences": [
+      {
+        "categoryId": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
+        "yearsOfExperience": 5
+      }
+    ]
+  }
+}
+```
+
+Email is optional. Profile location can be supplied as a base/public text label, as a
+`baseLatitude`/`baseLongitude` pair, or both. Coordinates are optional when a
+text location is provided. Omit both coordinate fields (or send both as
+`null`) to save a text-only location; the API stores coordinates as `null`
+without attempting an external lookup. Profiles without coordinates can be
+registered, but are not included in distance-based technician matching until
+coordinates are added. If coordinates are supplied without text, the
+coordinates are saved and used as the address fallback.
+
+### `POST /api/v1/technicians/profile`
+
+Registers a profile for the signed-in user for the first time.
+
+Auth: **`CUSTOMER`** or **`TECHNICIAN`**.
+
+The following fields are **required** and their absence produces a single
+`400` listing every missing field:
+
+- `gender`
+- `nationalIdNumber`
+- `baseAddress` or `publicLocationLabel`, or a `baseLatitude`/`baseLongitude` pair
+- `paymentMethod`
+- `paymentNumber`
+- `serviceExperiences` (non-empty)
+
+Account identity (`fullName`, `phoneNumber`, and `email`) comes from the
+signed-in user and is not accepted as profile data. When a signed-in customer
+creates a technician profile, the existing account stays in the `CUSTOMER`
+role while the profile is pending. The user ID and account are retained.
+After an administrator approves the profile, the user can switch to technician
+mode with `PATCH /api/v1/users/me/role`.
+
+An application may include `businessType: "COMPANY"` and a `company` object to
+register a company owned by the technician. `businessType` defaults to
+`INDIVIDUAL`; when it is `COMPANY`, all of `name`, `location`, `email`, and
+`phoneNumber` are required in `company`, while `description` is optional.
+Company verification starts at `PENDING`. See
+[`companies.md`](./companies.md) for owner/admin operations.
+
+Technician accounts must verify the registration phone OTP first. A signed-in
+customer can apply in customer mode without an immediate role change. Customers
+must complete phone verification as required by the job and technician
+verification flows. Profile picture upload is a **separate** call — see
+[`technician-documents.md`](./technician-documents.md).
+The `nationalIdNumber` is encrypted at rest; responses expose only its final
+four digits. The National ID card file is uploaded separately and must be
+accepted before an administrator can approve the profile; see
+[`technician-documents.md`](./technician-documents.md).
+
+**Request**
+
+When the location is text-only, include both coordinate keys as `null` or
+omit them. Numeric coordinates may also be sent with the text labels.
+
+```json
+{
+  "gender": "FEMALE",
+  "nationalIdNumber": "1199080012345678",
+  "baseAddress": "Kigali, Rwanda",
+  "publicLocationLabel": "Kigali, Rwanda",
+  "baseLatitude": -1.95,
+  "baseLongitude": 30.06,
+  "paymentMethod": "MOMO",
+  "paymentNumber": "+250788123456",
+  "businessType": "COMPANY",
+  "company": {
+    "name": "Amina Plumbing Ltd",
+    "location": "Kigali, Rwanda",
+    "email": "amina@example.com",
+    "phoneNumber": "+250788123456",
+    "description": "Residential plumbing services"
+  },
+  "serviceExperiences": [
+    {
+      "categoryId": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
+      "yearsOfExperience": 5
+    },
+    { "customName": "Solar panel install", "yearsOfExperience": 2 }
+  ]
+}
+```
+
+**Response `201`**
+
+A full technician object with `verificationStatus: "PENDING"` and
+`availabilityStatus: "OFFLINE"`.
+
+**Errors**
+
+| Status | When                                                                                |
+| ------ | ----------------------------------------------------------------------------------- |
+| `400`  | One or more required fields missing — message lists them                            |
+| `400`  | `baseLatitude`/`baseLongitude` provided individually                                |
+| `400`  | A `serviceExperiences` entry has both or neither of `categoryId` / `customName`     |
+| `400`  | More than 10 entries, or duplicate categories/custom names                          |
+| `400`  | A `categoryId` references an unknown or inactive category                           |
+| `401`  | Missing or invalid token                                                            |
+| `403`  | Caller is not a `CUSTOMER` or `TECHNICIAN`                                          |
+| `409`  | A profile already exists for this user — use `PUT`                                  |
+| `409`  | Profile already exists, or technician ID is already associated with another account |
+| `409`  | `phoneNumber` or `email` already used                                               |
+
+### `GET /api/v1/technicians/profile`
+
+Returns the signed-in technician's profile.
+
+Auth: **`CUSTOMER`** or **`TECHNICIAN`**. A customer who has a pending
+technician application can access and complete their own profile and
+verification documents.
+
+No request body.
+
+**Response `200`** — a full technician object with all fields visible
+(owner view).
+
+**Errors**
+
+| Status | When                                                   |
+| ------ | ------------------------------------------------------ |
+| `401`  | Missing or invalid token                               |
+| `403`  | Caller is not a `CUSTOMER` or `TECHNICIAN`             |
+| `404`  | No profile registered yet — register first with `POST` |
+
+### `PUT /api/v1/technicians/profile`
+
+Updates the signed-in technician's profile.
+
+Auth: **`CUSTOMER`** or **`TECHNICIAN`**.
+
+Send only the fields you want to change. At least one field is required.
+
+- If `serviceExperiences` is present, it **replaces** the current list.
+- `baseLatitude`/`baseLongitude` must be sent as a pair.
+
+**Request** — any subset of the fields accepted by `POST`, plus:
+
+```json
+{
+  "availabilityStatus": "ONLINE",
+  "serviceExperiences": [
+    {
+      "categoryId": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
+      "yearsOfExperience": 6
+    }
+  ]
+}
+```
+
+**Response `200`** — the updated full technician object.
+
+**Errors**
+
+| Status        | When                                                |
+| ------------- | --------------------------------------------------- |
+| `400`         | Empty body, or the same per-field rules as `POST`   |
+| `401` / `403` | Missing token or wrong role                         |
+| `404`         | No profile registered yet                           |
+| `409`         | `phoneNumber` or `email` collides with another user |
+| `409`         | Tried to go `ONLINE` while not `APPROVED`           |
+| `409`         | Concurrent update — retry                           |
+
+### `POST /api/v1/technicians/profile/services`
+
+Adds one service experience without replacing the technician's existing
+services. The body uses the same service shape as an entry in
+`serviceExperiences`:
+
+```json
+{
+  "categoryId": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
+  "yearsOfExperience": 6
+}
+```
+
+Use `customName` instead of `categoryId` for a service not in the catalogue
+(a typed name that matches an active category is linked to it). The endpoint
+rejects duplicate services and enforces the existing limit of ten.
+
+Handled by the per-service review (`TechnicianServicesController`): the
+profile must already be `APPROVED`, and the new service starts `PENDING`. It is
+matched to jobs only after an admin approves it through
+`PATCH /api/v1/admin/technician-services/:serviceId/review`. While the
+application itself is under review, services are listed in the application
+(`serviceExperiences`) instead. `GET`, `PATCH /:serviceId` (resubmit) and
+`DELETE /:serviceId` (withdraw) live on the same path.
+
+A certificate already on file can back the new service instead of a new
+upload: `POST /api/v1/technicians/profile/documents/:documentId/services` with
+`{ "categoryId": "..." }` (catalog services only). The admin list,
+`GET /api/v1/admin/technician-services`, shows each service with every
+certificate that covers it, including ones reused from another service; those
+carry `reused: true`.
+
+### `PATCH /api/v1/technicians/availability`
+
+Changes the technician's availability.
+
+Auth: **`TECHNICIAN`**.
+
+A technician can go `ONLINE` **only** while `verificationStatus` is
+`APPROVED` and the user is `ACTIVE`. Setting any other availability works
+regardless.
+
+**Request**
+
+```json
+{ "availabilityStatus": "ONLINE" }
+```
+
+**Response `200`** — the updated full technician object.
+
+**Errors**
+
+| Status        | When                                                                                                  |
+| ------------- | ----------------------------------------------------------------------------------------------------- |
+| `400`         | `availabilityStatus` missing or not a valid enum value                                                |
+| `401` / `403` | Missing token or wrong role                                                                           |
+| `404`         | No profile registered yet                                                                             |
+| `409`         | Going `ONLINE` while `PENDING`/`REJECTED`, or while the user is not `ACTIVE` (`INACTIVE`/`SUSPENDED`) |
+
+## Listing, filters, and pagination
+
+Every list endpoint (discovery, public, admin list, and admin search) shares
+the same paging parameters and returns the same envelope as
+[`GET /api/v1/users`](./users.md):
+
+**Response `200`**
+
+```json
+{
+  "data": [],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 0,
+    "totalPages": 0
+  }
+}
+```
+
+`data` holds one page of technician objects (see
+[Field visibility](#field-visibility) for redaction). `total` counts every
+matching technician across all pages. All parameters are optional, combine
+with each other, and are applied inside the database query together with the
+paging:
+
+| Parameter              | Values           | Default | Description                                                                                                          |
+| ---------------------- | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `page`                 | integer ≥ 1      | `1`     | Page number, 1-based.                                                                                                |
+| `limit`                | integer 1–100    | `20`    | Rows per page.                                                                                                       |
+| `category`             | 1–120 characters | —       | Service category matched case-insensitively against its **name or slug** — `Plumbing` and `plumbing` are equivalent. |
+| `categoryId`           | UUID             | —       | Service category by ID; combines with `category`.                                                                    |
+| `location`             | 1–200 characters | —       | Substring of `baseAddress` or `publicLocationLabel` — an area filter independent of the people search.               |
+| `minYearsOfExperience` | integer 0–60     | —       | Only technicians with at least that many years of experience in one of their services.                               |
+
+Per-endpoint text filters and status filters are documented below. Invalid
+parameter values — and any unknown parameter — return `400`.
+
+**Job-matching eligibility.** A technician is eligible for a job when they are
+`verificationStatus=APPROVED`, `availabilityStatus=ONLINE`, account `status=ACTIVE`,
+and list the job's category (plus, later, a service radius). The discovery
+endpoints already enforce the first three conditions server-side; PostGIS
+radius filtering waits until job dispatch is implemented (see the
+[roadmap](./implementation-roadmap.md)).
+
+## Discovery (any signed-in role)
+
+The next four endpoints serve `CUSTOMER`, `TECHNICIAN`, and `ADMIN` tokens.
+The values returned depend on the caller: an admin sees everything; a
+signed-in customer or technician sees contact fields but **not** payment or
+national ID.
+
+### `GET /api/v1/technicians`
+
+Lists active, approved, online technicians.
+
+Auth: **any signed-in role**.
+
+Beyond the [shared parameters](#listing-filters-and-pagination):
+
+- `query` — free text (1–120 characters); matches user full name,
+  `publicLocationLabel`, `baseAddress`, or a service category name / custom
+  service name.
+
+Verification and availability are **not** filterable here — the endpoint only
+ever returns technicians who are active, approved, and online.
+
+**Response `200`** — the shared envelope (`data` is `[]` when there are no
+matches).
+
+**Errors**
+
+| Status | When                                   |
+| ------ | -------------------------------------- |
+| `400`  | Any invalid or unknown query parameter |
+| `401`  | No token                               |
+
+### `GET /api/v1/technicians/approved`
+
+Lists active, approved technicians regardless of availability (both `ONLINE`
+and `OFFLINE`).
+
+Auth: **any signed-in role**.
+
+Accepts the same parameters as `GET /api/v1/technicians`.
+
+**Response `200`** — the shared envelope.
+
+### `GET /api/v1/technicians/available/:id`
+
+Returns one active, approved, **online** technician by profile ID.
+
+Auth: **any signed-in role**.
+
+**Response `200`** — one technician object.
+
+**Errors**
+
+| Status | When                                                             |
+| ------ | ---------------------------------------------------------------- |
+| `400`  | `:id` is not a UUID                                              |
+| `404`  | No such technician, or the technician is not currently available |
+
+### `GET /api/v1/technicians/approved/:id`
+
+Returns one active, approved technician by profile ID, online or offline.
+
+Auth: **any signed-in role**.
+
+**Response `200`** — one technician object.
+
+**Errors**
+
+| Status | When                                                  |
+| ------ | ----------------------------------------------------- |
+| `400`  | `:id` is not a UUID                                   |
+| `404`  | No such technician, or the technician is not approved |
+
+## Public discovery (no auth)
+
+### `GET /api/v1/public/technicians`
+
+Lists active, approved, online technicians with a privacy-safe projection:
+`user` contains only `id`, `fullName`, and `role`; `phoneNumber`, `email`,
+`status`, `createdAt`, `updatedAt`, `paymentMethod`, and `paymentNumber` are
+`null`.
+
+Auth: **none**.
+
+Accepts the same parameters as `GET /api/v1/technicians` (shared parameters
+plus `query`).
+
+**Response `200`** — the shared envelope of technician objects.
+
+### `GET /api/v1/public/technicians/:id`
+
+Returns one active, approved, online technician with the same privacy-safe
+projection as the list endpoint.
+
+Auth: **none**.
+
+**Errors**
+
+| Status | When                                                  |
+| ------ | ----------------------------------------------------- |
+| `400`  | `:id` is not a UUID                                   |
+| `404`  | No such technician or the technician is not available |
+
+## Administrator management
+
+All routes in this section require `ADMIN`.
+
+### `POST /api/v1/admin/technicians`
+
+Creates a technician `User` and profile in one transaction.
+
+Required: `user.fullName`, `user.phoneNumber`, and — inside `profile` — the
+same required fields as the self-service `POST /profile`:
+`gender`, a text location (`baseAddress` or `publicLocationLabel`) or a
+`baseLatitude`/`baseLongitude` pair, `paymentMethod`, `paymentNumber`, and
+`serviceExperiences`.
+
+New technicians always start `verificationStatus: "PENDING"` and
+`availabilityStatus: "OFFLINE"`. `availabilityStatus: "ONLINE"` in the
+request is rejected.
+
+**Request**
+
+```json
+{
+  "user": {
+    "fullName": "Amina Example",
+    "phoneNumber": "+250788123456",
+    "email": "amina@example.com"
+  },
+  "profile": {
+    "gender": "FEMALE",
+    "baseAddress": "Kigali, Rwanda",
+    "publicLocationLabel": "Kigali, Rwanda",
+    "baseLatitude": null,
+    "baseLongitude": null,
+    "paymentMethod": "MOMO",
+    "paymentNumber": "+250788123456",
+    "serviceExperiences": [
+      {
+        "categoryId": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
+        "yearsOfExperience": 5
+      }
+    ]
+  }
+}
+```
+
+**Response `201`** — the created technician object (`admin` view: all fields visible).
+
+**Errors**
+
+| Status        | When                                             |
+| ------------- | ------------------------------------------------ |
+| `400`         | Missing user identity or profile required fields |
+| `400`         | Same per-field rules as self-registration        |
+| `401` / `403` | Missing token or non-admin                       |
+| `409`         | `phoneNumber` or `email` already used            |
+
+### `GET /api/v1/admin/technicians`
+
+Lists every technician regardless of status or availability, newest first —
+paged with the shared envelope.
+
+Auth: **`ADMIN`**.
+
+Beyond the [shared parameters](#listing-filters-and-pagination):
+
+| Parameter            | Values                            | Description                                                                                                                                               |
+| -------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search`             | 1–200 characters                  | Substring matched against full name, phone number, and email (name and email are case-insensitive). People search — pair with `location` for area search. |
+| `location`           | 1–200 characters                  | Substring of `baseAddress` / `publicLocationLabel`.                                                                                                       |
+| `status`             | `ACTIVE`, `INACTIVE`, `SUSPENDED` | Account status of the linked user.                                                                                                                        |
+| `verificationStatus` | `PENDING`, `APPROVED`, `REJECTED` | Verification queue filter — e.g. `PENDING` for "awaiting review".                                                                                         |
+| `availabilityStatus` | `ONLINE`, `OFFLINE`               | Dispatch-readiness filter.                                                                                                                                |
+
+Example — eligible plumbers for a job:
+
+```
+/api/v1/admin/technicians?verificationStatus=APPROVED&availabilityStatus=ONLINE&category=Plumbing&page=1&limit=20
+```
+
+**Response `200`** — the shared envelope (`admin` view of each technician).
+
+**Errors**
+
+| Status        | When                                   |
+| ------------- | -------------------------------------- |
+| `400`         | Any invalid or unknown query parameter |
+| `401` / `403` | Missing token or non-admin             |
+
+### `GET /api/v1/admin/technicians/search`
+
+Multi-field search, paginated. All supplied filters are AND-combined.
+
+Auth: **`ADMIN`**.
+
+Accepts every parameter of `GET /api/v1/admin/technicians` plus:
+
+| Name    | Type          | Matches                                                                                                                                                                                             |
+| ------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query` | string, 1–120 | Broader than `search`: user full name, user phone, user email, `baseAddress`, `publicLocationLabel`, service category name, custom service name — and exact numeric `baseLatitude`, `baseLongitude` |
+
+Example:
+
+```
+/api/v1/admin/technicians/search?query=Kigali&verificationStatus=PENDING&categoryId=e5a4f4d7-0b21-46d8-9a4b-98765d332100
+```
+
+**Response `200`** — the shared envelope (`admin` view).
+
+### `GET /api/v1/admin/technicians/by-user`
+
+Returns every technician whose linked `User` matches the given account
+attributes. At least one filter is required.
+
+Auth: **`ADMIN`**.
+
+Query parameters:
+
+| Name          | Type                                                                                                                                            |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `userId`      | UUID                                                                                                                                            |
+| `phoneNumber` | Rwanda mobile number: `078`, `079`, `072`, or `073` followed by seven digits, or the equivalent `+250` format; local values normalize to `+250` |
+| `email`       | email                                                                                                                                           |
+| `fullName`    | partial, case-insensitive                                                                                                                       |
+
+Supplied filters are AND-combined.
+
+**Response `200`** — array of technician objects (`admin` view); `[]` when
+none match.
+
+**Errors**
+
+| Status        | When                                            |
+| ------------- | ----------------------------------------------- |
+| `400`         | No filter supplied                              |
+| `400`         | `userId` not a UUID, `email` not an email, etc. |
+| `401` / `403` | Missing token or non-admin                      |
+
+### `GET /api/v1/admin/technicians/:id`
+
+Returns one technician by profile ID regardless of status.
+
+Auth: **`ADMIN`**.
+
+**Response `200`** — one technician object (`admin` view).
+
+**Errors**
+
+| Status | When                |
+| ------ | ------------------- |
+| `400`  | `:id` is not a UUID |
+| `404`  | No such technician  |
+
+### `PATCH /api/v1/admin/technicians/:id`
+
+Updates any combination of user, profile, service experiences, and status
+fields. Body fields are the union of:
+
+- `fullName`, `phoneNumber`, `email`
+- `gender`, `baseAddress`, `publicLocationLabel`, `baseLatitude`, `baseLongitude`
+- `paymentMethod`, `paymentNumber`
+- `serviceExperiences`
+- `availabilityStatus`
+- `verificationStatus` (admin-only)
+
+**Setting `verificationStatus` to `APPROVED` triggers the approval
+checklist**: the technician must have a profile picture, an accepted
+`NATIONAL_ID` document, and an accepted `TVET_CERTIFICATE` document. If any
+are missing the request returns `400` and nothing is written.
+
+Changing `verificationStatus` away from `APPROVED` forces
+`availabilityStatus` to `OFFLINE`.
+
+**Response `200`** — the updated technician object (`admin` view).
+
+**Errors**
+
+| Status        | When                                            |
+| ------------- | ----------------------------------------------- |
+| `400`         | Empty body or any per-field validation failure  |
+| `400`         | Approval attempted with missing checklist items |
+| `401` / `403` | Missing token or non-admin                      |
+| `404`         | Technician not found                            |
+| `409`         | Unique-field collision or concurrent update     |
+
+### `PATCH /api/v1/admin/technicians/:id/verification-status`
+
+Shortcut for changing only the verification state.
+
+Auth: **`ADMIN`**.
+
+**Request**
+
+```json
+{ "verificationStatus": "APPROVED" }
+```
+
+**Response `200`** — the updated technician object.
+
+**Errors** — same as `PATCH /api/v1/admin/technicians/:id` when only
+verification is changed.
+
+### `PATCH /api/v1/admin/technicians/:id/availability-status`
+
+Shortcut for changing only availability.
+
+Auth: **`ADMIN`**.
+
+**Request**
+
+```json
+{ "availabilityStatus": "ONLINE" }
+```
+
+**Response `200`** — the updated technician object.
+
+**Errors**
+
+| Status | When                                                     |
+| ------ | -------------------------------------------------------- |
+| `400`  | Invalid enum value                                       |
+| `404`  | Technician not found                                     |
+| `409`  | Setting `ONLINE` on an inactive or unapproved technician |
+
+### `PATCH /api/v1/admin/technicians/:id/status`
+
+Changes the account status behind a technician profile — `ACTIVE`, `INACTIVE`,
+or `SUSPENDED`.
+
+Auth: **`ADMIN`**.
+
+**Request**
+
+```json
+{ "status": "SUSPENDED" }
+```
+
+**Behavior**
+
+- `SUSPENDED` and `INACTIVE` block the account from logging in and from using
+  existing sessions (the JWT strategy accepts only `ACTIVE` accounts) and force
+  `availabilityStatus` to `OFFLINE`, so the technician stops appearing in
+  discovery.
+- The profile, verification state, and documents are kept intact, so restoring
+  `ACTIVE` re-enables the account without re-verification.
+- Setting a `SUSPENDED` technician back to `ACTIVE` does **not** bring them
+  online automatically; approval and an explicit online switch are still
+  required.
+- The change is written to the audit log with `ACCOUNT_STATUS_UPDATED`.
+
+**Response `200`** — the updated technician object.
+
+**Errors**
+
+| Status        | When                        |
+| ------------- | --------------------------- |
+| `400`         | Invalid or missing `status` |
+| `404`         | Technician not found        |
+| `401` / `403` | Missing token or non-admin  |
+
+### `DELETE /api/v1/admin/technicians/:id`
+
+Deletes the technician `User` (cascading to the profile, documents, sessions,
+and category links). The deletion is written to the audit log.
+
+Auth: **`ADMIN`**.
+
+**Response `200`**
+
+```json
+{ "message": "Technician deleted successfully." }
+```
+
+**Errors**
+
+| Status        | When                       |
+| ------------- | -------------------------- |
+| `400`         | `:id` is not a UUID        |
+| `404`         | Technician not found       |
+| `401` / `403` | Missing token or non-admin |
+
+## Full technician response shape
+
+Every endpoint above returns this shape. Redacted values are `null` rather
+than omitted, so clients can rely on a stable key set.
+
+```json
+{
+  "id": "generated-profile-id",
+  "user": {
+    "id": "generated-user-id",
+    "fullName": "Amina Example",
+    "role": "TECHNICIAN",
+    "phoneNumber": "+250788123456",
+    "email": "amina@example.com",
+    "status": "ACTIVE",
+    "createdAt": "2026-10-01T10:00:00.000Z",
+    "updatedAt": "2026-10-01T10:00:00.000Z"
+  },
+  "gender": "FEMALE",
+  "yearsOfExperience": 5,
+  "serviceExperiences": [
+    {
+      "categoryId": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
+      "category": {
+        "id": "e5a4f4d7-0b21-46d8-9a4b-98765d332100",
+        "name": "Plumbing",
+        "slug": "plumbing"
+      },
+      "customName": null,
+      "yearsOfExperience": 5
+    },
+    {
+      "categoryId": null,
+      "category": null,
+      "customName": "Solar panel install",
+      "yearsOfExperience": 2
+    }
+  ],
+  "verificationStatus": "PENDING",
+  "availabilityStatus": "OFFLINE",
+  "location": {
+    "address": "Kigali, Rwanda",
+    "publicLocationLabel": "Kigali, Rwanda",
+    "latitude": -1.95,
+    "longitude": 30.06
+  },
+  "profilePictureUrl": "https://storage.example.com/signed-url",
+  "paymentMethod": "MOMO",
+  "paymentNumber": "+250788123456",
+  "createdAt": "2026-10-01T10:00:00.000Z",
+  "updatedAt": "2026-10-01T10:00:00.000Z"
+}
+```
+
+`profilePictureUrl` is a signed URL that expires after 10 minutes. Uploading
+a new picture replaces the old one; see
+[`technician-documents.md`](./technician-documents.md) for the upload rules.
+
+## Enums
+
+| Enum                 | Values                                              |
+| -------------------- | --------------------------------------------------- |
+| `verificationStatus` | `PENDING`, `APPROVED`, `REJECTED`                   |
+| `availabilityStatus` | `ONLINE`, `OFFLINE`                                 |
+| `gender`             | `FEMALE`, `MALE`, `NON_BINARY`, `PREFER_NOT_TO_SAY` |
+| `paymentMethod`      | `MOMO`, `BANK_TRANSFER`, `CASH`, `OTHER`            |
+
+## Errors
+
+Every error response has the same shape:
+
+```json
+{
+  "statusCode": 400,
+  "timestamp": "2026-10-06T10:00:00.000Z",
+  "path": "/api/v1/technicians/profile",
+  "message": "Missing required technician fields: gender, paymentMethod."
+}
+```
+
+The `message` is always a specific, human-readable string — never a generic
+`"Internal server error"` for expected failures. Typical cases are documented
+per endpoint above. In addition to those, global statuses you may see are:
+
+| Status | Cause                                                                       |
+| ------ | --------------------------------------------------------------------------- |
+| `401`  | No token, expired token, or malformed `Authorization` header                |
+| `403`  | Token belongs to a different role than required                             |
+| `500`  | Unexpected server error — please report with the request path and timestamp |

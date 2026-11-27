@@ -1,0 +1,391 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  UploadedFiles,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
+import { JobRequestType, UserRole } from '@prisma/client';
+import {
+  Auth,
+  AuthUser,
+  CurrentUser,
+} from '../common/decorators/auth.decorator';
+import { JOB_MAX_VIDEO_BYTES } from './job.constants';
+import { JobWorkStatusDto } from './dto/job-action.dto';
+import { CreateJobDto } from './dto/create-job.dto';
+import { UpdateJobDto } from './dto/update-job.dto';
+import { JobUpload } from './job-media.util';
+import { JobsService } from './jobs.service';
+import { AuthService } from '../auth/auth.service';
+import { CreateJobMultipartDto } from './dto/create-job-multipart.dto';
+import { VerifyJobPhoneDto } from './dto/verify-job-phone.dto';
+import { RequestJobPhoneDto } from './dto/request-job-phone.dto';
+import { CancelJobDto } from './dto/cancel-job.dto';
+import {
+  MatchingTechniciansDto,
+  ProposeTechnicianDto,
+} from './dto/matching-technicians.dto';
+import { MatchingTechniciansByLocationDto } from './dto/matching-technicians-by-location.dto';
+import { GeocodeLocationDto } from './dto/geocode-location.dto';
+import { CompanyJobRequestDto } from './dto/company-job-request.dto';
+
+const JOB_MEDIA_INTERCEPTOR = FileFieldsInterceptor(
+  [
+    { name: 'photos', maxCount: 5 },
+    { name: 'video', maxCount: 1 },
+  ],
+  {
+    limits: {
+      files: 6,
+      fileSize: JOB_MAX_VIDEO_BYTES,
+      fields: 20,
+      fieldSize: 10_000,
+    },
+  },
+);
+
+interface JobUploadFields {
+  photos?: JobUpload[];
+  video?: JobUpload[];
+}
+
+@ApiTags('Customer and technician job requests')
+@Controller('api/v1/jobs')
+@Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+export class JobsController {
+  constructor(
+    private readonly jobs: JobsService,
+    private readonly auth: AuthService,
+  ) {}
+
+  @ApiOperation({
+    summary: 'Whether my account phone is verified',
+    description:
+      'When verified, jobs can be created without a per-job phoneVerificationId.',
+  })
+  @Get('phone-verification/status')
+  phoneVerificationStatus(@CurrentUser() user: AuthUser) {
+    return this.auth.customerJobPhoneStatus(user.id);
+  }
+
+  @Post('phone-verification/request')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  requestPhoneVerification(
+    @CurrentUser() user: AuthUser,
+    @Body() dto?: RequestJobPhoneDto,
+  ) {
+    return this.auth.requestCustomerJobOtp(user.id, dto?.phoneNumber);
+  }
+
+  @Post('phone-verification/verify')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  verifyPhone(@CurrentUser() user: AuthUser, @Body() dto: VerifyJobPhoneDto) {
+    return this.auth.verifyCustomerJobOtp(user.id, dto.verificationId, dto.otp);
+  }
+
+  @Get('matching-technicians')
+  matchingTechnicians(@Query() dto: MatchingTechniciansDto) {
+    return this.jobs.previewMatchingTechnicians(dto);
+  }
+
+  @Post('geocode-location')
+  geocodeLocation(@Body() dto: GeocodeLocationDto) {
+    return this.jobs.geocodeLocation(dto.location);
+  }
+
+  @Post('matching-technicians/geocode')
+  matchingTechniciansByGeocodedLocation(
+    @Body() dto: MatchingTechniciansByLocationDto,
+  ) {
+    return this.jobs.previewMatchingTechniciansByGeocodedLocation(dto);
+  }
+
+  @Post('matching-technicians/by-location-name')
+  matchingTechniciansByLocationName(
+    @Body() dto: MatchingTechniciansByLocationDto,
+  ) {
+    return this.jobs.previewMatchingTechniciansByLocationName(dto);
+  }
+
+  @Post()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: [
+        'paymentId',
+        'description',
+        'locationAddress',
+        'latitude',
+        'longitude',
+      ],
+      properties: {
+        paymentId: { type: 'string', format: 'uuid' },
+        phoneVerificationId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Optional when the account phone number is already verified.',
+        },
+        serviceCategoryId: { type: 'string', format: 'uuid' },
+        requestType: {
+          type: 'string',
+          enum: Object.values(JobRequestType),
+          default: JobRequestType.NORMAL,
+        },
+        otherServiceName: { type: 'string', maxLength: 80 },
+        description: { type: 'string', minLength: 10, maxLength: 5000 },
+        locationAddress: { type: 'string', maxLength: 255 },
+        latitude: { type: 'number', minimum: -90, maximum: 90 },
+        longitude: { type: 'number', minimum: -180, maximum: 180 },
+        offeredAmount: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Amount in RWF',
+        },
+        priority: { type: 'string', enum: ['LOW', 'NORMAL', 'HIGH', 'URGENT'] },
+        photos: {
+          type: 'array',
+          maxItems: 5,
+          items: { type: 'string', format: 'binary' },
+        },
+        video: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  create(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateJobMultipartDto,
+    @UploadedFiles() files: JobUploadFields,
+  ) {
+    return this.jobs.create(user.id, dto, files.photos ?? [], files.video?.[0]);
+  }
+
+  @Post('sos')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Create an SOS job and automatically dispatch it',
+    description:
+      'Requires an SOS booking payment and verified phone number. Offers go one at a time to matching approved, online technicians, with a 30-second response window.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: [
+        'paymentId',
+        'serviceCategoryId',
+        'description',
+        'locationAddress',
+        'latitude',
+        'longitude',
+      ],
+      properties: {
+        paymentId: { type: 'string', format: 'uuid' },
+        phoneVerificationId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Optional when the account phone number is already verified.',
+        },
+        serviceCategoryId: { type: 'string', format: 'uuid' },
+        description: { type: 'string', minLength: 10, maxLength: 5000 },
+        locationAddress: { type: 'string', maxLength: 255 },
+        latitude: { type: 'number', minimum: -90, maximum: 90 },
+        longitude: { type: 'number', minimum: -180, maximum: 180 },
+        offeredAmount: { type: 'integer', minimum: 1 },
+        priority: { type: 'string', enum: ['LOW', 'NORMAL', 'HIGH', 'URGENT'] },
+        photos: {
+          type: 'array',
+          maxItems: 5,
+          items: { type: 'string', format: 'binary' },
+        },
+        video: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  createSos(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateJobDto,
+    @UploadedFiles() files: JobUploadFields,
+  ) {
+    return this.jobs.createSos(
+      user.id,
+      dto,
+      files.photos ?? [],
+      files.video?.[0],
+    );
+  }
+
+  @Get('mine')
+  listMine(@CurrentUser() user: AuthUser) {
+    return this.jobs.listForCustomer(user.id);
+  }
+
+  @Get('mine/:jobId')
+  getMine(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.getCustomerJob(user.id, jobId);
+  }
+
+  @Post('mine/:jobId/requests')
+  proposeTechnician(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: ProposeTechnicianDto,
+  ) {
+    return this.jobs.proposeTechnician(user.id, jobId, dto);
+  }
+
+  @Post('mine/:jobId/offline-requests')
+  proposeOfflineTechnician(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: ProposeTechnicianDto,
+  ) {
+    return this.jobs.proposeOfflineTechnician(user.id, jobId, dto);
+  }
+
+  @Post('mine/:jobId/company-requests')
+  proposeCompany(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: CompanyJobRequestDto,
+  ) {
+    return this.jobs.proposeCompany(user.id, jobId, dto.companyId);
+  }
+
+  @Post('mine/:jobId/confirm-cooperation')
+  confirmCooperation(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.confirmCooperation(user.id, jobId, 'customer');
+  }
+
+  @Patch('mine/:jobId')
+  updateMine(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: UpdateJobDto,
+  ) {
+    return this.jobs.update(user.id, jobId, dto);
+  }
+
+  @Patch('mine/:jobId/status')
+  updateWorkStatus(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: JobWorkStatusDto,
+  ) {
+    return this.jobs.updateWorkStatus(user.id, jobId, 'customer', dto);
+  }
+
+  @ApiOperation({
+    summary: 'Route an unanswered request to the next technician',
+    description:
+      'For a normal request, sends it to the best eligible technician who has not been asked about this job yet. For SOS, moves to the next technician in the queue.',
+  })
+  @Post('mine/:jobId/retry-dispatch')
+  retryDispatch(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.retryDispatch(user.id, jobId);
+  }
+
+  @Post('mine/:jobId/cancel')
+  cancelJob(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: CancelJobDto,
+  ) {
+    return this.jobs.cancelJob(user.id, jobId, 'customer', dto);
+  }
+
+  @Post('mine/:jobId/pause')
+  pauseJob(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.requestPause(user.id, jobId, 'customer');
+  }
+
+  @Post('mine/:jobId/accept')
+  acceptTechnicianOffer(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.acceptTechnicianOffer(user.id, jobId);
+  }
+
+  @Post('mine/:jobId/resume')
+  resumeJob(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.requestResume(user.id, jobId, 'customer');
+  }
+
+  @Delete('mine/:jobId')
+  hide(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.jobs.hideJobForUser(user.id, jobId, 'customer');
+  }
+
+  @Post('mine/:jobId/media')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        photos: {
+          type: 'array',
+          maxItems: 5,
+          items: { type: 'string', format: 'binary' },
+        },
+        video: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  addMedia(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @UploadedFiles() files: JobUploadFields,
+  ) {
+    return this.jobs.addMedia(
+      user.id,
+      jobId,
+      files.photos ?? [],
+      files.video?.[0],
+    );
+  }
+
+  @Delete('mine/:jobId/media/:mediaId')
+  deleteMedia(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Param('mediaId', ParseUUIDPipe) mediaId: string,
+  ) {
+    return this.jobs.deleteMedia(user.id, jobId, mediaId);
+  }
+}

@@ -1,0 +1,10 @@
+export const CHAT_PAGE_SIZE_DEFAULT = 50;
+export const CHAT_PAGE_SIZE_MAX = 100;
+export const CHAT_TEXT_MAX_LENGTH = 4_000;
+export const CHAT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+export const CHAT_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
+export const CHAT_VOICE_MAX_BYTES = 20 * 1024 * 1024;
+export const CHAT_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
+export const CHAT_VOICE_MAX_SECONDS = 5 * 60;
+export const CHAT_VIDEO_MAX_SECONDS = 60;
+export const CHAT_MEDIA_DOWNLOAD_TTL_SECONDS = 600;

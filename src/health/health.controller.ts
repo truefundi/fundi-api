@@ -1,9 +1,15 @@
-import { Controller, Get } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
 
 @ApiTags('health')
+@SkipThrottle()
 @Controller('api/v1/health')
 export class HealthController {
   constructor(
@@ -13,7 +19,11 @@ export class HealthController {
 
   @Get()
   @ApiOperation({ summary: 'Check health status of API, Database, and Redis' })
-  @ApiResponse({ status: 200, description: 'Health status response' })
+  @ApiResponse({ status: 200, description: 'All backing services are healthy' })
+  @ApiResponse({
+    status: 503,
+    description: 'Database or Redis is unreachable',
+  })
   async check() {
     let dbStatus = 'down';
     try {
@@ -31,10 +41,9 @@ export class HealthController {
       redisStatus = 'down';
     }
 
-    const overallStatus = dbStatus === 'up' && redisStatus === 'up' ? 'ok' : 'degraded';
-
-    return {
-      status: overallStatus,
+    const healthy = dbStatus === 'up' && redisStatus === 'up';
+    const payload = {
+      status: healthy ? 'ok' : 'degraded',
       timestamp: new Date().toISOString(),
       services: {
         api: 'up',
@@ -42,5 +51,11 @@ export class HealthController {
         redis: redisStatus,
       },
     };
+
+    if (!healthy) {
+      throw new ServiceUnavailableException(payload);
+    }
+
+    return payload;
   }
 }

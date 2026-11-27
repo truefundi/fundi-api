@@ -1,14 +1,920 @@
-// Fundi Platform Prisma Schema
-
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["postgresqlExtensions"]
+}
+
+enum JobWorkStatus {
+  PENDING
+  HEADING_TO_LOCATION
+  ARRIVED
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+}
+
+enum TechnicianBusinessType {
+  INDIVIDUAL
+  COMPANY
+}
+
+enum ServiceChargeType {
+  FIXED
+  PERCENTAGE
+}
+
+enum ServiceChargePayer {
+  CUSTOMER
+  FUNDI
+}
+
+enum PaymentClaimMethod {
+  MTN
+  AIRTEL
+  CREDIT_CARD
+}
+
+enum PaymentClaimStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum MobilePaymentProvider {
+  MTN
+  AIRTEL
+}
+
+enum PaymentTransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
 }
 
 datasource db {
   provider   = "postgresql"
   url        = env("DATABASE_URL")
   extensions = [postgis]
+}
+
+model User {
+  id                  String                      @id @default(uuid())
+  email               String?                     @unique
+  phoneNumber         String                      @unique
+  fullName            String
+  role                UserRole                    @default(CUSTOMER)
+  status              UserStatus                  @default(ACTIVE)
+  phoneVerifiedAt     DateTime?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  passwordHash        String?
+  pinHash             String?
+  totpSecret          String?
+  totpEnabledAt       DateTime?
+  customerJobs        Job[]                       @relation("JobCustomer")
+  refreshTokens       RefreshToken[]
+  technicianProfile   TechnicianProfile?
+  bookingPayments     BookingPayment[]
+  phoneVerifications  CustomerPhoneVerification[]
+  chatMemberships     ChatRoomMember[]
+  chatMessageReads    ChatMessageRead[]
+  resolvedDisputes    Dispute[]                   @relation("DisputeResolver")
+  notifications       Notification[]
+  pushTokens          PushToken[]
+  createdAds          Ad[]                        @relation("AdCreatedBy")
+  createdBroadcasts   Broadcast[]                 @relation("BroadcastCreatedBy")
+  passkeyCredentials  PasskeyCredential[]
+  submittedRatings    JobRating[]                 @relation("JobRatingSubmittedBy")
+  customerRatings     JobRating[]                 @relation("JobRatingCustomer")
+  verifiedCompanies   Company[]                   @relation("CompanyVerifiedBy")
+  paymentClaims       PaymentClaim[]              @relation("PaymentClaimCustomer")
+  reviewedClaims      PaymentClaim[]              @relation("PaymentClaimReviewer")
+  paymentTransactions PaymentTransaction[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  sessionId String   @unique @default(uuid())
+  deviceId  String?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+model PasskeyCredential {
+  id           String   @id @default(uuid())
+  credentialId String   @unique
+  publicKey    String
+  counter      BigInt   @default(0)
+  transports   String[] @default([])
+  userId       String
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("passkey_credentials")
+}
+
+model CatalogCategory {
+  id          String            @id @default(uuid())
+  name        String            @unique
+  description String
+  isActive    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  services    ServiceCategory[]
+
+  @@map("catalog_categories")
+}
+
+model ServiceCategory {
+  id                  String                      @id @default(uuid())
+  categoryId          String
+  name                String                      @unique
+  slug                String                      @unique
+  description         String                      @default("")
+  /// Optional extra words customers can use to find this service.
+  keywords            String                      @default("")
+  /// Booking (visit/diagnostic) fee charged for this service, in RWF.
+  visitFee            Int                         @default(0)
+  /// Booking fee used when the customer marks the request as an emergency, in RWF.
+  emergencyVisitFee   Int                         @default(0)
+  /// Booking fee charged for an SOS request, in RWF.
+  sosBookingFee       Int?
+  icon                String?
+  isActive            Boolean                     @default(true)
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  jobs                Job[]                       @relation("JobServiceCategory")
+  technicians         TechnicianCategory[]
+  documents           TechnicianDocument[]
+  technicianDocuments TechnicianDocumentService[]
+  bookingPayments     BookingPayment[]
+  serviceCharges      ServiceCharge[]
+  paymentClaims       PaymentClaim[]
+  paymentTransactions PaymentTransaction[]
+  category            CatalogCategory             @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@index([categoryId])
+  @@map("service_categories")
+}
+
+model ServiceCharge {
+  id                String             @id @default(uuid())
+  serviceCategoryId String
+  name              String
+  description       String?
+  chargeType        ServiceChargeType
+  value             Decimal            @db.Decimal(12, 4)
+  payer             ServiceChargePayer
+  sortOrder         Int                @default(0)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  serviceCategory   ServiceCategory    @relation(fields: [serviceCategoryId], references: [id], onDelete: Cascade)
+
+  @@index([serviceCategoryId, sortOrder, name])
+  @@map("service_charges")
+}
+
+model TechnicianProfile {
+  id                      String                    @id @default(uuid())
+  userId                  String                    @unique
+  nationalIdEncrypted     String?
+  nationalIdHash          String?                   @unique
+  nationalIdLast4         String?
+  baseAddress             String
+  baseLatitude            Float?
+  baseLongitude           Float?
+  verificationStatus      VerificationStatus        @default(PENDING)
+  /// Why an admin rejected the application; shown to the technician, cleared when they reapply or are approved.
+  rejectionReason         String?
+  businessType            TechnicianBusinessType    @default(INDIVIDUAL)
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+  gender                  TechnicianGender
+  profilePictureMimeType  String?
+  availabilityStatus      TechnicianAvailability    @default(OFFLINE)
+  capacityAutoOffline     Boolean                   @default(false)
+  rejectionCount          Int                       @default(0)
+  cancellationCount       Int                       @default(0)
+  baseLocation            Unsupported("geography")?
+  publicLocationLabel     String?
+  profilePictureObjectKey String?
+  paymentMethod           PaymentMethod
+  paymentNumber           String
+  jobAssignments          JobAssignmentHistory[]
+  jobOffers               JobOffer[]
+  assignedJobs            Job[]                     @relation("CurrentJobTechnician")
+  categories              TechnicianCategory[]
+  documents               TechnicianDocument[]
+  ratings                 JobRating[]
+  company                 Company?
+  user                    User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([verificationStatus])
+  @@index([availabilityStatus, verificationStatus])
+  @@map("technician_profiles")
+}
+
+model Company {
+  id                 String             @id @default(uuid())
+  technicianId       String             @unique
+  name               String
+  location           String
+  email              String
+  phoneNumber        String
+  description        String?
+  verificationStatus VerificationStatus @default(PENDING)
+  /// The admin's note when rejecting the company, shown to its owner.
+  rejectionReason    String?
+  verifiedAt         DateTime?
+  verifiedById       String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  technician         TechnicianProfile  @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  verifiedBy         User?              @relation("CompanyVerifiedBy", fields: [verifiedById], references: [id], onDelete: SetNull)
+  jobs               Job[]
+
+  @@index([verificationStatus, createdAt])
+  @@index([name])
+  @@map("companies")
+}
+
+model TechnicianCategory {
+  technicianId         String
+  categoryId           String?
+  customName           String?
+  customNameNormalized String             @default("")
+  id                   String             @id @default(uuid())
+  yearsOfExperience    Int
+  /// Each service is reviewed on its own: only APPROVED services get jobs.
+  status               VerificationStatus @default(PENDING)
+  /// The admin's reason when the service was rejected; cleared on resubmit.
+  reviewNote           String?
+  reviewedById         String?
+  reviewedAt           DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @default(now()) @updatedAt
+  category             ServiceCategory?   @relation(fields: [categoryId], references: [id])
+  technician           TechnicianProfile  @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([categoryId])
+  @@index([technicianId])
+  @@index([status, createdAt])
+  @@map("technician_categories")
+}
+
+model TechnicianDocument {
+  id                       String                      @id @default(uuid())
+  technicianId             String
+  title                    String
+  titleNormalized          String
+  objectKey                String
+  mimeType                 String
+  originalFileName         String
+  sizeBytes                Int
+  status                   DocumentStatus              @default(SUBMITTED)
+  reviewNote               String?
+  reviewedById             String?
+  reviewedAt               DateTime?
+  createdAt                DateTime                    @default(now())
+  updatedAt                DateTime                    @updatedAt
+  certificateType          CertificateType?
+  categoryId               String?
+  customCategoryName       String?
+  customCategoryNormalized String?
+  type                     DocumentType
+  category                 ServiceCategory?            @relation(fields: [categoryId], references: [id])
+  serviceCategories        TechnicianDocumentService[]
+  technician               TechnicianProfile           @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([technicianId, status])
+  @@index([status])
+  @@index([type])
+  @@index([categoryId])
+  @@map("technician_documents")
+}
+
+model TechnicianDocumentService {
+  documentId        String
+  serviceCategoryId String
+  createdAt         DateTime           @default(now())
+  document          TechnicianDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  serviceCategory   ServiceCategory    @relation(fields: [serviceCategoryId], references: [id], onDelete: Cascade)
+
+  @@id([documentId, serviceCategoryId])
+  @@index([serviceCategoryId])
+  @@map("technician_document_services")
+}
+
+model Job {
+  id                          String                     @id @default(uuid())
+  reference                   String                     @unique
+  customerId                  String
+  technicianId                String?
+  companyId                   String?
+  serviceCategoryId           String?
+  otherServiceName            String?
+  description                 String
+  locationAddress             String
+  latitude                    Float
+  longitude                   Float
+  location                    Unsupported("geography")?
+  offeredAmount               Int
+  currency                    String                     @default("RWF")
+  priority                    JobPriority                @default(NORMAL)
+  requestType                 JobRequestType             @default(NORMAL)
+  status                      JobStatus                  @default(OPEN)
+  cooperationStatus           JobCooperationStatus       @default(PENDING)
+  dispatchStatus              JobDispatchStatus          @default(PENDING)
+  dispatchRound               Int                        @default(1)
+  /// SOS: when the customer started the current round of offers. A technician
+  /// who only let an earlier offer expire may be asked again in a new round.
+  sosRoundStartedAt           DateTime?
+  workStatus                  JobWorkStatus              @default(PENDING)
+  workStatusReason            String?
+  completionConfirmationDueAt DateTime?
+  completionConfirmedAt       DateTime?
+  completionAutoCompletedAt   DateTime?
+  customerConfirmedAt         DateTime?
+  technicianConfirmedAt       DateTime?
+  customerHiddenAt            DateTime?
+  technicianHiddenAt          DateTime?
+  customerPauseRequestedAt    DateTime?
+  technicianPauseRequestedAt  DateTime?
+  customerResumeRequestedAt   DateTime?
+  technicianResumeRequestedAt DateTime?
+  assignedAt                  DateTime?
+  completedAt                 DateTime?
+  ratingOverall               Int?
+  ratingQuality               Int?
+  ratingProfessionalism       Int?
+  ratingArrival               Int?
+  ratingCommunication         Int?
+  ratingValue                 Int?
+  ratingComment               String?
+  ratedAt                     DateTime?
+  createdAt                   DateTime                   @default(now())
+  updatedAt                   DateTime                   @updatedAt
+  assignmentHistory           JobAssignmentHistory[]
+  media                       JobMedia[]
+  offers                      JobOffer[]
+  conversation                Conversation?
+  bookingPayment              BookingPayment?
+  phoneVerificationId         String?                    @unique
+  phoneVerification           CustomerPhoneVerification? @relation(fields: [phoneVerificationId], references: [id], onDelete: SetNull)
+  cancellationRequests        JobCancellationRequest[]
+  cancellationReason          String?
+  customer                    User                       @relation("JobCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory             ServiceCategory?           @relation("JobServiceCategory", fields: [serviceCategoryId], references: [id])
+  technician                  TechnicianProfile?         @relation("CurrentJobTechnician", fields: [technicianId], references: [id])
+  company                     Company?                   @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  dispute                     Dispute?
+  chatRooms                   ChatRoom[]
+  customerRating              JobRating?
+
+  @@index([customerId, createdAt])
+  @@index([technicianId, status, updatedAt])
+  @@index([status, dispatchStatus, priority, createdAt])
+  @@index([serviceCategoryId])
+  @@index([companyId])
+  @@index([customerId, customerHiddenAt, createdAt])
+  @@index([technicianId, technicianHiddenAt, updatedAt])
+  @@map("jobs")
+}
+
+model RatingItem {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  sortOrder   Int              @default(0)
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  responses   RatingResponse[]
+
+  @@index([isActive, sortOrder, name])
+  @@map("rating_items")
+}
+
+model JobRating {
+  id            String            @id @default(uuid())
+  jobId         String?           @unique
+  customerId    String
+  technicianId  String
+  submittedById String
+  comment       String?
+  submittedAt   DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  job           Job?              @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  customer      User              @relation("JobRatingCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  technician    TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  submittedBy   User              @relation("JobRatingSubmittedBy", fields: [submittedById], references: [id], onDelete: Cascade)
+  responses     RatingResponse[]
+
+  @@index([technicianId, submittedAt])
+  @@index([customerId, submittedAt])
+  @@map("job_ratings")
+}
+
+model RatingResponse {
+  id               String     @id @default(uuid())
+  jobRatingId      String
+  ratingItemId     String
+  itemNameSnapshot String
+  score            Int
+  createdAt        DateTime   @default(now())
+  jobRating        JobRating  @relation(fields: [jobRatingId], references: [id], onDelete: Cascade)
+  ratingItem       RatingItem @relation(fields: [ratingItemId], references: [id], onDelete: Restrict)
+
+  @@unique([jobRatingId, ratingItemId])
+  @@index([ratingItemId])
+  @@map("rating_responses")
+}
+
+// Allocates the human-readable job reference (FD-MMYYNNN): one row per
+// month, incremented atomically by the job creation transaction.
+model JobNumberCounter {
+  monthKey   String @id
+  lastNumber Int
+
+  @@map("job_number_counters")
+}
+
+model JobOffer {
+  id              String            @id @default(uuid())
+  jobId           String
+  technicianId    String
+  round           Int
+  matchScore      Int
+  distanceMeters  Float
+  status          JobOfferStatus    @default(WAITING)
+  offeredAt       DateTime?
+  expiresAt       DateTime?
+  respondedAt     DateTime?
+  rejectionReason String?
+  dropReason      String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  job             Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  technician      TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, technicianId, round])
+  @@index([jobId, round, status, matchScore])
+  @@index([technicianId, status, updatedAt])
+  @@map("job_offers")
+}
+
+model BookingPayment {
+  id                       String               @id @default(uuid())
+  customerId               String
+  serviceCategoryId        String
+  jobId                    String?              @unique
+  externalPaymentId        String               @unique
+  paymentKeyId             String
+  signature                String
+  phoneNumber              String
+  amount                   Int
+  pricingSnapshot          Json?
+  requestType              JobRequestType       @default(NORMAL)
+  status                   BookingPaymentStatus @default(VALID)
+  paidAt                   DateTime             @default(now())
+  validUntil               DateTime
+  remainingValiditySeconds Int?
+  extensionCount           Int                  @default(0)
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+  customer                 User                 @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory          ServiceCategory      @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
+  job                      Job?                 @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  paymentClaim             PaymentClaim?
+  paymentTransaction       PaymentTransaction?
+
+  @@index([customerId, paidAt])
+  @@index([status, validUntil])
+  @@map("booking_payments")
+}
+
+/// One independent dashboard toggle per mobile money provider. Off means manual review.
+model PaymentProviderSetting {
+  provider   MobilePaymentProvider @id
+  apiEnabled Boolean               @default(false)
+  updatedAt  DateTime              @updatedAt
+
+  @@map("payment_provider_settings")
+}
+
+/// Collection status is independent of a booking payment's validity/job lifecycle.
+model PaymentTransaction {
+  id                String                   @id @default(uuid())
+  customerId        String
+  serviceCategoryId String
+  provider          MobilePaymentProvider
+  requestType       JobRequestType           @default(NORMAL)
+  phoneNumber       String
+  amount            Int
+  currency          String                   @default("RWF")
+  pricingSnapshot   Json
+  status            PaymentTransactionStatus @default(PENDING)
+  simulated         Boolean                  @default(false)
+  idempotencyKey    String
+  externalPaymentId String                   @unique
+  bookingPaymentId  String?                  @unique
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  customer          User                     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory   ServiceCategory          @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
+  bookingPayment    BookingPayment?          @relation(fields: [bookingPaymentId], references: [id], onDelete: SetNull)
+
+  @@unique([customerId, idempotencyKey])
+  @@index([customerId, createdAt])
+  @@index([provider, status, createdAt])
+  @@map("payment_transactions")
+}
+
+model PaymentClaim {
+  id                String             @id @default(uuid())
+  customerId        String
+  serviceCategoryId String
+  requestType       JobRequestType     @default(NORMAL)
+  amount            Int
+  paymentMethod     PaymentClaimMethod
+  paymentNumber     String
+  pricingSnapshot   Json
+  status            PaymentClaimStatus @default(PENDING)
+  reviewNote        String?
+  reviewedById      String?
+  reviewedAt        DateTime?
+  bookingPaymentId  String?            @unique
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  customer          User               @relation("PaymentClaimCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  serviceCategory   ServiceCategory    @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict)
+  reviewedBy        User?              @relation("PaymentClaimReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  bookingPayment    BookingPayment?    @relation(fields: [bookingPaymentId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@index([status, createdAt])
+  @@map("payment_claims")
+}
+
+/// A promotion card managed by administrators. Landing-page ads are public and
+/// anonymous; `placement` decides which surface renders them and `audience` narrows
+/// them to a role. `startsAt`/`endsAt` schedule visibility without an admin having to
+/// flip `isActive` by hand, and the impression/click counters feed the dashboard.
+model Ad {
+  id               String      @id @default(uuid())
+  productId        Int?
+  title            String
+  description      String
+  imageUrl         String?
+  imageKey         String?
+  imageContentType String?
+  imageAlt         String?
+  callToAction     String?
+  /// Where tapping the ad leads (the advertiser's https page).
+  targetUrl        String?
+  badge            AdBadge     @default(LIVE)
+  placement        AdPlacement @default(LANDING_PRODUCT)
+  audience         AdAudience  @default(ALL)
+  isActive         Boolean     @default(true)
+  startsAt         DateTime?
+  endsAt           DateTime?
+  priority         Int         @default(0)
+  impressions      Int         @default(0)
+  clicks           Int         @default(0)
+  createdById      String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  createdBy        User?       @relation("AdCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([placement, isActive, priority])
+  @@index([startsAt, endsAt])
+  @@map("ads")
+}
+
+/// One administrator-composed message sent to a group of active users. `roles` and
+/// `channels` are the audience and delivery decisions made in the dashboard; the
+/// counts are frozen when the broadcast is created so the history stays meaningful
+/// even after users join or leave.
+model Broadcast {
+  id                  String             @id @default(uuid())
+  title               String
+  message             String
+  roles               BroadcastRole[]    @default([])
+  channels            BroadcastChannel[] @default([])
+  status              BroadcastStatus    @default(SENDING)
+  mode                String             @default("queued")
+  userCount           Int                @default(0)
+  smsRecipientCount   Int                @default(0)
+  inAppRecipientCount Int                @default(0)
+  smsSentCount        Int                @default(0)
+  smsFailedCount      Int                @default(0)
+  inAppSentCount      Int                @default(0)
+  error               String?
+  sentAt              DateTime?
+  createdById         String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  createdBy           User?              @relation("BroadcastCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@map("broadcasts")
+}
+
+model CustomerPhoneVerification {
+  id          String    @id @default(uuid())
+  customerId  String
+  phoneNumber String
+  expiresAt   DateTime
+  verifiedAt  DateTime?
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  customer    User      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  job         Job?
+
+  @@index([customerId, createdAt])
+  @@map("customer_phone_verifications")
+}
+
+model JobCancellationRequest {
+  id           String                    @id @default(uuid())
+  jobId        String
+  actorId      String
+  requester    CancellationRequester
+  reason       String
+  status       CancellationRequestStatus @default(PENDING)
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+  createdAt    DateTime                  @default(now())
+  job          Job                       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, status])
+  @@index([status, createdAt])
+  @@map("job_cancellation_requests")
+}
+
+model JobMedia {
+  id               String       @id @default(uuid())
+  jobId            String
+  type             JobMediaType
+  objectKey        String       @unique
+  mimeType         String
+  originalFileName String
+  sizeBytes        Int
+  durationSeconds  Float?
+  createdAt        DateTime     @default(now())
+  job              Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt])
+  @@map("job_media")
+}
+
+model JobAssignmentHistory {
+  id             String             @id @default(uuid())
+  jobId          String
+  technicianId   String?
+  technicianName String
+  acceptedAt     DateTime           @default(now())
+  endedAt        DateTime?
+  endReason      String?
+  reason         String?
+  createdAt      DateTime           @default(now())
+  job            Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  technician     TechnicianProfile? @relation(fields: [technicianId], references: [id])
+  chatRoom       ChatRoom?
+
+  @@index([jobId, acceptedAt])
+  @@index([technicianId, acceptedAt])
+  @@map("job_assignment_history")
+}
+
+model ChatRoom {
+  id                  String               @id @default(uuid())
+  jobId               String
+  assignmentHistoryId String               @unique
+  status              ChatRoomStatus       @default(ACTIVE)
+  disabledAt          DateTime?
+  disabledById        String?
+  disabledReason      String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  job                 Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  assignmentHistory   JobAssignmentHistory @relation(fields: [assignmentHistoryId], references: [id], onDelete: Cascade)
+  members             ChatRoomMember[]
+  messages            ChatMessage[]
+
+  @@index([jobId, createdAt])
+  @@index([status, updatedAt])
+  @@map("chat_rooms")
+}
+
+model ChatRoomMember {
+  id          String    @id @default(uuid())
+  roomId      String
+  userId      String
+  role        UserRole
+  blockedAt   DateTime?
+  blockReason String?
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  room        ChatRoom  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@index([userId, archivedAt, createdAt])
+  @@map("chat_room_members")
+}
+
+model ChatMessage {
+  id               String            @id @default(uuid())
+  roomId           String
+  senderId         String?
+  senderRole       ChatSenderRole
+  type             ChatMessageType
+  text             String?
+  objectKey        String?           @unique
+  mimeType         String?
+  originalFileName String?
+  sizeBytes        Int?
+  durationSeconds  Float?
+  editedAt         DateTime?
+  deletedAt        DateTime?
+  deletedById      String?
+  isTombstone      Boolean           @default(false)
+  blockedAt        DateTime?
+  blockedById      String?
+  blockReason      String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  room             ChatRoom          @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  reads            ChatMessageRead[]
+
+  @@index([roomId, createdAt, id])
+  @@index([senderId, createdAt])
+  @@map("chat_messages")
+}
+
+model ChatMessageRead {
+  id        String      @id @default(uuid())
+  messageId String
+  userId    String
+  readAt    DateTime    @default(now())
+  message   ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([userId, readAt])
+  @@map("chat_message_reads")
+}
+
+/// A disagreement between the customer and the technician on a job. The admin
+/// reviews the job and chat, then records a resolution; the record is kept after
+/// it is resolved so the decision stays auditable.
+model Dispute {
+  id           String          @id @default(uuid())
+  jobId        String          @unique
+  reason       String
+  openedBy     DisputeOpenedBy
+  openedAt     DateTime        @default(now())
+  outcome      DisputeOutcome?
+  amount       Int?
+  note         String?
+  resolvedAt   DateTime?
+  resolvedById String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  job          Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  resolvedBy   User?           @relation("DisputeResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([resolvedAt, openedAt])
+  @@map("disputes")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+/// An Expo push token registered by one of the user's devices. Notifications
+/// are mirrored to every token so the user is alerted with the app closed.
+model PushToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_tokens")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  entityType String
+  entityId   String
+  action     String
+  fromStatus String?
+  toStatus   String?
+  actorId    String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+/// The single price-negotiation phase of a job. Opened when the request is sent
+/// to the chosen technician; it stays PENDING until that technician accepts
+/// (negotiation opens) or declines (the job returns to dispatch). Closed when
+/// the two sides agree, decline, or the negotiation lapses. Chat is limited to
+/// agreeing a price.
+model Conversation {
+  id            String                @id @default(uuid())
+  jobId         String                @unique
+  status        ConversationStatus    @default(PENDING)
+  currency      String                @default("RWF")
+  agreedAmount  Int?
+  offerCount    Int                   @default(0)
+  declinedById  String?
+  declineReason String?
+  startedAt     DateTime              @default(now())
+  lastMessageAt DateTime              @default(now())
+  closedAt      DateTime?
+  job           Job                   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  messages      ConversationMessage[]
+  offers        PriceOffer[]
+
+  @@index([status, lastMessageAt])
+  @@index([lastMessageAt])
+  @@map("conversations")
+}
+
+/// One entry in a conversation. SERVICE_REQUEST is posted automatically when the
+/// conversation opens; PRICE_OFFER entries carry a PriceOffer.
+model ConversationMessage {
+  id             String                  @id @default(uuid())
+  conversationId String
+  senderId       String?
+  senderRole     ConversationSender
+  type           ConversationMessageType
+  text           String?
+  metadata       Json?
+  createdAt      DateTime                @default(now())
+  conversation   Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  offer          PriceOffer?
+
+  @@index([conversationId, createdAt])
+  @@map("conversation_messages")
+}
+
+/// A price offer or counter-offer. Exactly one offer is PENDING at a time;
+/// posting a new offer supersedes the previous one.
+model PriceOffer {
+  id             String              @id @default(uuid())
+  conversationId String
+  messageId      String              @unique
+  amount         Int
+  currency       String              @default("RWF")
+  senderRole     ConversationSender
+  status         PriceOfferStatus    @default(PENDING)
+  notes          String?
+  expiresAt      DateTime?
+  respondedAt    DateTime?
+  createdAt      DateTime            @default(now())
+  conversation   Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message        ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, status])
+  @@map("price_offers")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model spatial_ref_sys {
+  srid      Int     @id
+  auth_name String? @db.VarChar(256)
+  auth_srid Int?
+  srtext    String? @db.VarChar(2048)
+  proj4text String? @db.VarChar(2048)
 }
 
 enum UserRole {
@@ -23,27 +929,234 @@ enum UserStatus {
   SUSPENDED
 }
 
-model User {
-  id            String         @id @default(uuid())
-  email         String         @unique
-  phoneNumber   String         @unique
-  fullName      String
-  role          UserRole       @default(CUSTOMER)
-  status        UserStatus     @default(ACTIVE)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  refreshTokens RefreshToken[]
-
-  @@map("users")
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
-model RefreshToken {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+enum TechnicianAvailability {
+  ONLINE
+  OFFLINE
+}
 
-  @@map("refresh_tokens")
+enum TechnicianGender {
+  FEMALE
+  MALE
+  NON_BINARY
+  PREFER_NOT_TO_SAY
+}
+
+enum DocumentType {
+  NATIONAL_ID
+  CERTIFICATE
+}
+
+enum CertificateType {
+  TVET_CERTIFICATE
+  DIPLOMA
+  ADVANCED_DIPLOMA
+  DEGREE
+  SHORT_COURSE
+  OTHER
+}
+
+enum DocumentStatus {
+  SUBMITTED
+  REVIEWING
+  ACCEPTED
+  DENIED
+}
+
+enum JobPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum JobRequestType {
+  NORMAL
+  SOS
+}
+
+enum JobStatus {
+  OPEN
+  ASSIGNED
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum JobCooperationStatus {
+  PENDING
+  CONFIRMED
+}
+
+enum BookingPaymentStatus {
+  VALID
+  EXPIRED
+  PAUSED
+  RESUMED
+  COMPLETED
+}
+
+enum CancellationRequester {
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum CancellationRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum JobDispatchStatus {
+  PENDING
+  OFFERED
+  EXHAUSTED
+  STOPPED
+}
+
+enum JobOfferStatus {
+  WAITING
+  OFFERED
+  REJECTED
+  EXPIRED
+  ACCEPTED
+  DROPPED
+  CANCELLED
+}
+
+enum JobMediaType {
+  PHOTO
+  VIDEO
+}
+
+enum PaymentMethod {
+  MOMO
+  BANK_TRANSFER
+  CASH
+  OTHER
+}
+
+enum ConversationStatus {
+  NEGOTIATING
+  AGREED
+  DECLINED
+  EXPIRED
+  // The conversation carries the job request until the assigned technician
+  // accepts (-> NEGOTIATING) or declines (-> DECLINED) it.
+  PENDING
+}
+
+enum ConversationSender {
+  CUSTOMER
+  TECHNICIAN
+  SYSTEM
+}
+
+enum ChatRoomStatus {
+  ACTIVE
+  DISABLED
+  COMPLETED
+}
+
+enum ChatSenderRole {
+  CUSTOMER
+  TECHNICIAN
+  ADMIN
+  SYSTEM
+}
+
+enum ChatMessageType {
+  TEXT
+  VOICE_NOTE
+  FILE
+  IMAGE
+  VIDEO
+  SYSTEM
+}
+
+enum ConversationMessageType {
+  SERVICE_REQUEST
+  TEXT
+  PRICE_OFFER
+  SYSTEM
+  // The assigned technician's acceptance or decline of the job request.
+  TECHNICIAN_RESPONSE
+}
+
+enum PriceOfferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  SUPERSEDED
+  EXPIRED
+}
+
+enum DisputeOpenedBy {
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum DisputeOutcome {
+  CUSTOMER
+  TECHNICIAN
+  PARTIAL
+}
+
+enum NotificationType {
+  JOB_OFFER
+  JOB_ASSIGNED
+  JOB_ACCEPTED
+  JOB_COMPLETED
+  JOB_CANCELLED
+  CONVERSATION_MESSAGE
+  OFFER_SENT
+  OFFER_ACCEPTED
+  OFFER_DECLINED
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+  DOCUMENT_APPROVED
+  DOCUMENT_REJECTED
+  BROADCAST
+  SYSTEM
+}
+
+enum AdBadge {
+  LIVE
+  COMING_SOON
+}
+
+enum AdPlacement {
+  LANDING_PRODUCT
+  LANDING_HERO
+  MOBILE_HOME
+  MOBILE_JOB_FEED
+}
+
+enum AdAudience {
+  ALL
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum BroadcastRole {
+  CUSTOMER
+  TECHNICIAN
+}
+
+enum BroadcastChannel {
+  SMS
+  IN_APP
+}
+
+enum BroadcastStatus {
+  SENDING
+  SENT
+  PARTIAL
+  FAILED
 }

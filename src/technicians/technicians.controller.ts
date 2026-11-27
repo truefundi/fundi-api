@@ -10,6 +10,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { UserRole } from '@prisma/client';
 import {
   Auth,
@@ -22,7 +23,6 @@ import { UpdateAvailabilityDto } from './dto/update-availability.dto';
 import { UpdateTechnicianProfileDto } from './dto/update-technician-profile.dto';
 import { RegisterTechnicianProfileDto } from './dto/register-technician-profile.dto';
 import { RegisterTechnicianDto } from './dto/register-technician.dto';
-import { ServiceExperienceDto } from './dto/service-experience.dto';
 import { TechniciansService } from './technicians.service';
 import { AuthService } from '../auth/auth.service';
 import { RequirePermissions } from '../staff/permissions.guard';
@@ -40,6 +40,7 @@ export class TechniciansController {
   // ─── Technician self-service ──────────────────────────────────────────
 
   @Post('register')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async registerPublic(@Body() dto: RegisterTechnicianDto) {
     const profile = await this.technicians.registerPublicTechnician(dto);
     const otp = await this.auth.requestTechnicianRegistrationOtp(
@@ -57,6 +58,16 @@ export class TechniciansController {
     return this.technicians.registerMyProfile(user.id, dto);
   }
 
+  // Alias for /apply requested by mobile client
+  @Post('apply')
+  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
+  applyProfile(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: UpdateTechnicianProfileDto,
+  ) {
+    return this.technicians.registerMyProfile(user.id, dto);
+  }
+
   @Get('profile')
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
   getMyProfile(@CurrentUser() user: AuthUser) {
@@ -70,15 +81,6 @@ export class TechniciansController {
     @Body() dto: UpdateTechnicianProfileDto,
   ) {
     return this.technicians.updateMyProfile(user.id, dto);
-  }
-
-  @Post('profile/services')
-  @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
-  addMyService(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: ServiceExperienceDto,
-  ) {
-    return this.technicians.addServiceExperience(user.id, dto);
   }
 
   @Patch('availability')

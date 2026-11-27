@@ -1,4 +1,4 @@
-import { JobProgressStatus, JobWorkStatus } from '@prisma/client';
+import { JobWorkStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsEnum,
@@ -7,11 +7,6 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
-
-export class JobProgressDto {
-  @IsEnum(JobProgressStatus)
-  status!: JobProgressStatus;
-}
 
 export class JobWorkStatusDto {
   @IsEnum(JobWorkStatus)

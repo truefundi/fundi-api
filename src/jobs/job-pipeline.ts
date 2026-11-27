@@ -1,8 +1,8 @@
 import {
   JobCooperationStatus,
   JobDispatchStatus,
-  JobProgressStatus,
   JobStatus,
+  JobWorkStatus,
   Prisma,
 } from '@prisma/client';
 
@@ -32,12 +32,13 @@ export type JobPipelineStageConfig = {
   where: Prisma.JobWhereInput | null;
 };
 
-// Work has started once either side moves past STARTED. COMPLETED counts here
-// too so a job stays in Repair until both sides finish and the job becomes
-// COMPLETED, at which point it moves to Settle.
-const WORK_STARTED: JobProgressStatus[] = [
-  JobProgressStatus.IN_PROGRESS,
-  JobProgressStatus.COMPLETED,
+// Work has started once the technician is working, has put it on hold or has
+// marked it finished. A finished job stays in Repair until the client confirms
+// (or the confirmation window closes) and the job becomes COMPLETED.
+const WORK_STARTED: JobWorkStatus[] = [
+  JobWorkStatus.IN_PROGRESS,
+  JobWorkStatus.ON_HOLD,
+  JobWorkStatus.COMPLETED,
 ];
 
 export const JOB_PIPELINE_STAGES: readonly JobPipelineStageConfig[] = [
@@ -85,12 +86,11 @@ export const JOB_PIPELINE_STAGES: readonly JobPipelineStageConfig[] = [
     label: 'Visit',
     tracked: true,
     description:
-      'Cooperation is confirmed and neither side has started the work yet.',
+      'Cooperation is confirmed and the technician has not started the work yet.',
     where: {
       status: { in: [JobStatus.ASSIGNED, JobStatus.PAUSED] },
       cooperationStatus: JobCooperationStatus.CONFIRMED,
-      customerProgress: { notIn: WORK_STARTED },
-      technicianProgress: { notIn: WORK_STARTED },
+      workStatus: { notIn: WORK_STARTED },
     },
   },
   {
@@ -122,14 +122,11 @@ export const JOB_PIPELINE_STAGES: readonly JobPipelineStageConfig[] = [
     label: 'Repair',
     tracked: true,
     description:
-      'Cooperation is confirmed and at least one side has marked the work in progress or completed.',
+      'Cooperation is confirmed and the technician is working, on hold or finished.',
     where: {
       status: { in: [JobStatus.ASSIGNED, JobStatus.PAUSED] },
       cooperationStatus: JobCooperationStatus.CONFIRMED,
-      OR: [
-        { customerProgress: { in: WORK_STARTED } },
-        { technicianProgress: { in: WORK_STARTED } },
-      ],
+      workStatus: { in: WORK_STARTED },
     },
   },
   {

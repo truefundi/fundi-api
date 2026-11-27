@@ -1,30 +1,82 @@
-// Loads typed runtime settings from the process environment.
+import {
+  DEV_ACCESS_SECRET_FALLBACK,
+  DEV_REFRESH_SECRET_FALLBACK,
+  DEV_TOKEN_HASH_SECRET_FALLBACK,
+  isKnownDevFallbackSecret,
+} from '../common/crypto/jwt-secrets';
+
+const HEX_64_PATTERN = /^[0-9a-fA-F]{64}$/;
+
+// Loads typed runtime settings from the process environment and fails fast outside development.
 export default () => {
   const environment = process.env.NODE_ENV || 'development';
 
-  // Production must never run on the development fallbacks below. Failing at boot is
-  // the only safe outcome: otherwise a deploy that forgot a secret happily signs
-  // tokens with a value printed in this repository.
-  if (environment === 'production') {
+  // Anything outside local development ('production', 'staging', etc.) must never
+  // boot with missing secrets, local disk storage, or published fallback keys.
+  if (environment !== 'development') {
     const required = [
+      'DATABASE_URL',
       'JWT_ACCESS_SECRET',
       'JWT_REFRESH_SECRET',
       'TOKEN_HASH_SECRET',
       'ADMIN_TOTP_ENCRYPTION_KEY',
+      'NATIONAL_ID_ENCRYPTION_KEY',
       'WEBAUTHN_RP_ID',
       'WEBAUTHN_ORIGIN',
-    ].filter((key) => !process.env[key]);
+      'STORAGE_DRIVER',
+      'S3_BUCKET',
+      'S3_ENDPOINT',
+      'S3_ACCESS_KEY_ID',
+      'S3_SECRET_ACCESS_KEY',
+    ].filter((key) => !process.env[key]?.trim());
+
     if (required.length > 0) {
       throw new Error(
         `Missing required production secrets: ${required.join(', ')}`,
       );
     }
+
+    if (process.env.STORAGE_DRIVER !== 's3') {
+      throw new Error(
+        `STORAGE_DRIVER must be "s3" when NODE_ENV is "${environment}".`,
+      );
+    }
+
+    const secretKeysToCheck = [
+      'JWT_ACCESS_SECRET',
+      'JWT_REFRESH_SECRET',
+      'TOKEN_HASH_SECRET',
+      'MOCK_PAYMENT_KEY',
+      'MOCK_PAYMENT_SECRET',
+    ] as const;
+    const fallbackUsed = secretKeysToCheck.filter((key) =>
+      isKnownDevFallbackSecret(process.env[key]),
+    );
+    if (fallbackUsed.length > 0) {
+      throw new Error(
+        `Refusing known development fallback secrets in ${environment}: ${fallbackUsed.join(', ')}`,
+      );
+    }
+
     if (process.env.JWT_ACCESS_SECRET === process.env.JWT_REFRESH_SECRET) {
       throw new Error(
         'JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different in production.',
       );
     }
+
+    if (!HEX_64_PATTERN.test(process.env.ADMIN_TOTP_ENCRYPTION_KEY!)) {
+      throw new Error(
+        'ADMIN_TOTP_ENCRYPTION_KEY must be 64 hexadecimal characters.',
+      );
+    }
+    if (!HEX_64_PATTERN.test(process.env.NATIONAL_ID_ENCRYPTION_KEY!)) {
+      throw new Error(
+        'NATIONAL_ID_ENCRYPTION_KEY must be 64 hexadecimal characters.',
+      );
+    }
   }
+
+  const isDev = environment === 'development';
 
   return {
     environment,
@@ -35,15 +87,20 @@ export default () => {
     redis: {
       host: process.env.REDIS_HOST || 'localhost',
       port: parseInt(process.env.REDIS_PORT || '6379', 10),
-      url: process.env.REDIS_URL || 'redis://localhost:6379',
+      url: process.env.REDIS_URL || undefined,
+      password: process.env.REDIS_PASSWORD || undefined,
+      username: process.env.REDIS_USERNAME || undefined,
+      db:
+        process.env.REDIS_DB !== undefined && process.env.REDIS_DB !== ''
+          ? parseInt(process.env.REDIS_DB, 10)
+          : undefined,
+      tls: process.env.REDIS_TLS === 'true',
     },
     sms: {
       mode:
-        process.env.SMS_MODE ||
-        (environment === 'development' ? 'console' : 'provider'),
+        process.env.SMS_MODE || (isDev ? 'console' : 'provider'),
     },
     otp: {
-      // OTP lifetime in seconds. `|| 300` also swallows a non-numeric value.
       ttlSeconds: Number(process.env.OTP_TTL_SECONDS) || 300,
     },
     auth: {
@@ -65,54 +122,44 @@ export default () => {
     },
     jwt: {
       accessSecret:
-        process.env.JWT_ACCESS_SECRET || 'default_dev_access_secret_32chars',
+        process.env.JWT_ACCESS_SECRET ||
+        (isDev ? DEV_ACCESS_SECRET_FALLBACK : undefined),
       refreshSecret:
-        process.env.JWT_REFRESH_SECRET || 'default_dev_refresh_secret_32chars',
+        process.env.JWT_REFRESH_SECRET ||
+        (isDev ? DEV_REFRESH_SECRET_FALLBACK : undefined),
       tokenHashSecret:
         process.env.TOKEN_HASH_SECRET ||
-        process.env.JWT_REFRESH_SECRET ||
-        'development_token_hash_secret_change_before_production',
+        (isDev
+          ? process.env.JWT_REFRESH_SECRET || DEV_TOKEN_HASH_SECRET_FALLBACK
+          : undefined),
       accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '7d',
       refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
     },
     adminAuth: {
-      // bcrypt work factor. Higher is slower and safer; 12 is a sane production default.
       bcryptRounds: Number(process.env.ADMIN_BCRYPT_ROUNDS) || 12,
-      // Wrong-password lockout, keyed by a hash of the email so unknown addresses are covered too.
       maxLoginAttempts: Number(process.env.ADMIN_MAX_LOGIN_ATTEMPTS) || 5,
       loginLockoutSeconds:
         Number(process.env.ADMIN_LOGIN_LOCKOUT_SECONDS) || 900,
-      // How long a password-verified sign-in stays open waiting for a code. Not a code
-      // lifetime: a TOTP code is valid for 30s by the authenticator's own clock, and
-      // there is nothing to resend, so this only bounds an abandoned sign-in.
       twoFactorPendingSeconds:
         Number(process.env.ADMIN_2FA_PENDING_SECONDS) || 300,
-      // Wrong codes allowed per account. More important than the SMS version: a TOTP
-      // space is six digits and each code is live for 30s, so guessing is cheaper.
       twoFactorMaxTries: Number(process.env.ADMIN_2FA_MAX_TRIES) || 5,
+      twoFactorAttemptWindowSeconds:
+        Number(process.env.ADMIN_2FA_ATTEMPT_WINDOW_SECONDS) || 900,
       // Label the authenticator app shows, and the issuer in the otpauth:// URI. It has
       // to match in both the label and the query parameter or the scan is rejected.
       totpIssuer: process.env.ADMIN_TOTP_ISSUER || 'Fundi',
-      // Steps of clock drift tolerated either side of the current one. One step absorbs
-      // ordinary server/client clock skew without meaningfully widening the guess space.
       totpWindow: Number(process.env.ADMIN_TOTP_WINDOW) || 1,
       accessExpiresIn: process.env.ADMIN_ACCESS_EXPIRES_IN || '1d',
       refreshExpiresIn: process.env.ADMIN_REFRESH_EXPIRES_IN || '5d',
-      // DEV ONLY. Opens the OTP sign-in that lets a developer reach admin screens
-      // without a password or an authenticator. Defaults to on outside production and
-      // is always refused in production, so it cannot be switched on there by env.
-      // See docs/admin-authentication.md.
       devOtpEnabled:
         process.env.ADMIN_DEV_OTP_ENABLED !== undefined
           ? process.env.ADMIN_DEV_OTP_ENABLED === 'true'
           : environment !== 'production',
       cookie: {
-        // 'none' is only honoured by browsers when secure is also true.
         sameSite: process.env.ADMIN_COOKIE_SAME_SITE || 'lax',
         secure: process.env.ADMIN_COOKIE_SECURE
           ? process.env.ADMIN_COOKIE_SECURE === 'true'
           : environment === 'production',
-        // Leave unset unless the admin dashboard is on its own subdomain.
         domain: process.env.ADMIN_COOKIE_DOMAIN || undefined,
       },
     },
@@ -131,7 +178,13 @@ export default () => {
       userAgent: process.env.GEOCODING_USER_AGENT || 'FundiBackend/0.1.0',
     },
     cors: {
-      origins: (process.env.CORS_ORIGINS || 'http://localhost:3000').split(','),
+      origins: (
+        process.env.CORS_ORIGINS ||
+        'http://localhost:3000,http://localhost:8081'
+      )
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean),
     },
   };
 };

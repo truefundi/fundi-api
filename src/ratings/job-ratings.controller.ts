@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -13,7 +14,7 @@ import {
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
-import { CreateJobRatingDto } from './dto/job-rating.dto';
+import { CreateJobRatingDto, UpdateJobRatingDto } from './dto/job-rating.dto';
 import { RatingsService } from './ratings.service';
 
 @ApiTags('Job ratings')
@@ -46,7 +47,7 @@ export class JobRatingsController {
   @ApiOperation({
     summary: 'Rate the assigned technician for a completed job',
     description:
-      'Optional: the job owner may submit one score from 1 to 5 for every active rating item. A submitted rating cannot be edited by the owner.',
+      'Optional: the job owner may submit one score from 1 to 5 for every active rating item. The owner can change it later with PATCH.',
   })
   submit(
     @CurrentUser() user: AuthUser,
@@ -54,5 +55,19 @@ export class JobRatingsController {
     @Body() dto: CreateJobRatingDto,
   ) {
     return this.ratings.submitJobRating(user.id, jobId, dto);
+  }
+
+  @Patch('rating')
+  @ApiOperation({
+    summary: 'Change the caller’s rating for a completed job',
+    description:
+      'Updates the scores (same items as the original rating) and/or the comment.',
+  })
+  update(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+    @Body() dto: UpdateJobRatingDto,
+  ) {
+    return this.ratings.updateJobRatingAsOwner(user.id, jobId, dto);
   }
 }

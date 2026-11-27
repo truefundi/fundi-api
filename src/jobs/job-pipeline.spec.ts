@@ -1,8 +1,8 @@
 import {
   JobCooperationStatus,
   JobDispatchStatus,
-  JobProgressStatus,
   JobStatus,
+  JobWorkStatus,
 } from '@prisma/client';
 import {
   JOB_PIPELINE_STAGES,
@@ -88,23 +88,20 @@ describe('job pipeline stages', () => {
 
   it('splits confirmed cooperation into visit and repair by work progress', () => {
     const started = [
-      JobProgressStatus.IN_PROGRESS,
-      JobProgressStatus.COMPLETED,
+      JobWorkStatus.IN_PROGRESS,
+      JobWorkStatus.ON_HOLD,
+      JobWorkStatus.COMPLETED,
     ];
 
     expect(JOB_PIPELINE_STAGE_MAP[JobPipelineStage.VISIT].where).toEqual({
       status: { in: [JobStatus.ASSIGNED, JobStatus.PAUSED] },
       cooperationStatus: JobCooperationStatus.CONFIRMED,
-      customerProgress: { notIn: started },
-      technicianProgress: { notIn: started },
+      workStatus: { notIn: started },
     });
     expect(JOB_PIPELINE_STAGE_MAP[JobPipelineStage.REPAIR].where).toEqual({
       status: { in: [JobStatus.ASSIGNED, JobStatus.PAUSED] },
       cooperationStatus: JobCooperationStatus.CONFIRMED,
-      OR: [
-        { customerProgress: { in: started } },
-        { technicianProgress: { in: started } },
-      ],
+      workStatus: { in: started },
     });
   });
 

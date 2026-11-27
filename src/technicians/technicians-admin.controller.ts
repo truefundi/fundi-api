@@ -94,6 +94,7 @@ export class TechniciansAdminController {
       id,
       dto.verificationStatus,
       user.id,
+      dto.reason,
     );
   }
 

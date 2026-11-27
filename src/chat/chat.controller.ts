@@ -14,13 +14,14 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { UserRole } from '@prisma/client';
 import {
   Auth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
-import { JobProgressDto, JobWorkStatusDto } from '../jobs/dto/job-action.dto';
+import { JobWorkStatusDto } from '../jobs/dto/job-action.dto';
 import { ChatService } from './chat.service';
 import { RequirePermissions } from '../staff/permissions.guard';
 import { AdminChatBlockDto, ChatReasonDto } from './dto/chat-action.dto';
@@ -78,6 +79,7 @@ export class ChatController {
   }
 
   @Post('rooms/:roomId/messages/media')
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('file', {
       limits: {
@@ -196,15 +198,6 @@ export class ChatController {
     @Body() dto: ChatReasonDto,
   ) {
     return this.chat.cancelJob(user.id, roomId, dto.reason);
-  }
-
-  @Patch('rooms/:roomId/progress')
-  updateProgress(
-    @CurrentUser() user: AuthUser,
-    @Param('roomId', ParseUUIDPipe) roomId: string,
-    @Body() dto: JobProgressDto,
-  ) {
-    return this.chat.updateProgress(user.id, roomId, dto.status);
   }
 
   @Patch('rooms/:roomId/status')

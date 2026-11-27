@@ -18,6 +18,12 @@ import { compare, hash } from 'bcrypt';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
+import {
+  DEV_ACCESS_SECRET_FALLBACK,
+  DEV_REFRESH_SECRET_FALLBACK,
+  DEV_TOKEN_HASH_SECRET_FALLBACK,
+  getRequiredSecret,
+} from '../common/crypto/jwt-secrets';
 import { RedisService } from '../redis/redis.service';
 import { TotpCryptoService } from './totp-crypto.service';
 import { AuthService } from './auth.service';
@@ -126,12 +132,10 @@ export class AdminAuthService {
   private readonly loginLockoutSeconds: number;
   private readonly twoFactorPendingSeconds: number;
   private readonly twoFactorMaxTries: number;
+  private readonly twoFactorAttemptWindowSeconds: number;
   private readonly totpIssuer: string;
   private readonly totpWindow: number;
   private readonly bcryptRounds: number;
-  // Sliding window for the per-account wrong-code tally, matching the mobile OTP
-  // behaviour so a slow trickle of guesses cannot accumulate forever.
-  private readonly twoFactorAttemptWindowSeconds = 900;
   // Seconds in one TOTP step. Fixed by the standard, not configurable.
   private readonly totpStepSeconds = 30;
 
@@ -157,14 +161,12 @@ export class AdminAuthService {
       'adminAuth.twoFactorPendingSeconds',
       300,
     );
-    this.twoFactorMaxTries = this.configService.get<number>(
-      'adminAuth.twoFactorMaxTries',
-      5,
+    this.twoFactorMaxTries = this.configService.get<number>('adminAuth.twoFactorMaxTries', 5);
+    this.twoFactorAttemptWindowSeconds = this.configService.get<number>(
+      'adminAuth.twoFactorAttemptWindowSeconds',
+      900,
     );
-    this.totpIssuer = this.configService.get<string>(
-      'adminAuth.totpIssuer',
-      'Fundi',
-    );
+    this.totpIssuer = this.configService.get<string>('adminAuth.totpIssuer', 'Fundi');
     this.totpWindow = this.configService.get<number>('adminAuth.totpWindow', 1);
     this.bcryptRounds = this.configService.get<number>(
       'adminAuth.bcryptRounds',
@@ -275,7 +277,7 @@ export class AdminAuthService {
     }
     if (claim === -2) {
       throw tooManyRequests(
-        'Too many incorrect verification codes. Wait a few minutes and sign in again.',
+        'Too many incorrect verification codes. Wait for the lockout window to expire, then sign in again.',
       );
     }
 
@@ -789,12 +791,16 @@ export class AdminAuthService {
   private async generateTokens(userId: string, role: string) {
     const sessionId = randomUUID();
     const payload = { sub: userId, role, sid: sessionId };
-    const accessSecret =
-      this.configService.get<string>('jwt.accessSecret') ||
-      'default_dev_access_secret_32chars';
-    const refreshSecret =
-      this.configService.get<string>('jwt.refreshSecret') ||
-      'default_dev_refresh_secret_32chars';
+    const accessSecret = getRequiredSecret(
+      this.configService,
+      'jwt.accessSecret',
+      DEV_ACCESS_SECRET_FALLBACK,
+    );
+    const refreshSecret = getRequiredSecret(
+      this.configService,
+      'jwt.refreshSecret',
+      DEV_REFRESH_SECRET_FALLBACK,
+    );
 
     const accessToken = await this.jwtService.signAsync(
       { ...payload, typ: 'access' },
@@ -942,10 +948,12 @@ export class AdminAuthService {
 
   // Hashes codes and refresh tokens before storing them.
   private hashSecret(value: string) {
-    const secret =
-      this.configService.get<string>('jwt.tokenHashSecret') ||
-      this.configService.get<string>('jwt.refreshSecret') ||
-      'development_token_hash_secret_change_before_production';
+    const secret = getRequiredSecret(
+      this.configService,
+      'jwt.tokenHashSecret',
+      DEV_TOKEN_HASH_SECRET_FALLBACK,
+      'jwt.refreshSecret',
+    );
     return createHmac('sha256', secret).update(value).digest('hex');
   }
 

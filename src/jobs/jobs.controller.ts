@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { JobRequestType, UserRole } from '@prisma/client';
 import {
   Auth,
@@ -20,7 +21,7 @@ import {
   CurrentUser,
 } from '../common/decorators/auth.decorator';
 import { JOB_MAX_VIDEO_BYTES } from './job.constants';
-import { JobProgressDto, JobWorkStatusDto } from './dto/job-action.dto';
+import { JobWorkStatusDto } from './dto/job-action.dto';
 import { CreateJobDto } from './dto/create-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobUpload } from './job-media.util';
@@ -35,6 +36,7 @@ import {
   ProposeTechnicianDto,
 } from './dto/matching-technicians.dto';
 import { MatchingTechniciansByLocationDto } from './dto/matching-technicians-by-location.dto';
+import { GeocodeLocationDto } from './dto/geocode-location.dto';
 import { CompanyJobRequestDto } from './dto/company-job-request.dto';
 
 const JOB_MEDIA_INTERCEPTOR = FileFieldsInterceptor(
@@ -66,7 +68,18 @@ export class JobsController {
     private readonly auth: AuthService,
   ) {}
 
+  @ApiOperation({
+    summary: 'Whether my account phone is verified',
+    description:
+      'When verified, jobs can be created without a per-job phoneVerificationId.',
+  })
+  @Get('phone-verification/status')
+  phoneVerificationStatus(@CurrentUser() user: AuthUser) {
+    return this.auth.customerJobPhoneStatus(user.id);
+  }
+
   @Post('phone-verification/request')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   requestPhoneVerification(
     @CurrentUser() user: AuthUser,
     @Body() dto?: RequestJobPhoneDto,
@@ -75,6 +88,7 @@ export class JobsController {
   }
 
   @Post('phone-verification/verify')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   verifyPhone(@CurrentUser() user: AuthUser, @Body() dto: VerifyJobPhoneDto) {
     return this.auth.verifyCustomerJobOtp(user.id, dto.verificationId, dto.otp);
   }
@@ -82,6 +96,11 @@ export class JobsController {
   @Get('matching-technicians')
   matchingTechnicians(@Query() dto: MatchingTechniciansDto) {
     return this.jobs.previewMatchingTechnicians(dto);
+  }
+
+  @Post('geocode-location')
+  geocodeLocation(@Body() dto: GeocodeLocationDto) {
+    return this.jobs.geocodeLocation(dto.location);
   }
 
   @Post('matching-technicians/geocode')
@@ -99,6 +118,7 @@ export class JobsController {
   }
 
   @Post()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -110,7 +130,6 @@ export class JobsController {
         'locationAddress',
         'latitude',
         'longitude',
-        'offeredAmount',
       ],
       properties: {
         paymentId: { type: 'string', format: 'uuid' },
@@ -118,7 +137,7 @@ export class JobsController {
           type: 'string',
           format: 'uuid',
           description:
-            'Required until the account phone is verified; omit it after verification.',
+            'Optional when the account phone number is already verified.',
         },
         serviceCategoryId: { type: 'string', format: 'uuid' },
         requestType: {
@@ -155,6 +174,7 @@ export class JobsController {
   }
 
   @Post('sos')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
@@ -172,11 +192,15 @@ export class JobsController {
         'locationAddress',
         'latitude',
         'longitude',
-        'offeredAmount',
       ],
       properties: {
         paymentId: { type: 'string', format: 'uuid' },
-        phoneVerificationId: { type: 'string', format: 'uuid' },
+        phoneVerificationId: {
+          type: 'string',
+          format: 'uuid',
+          description:
+            'Optional when the account phone number is already verified.',
+        },
         serviceCategoryId: { type: 'string', format: 'uuid' },
         description: { type: 'string', minLength: 10, maxLength: 5000 },
         locationAddress: { type: 'string', maxLength: 255 },
@@ -263,15 +287,6 @@ export class JobsController {
     return this.jobs.update(user.id, jobId, dto);
   }
 
-  @Patch('mine/:jobId/progress')
-  updateProgress(
-    @CurrentUser() user: AuthUser,
-    @Param('jobId', ParseUUIDPipe) jobId: string,
-    @Body() dto: JobProgressDto,
-  ) {
-    return this.jobs.updateProgress(user.id, jobId, 'customer', dto);
-  }
-
   @Patch('mine/:jobId/status')
   updateWorkStatus(
     @CurrentUser() user: AuthUser,
@@ -281,6 +296,11 @@ export class JobsController {
     return this.jobs.updateWorkStatus(user.id, jobId, 'customer', dto);
   }
 
+  @ApiOperation({
+    summary: 'Route an unanswered request to the next technician',
+    description:
+      'For a normal request, sends it to the best eligible technician who has not been asked about this job yet. For SOS, moves to the next technician in the queue.',
+  })
   @Post('mine/:jobId/retry-dispatch')
   retryDispatch(
     @CurrentUser() user: AuthUser,
@@ -331,6 +351,7 @@ export class JobsController {
   }
 
   @Post('mine/:jobId/media')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(JOB_MEDIA_INTERCEPTOR)
   @ApiConsumes('multipart/form-data')
   @ApiBody({

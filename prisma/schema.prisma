@@ -79,6 +79,7 @@ model User {
   chatMessageReads    ChatMessageRead[]
   resolvedDisputes    Dispute[]                   @relation("DisputeResolver")
   notifications       Notification[]
+  pushTokens          PushToken[]
   createdAds          Ad[]                        @relation("AdCreatedBy")
   createdBroadcasts   Broadcast[]                 @relation("BroadcastCreatedBy")
   passkeyCredentials  PasskeyCredential[]
@@ -162,32 +163,32 @@ model CatalogCategory {
 }
 
 model ServiceCategory {
-  id                  String               @id @default(uuid())
+  id                  String                      @id @default(uuid())
   categoryId          String
-  name                String               @unique
-  slug                String               @unique
-  description         String               @default("")
+  name                String                      @unique
+  slug                String                      @unique
+  description         String                      @default("")
   /// Optional extra words customers can use to find this service.
-  keywords            String               @default("")
+  keywords            String                      @default("")
   /// Booking (visit/diagnostic) fee charged for this service, in RWF.
-  visitFee            Int                  @default(0)
+  visitFee            Int                         @default(0)
   /// Booking fee used when the customer marks the request as an emergency, in RWF.
-  emergencyVisitFee   Int                  @default(0)
+  emergencyVisitFee   Int                         @default(0)
   /// Booking fee charged for an SOS request, in RWF.
-  sosBookingFee     Int?
-  icon              String?
-  isActive          Boolean              @default(true)
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  jobs              Job[]                @relation("JobServiceCategory")
-  technicians       TechnicianCategory[]
-  documents         TechnicianDocument[]
+  sosBookingFee       Int?
+  icon                String?
+  isActive            Boolean                     @default(true)
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  jobs                Job[]                       @relation("JobServiceCategory")
+  technicians         TechnicianCategory[]
+  documents           TechnicianDocument[]
   technicianDocuments TechnicianDocumentService[]
-  bookingPayments   BookingPayment[]
+  bookingPayments     BookingPayment[]
+  serviceCharges      ServiceCharge[]
+  paymentClaims       PaymentClaim[]
   paymentTransactions PaymentTransaction[]
-  serviceCharges    ServiceCharge[]
-  paymentClaims     PaymentClaim[]
-  category          CatalogCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  category            CatalogCategory             @relation(fields: [categoryId], references: [id], onDelete: Restrict)
 
   @@index([categoryId])
   @@map("service_categories")
@@ -220,6 +221,8 @@ model TechnicianProfile {
   baseLatitude            Float?
   baseLongitude           Float?
   verificationStatus      VerificationStatus        @default(PENDING)
+  /// Why an admin rejected the application; shown to the technician, cleared when they reapply or are approved.
+  rejectionReason         String?
   businessType            TechnicianBusinessType    @default(INDIVIDUAL)
   createdAt               DateTime                  @default(now())
   updatedAt               DateTime                  @updatedAt
@@ -257,6 +260,8 @@ model Company {
   phoneNumber        String
   description        String?
   verificationStatus VerificationStatus @default(PENDING)
+  /// The admin's note when rejecting the company, shown to its owner.
+  rejectionReason    String?
   verifiedAt         DateTime?
   verifiedById       String?
   createdAt          DateTime           @default(now())
@@ -274,19 +279,28 @@ model TechnicianCategory {
   technicianId         String
   categoryId           String?
   customName           String?
-  customNameNormalized String            @default("")
-  id                   String            @id @default(uuid())
+  customNameNormalized String             @default("")
+  id                   String             @id @default(uuid())
   yearsOfExperience    Int
-  category             ServiceCategory?  @relation(fields: [categoryId], references: [id])
-  technician           TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  /// Each service is reviewed on its own: only APPROVED services get jobs.
+  status               VerificationStatus @default(PENDING)
+  /// The admin's reason when the service was rejected; cleared on resubmit.
+  reviewNote           String?
+  reviewedById         String?
+  reviewedAt           DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @default(now()) @updatedAt
+  category             ServiceCategory?   @relation(fields: [categoryId], references: [id])
+  technician           TechnicianProfile  @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([categoryId])
   @@index([technicianId])
+  @@index([status, createdAt])
   @@map("technician_categories")
 }
 
 model TechnicianDocument {
-  id                       String            @id @default(uuid())
+  id                       String                      @id @default(uuid())
   technicianId             String
   title                    String
   titleNormalized          String
@@ -294,20 +308,20 @@ model TechnicianDocument {
   mimeType                 String
   originalFileName         String
   sizeBytes                Int
-  status                   DocumentStatus    @default(SUBMITTED)
+  status                   DocumentStatus              @default(SUBMITTED)
   reviewNote               String?
   reviewedById             String?
   reviewedAt               DateTime?
-  createdAt                DateTime          @default(now())
-  updatedAt                DateTime          @updatedAt
+  createdAt                DateTime                    @default(now())
+  updatedAt                DateTime                    @updatedAt
   certificateType          CertificateType?
   categoryId               String?
   customCategoryName       String?
   customCategoryNormalized String?
   type                     DocumentType
-  category                 ServiceCategory?  @relation(fields: [categoryId], references: [id])
-  serviceCategories         TechnicianDocumentService[]
-  technician               TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  category                 ServiceCategory?            @relation(fields: [categoryId], references: [id])
+  serviceCategories        TechnicianDocumentService[]
+  technician               TechnicianProfile           @relation(fields: [technicianId], references: [id], onDelete: Cascade)
 
   @@index([technicianId, status])
   @@index([status])
@@ -349,9 +363,10 @@ model Job {
   cooperationStatus           JobCooperationStatus       @default(PENDING)
   dispatchStatus              JobDispatchStatus          @default(PENDING)
   dispatchRound               Int                        @default(1)
-  customerProgress            JobProgressStatus          @default(PENDING)
-  technicianProgress          JobProgressStatus          @default(PENDING)
-  workStatus                  JobWorkStatus             @default(PENDING)
+  /// SOS: when the customer started the current round of offers. A technician
+  /// who only let an earlier offer expire may be asked again in a new round.
+  sosRoundStartedAt           DateTime?
+  workStatus                  JobWorkStatus              @default(PENDING)
   workStatusReason            String?
   completionConfirmationDueAt DateTime?
   completionConfirmedAt       DateTime?
@@ -596,6 +611,8 @@ model Ad {
   imageContentType String?
   imageAlt         String?
   callToAction     String?
+  /// Where tapping the ad leads (the advertiser's https page).
+  targetUrl        String?
   badge            AdBadge     @default(LIVE)
   placement        AdPlacement @default(LANDING_PRODUCT)
   audience         AdAudience  @default(ALL)
@@ -830,6 +847,21 @@ model Notification {
   @@map("notifications")
 }
 
+/// An Expo push token registered by one of the user's devices. Notifications
+/// are mirrored to every token so the user is alerted with the app closed.
+model PushToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_tokens")
+}
+
 model AuditLog {
   id         String   @id @default(uuid())
   entityType String
@@ -1024,14 +1056,6 @@ enum JobDispatchStatus {
   OFFERED
   EXHAUSTED
   STOPPED
-}
-
-enum JobProgressStatus {
-  PENDING
-  STARTED
-  IN_PROGRESS
-  COMPLETED
-  FAILED
 }
 
 enum JobOfferStatus {

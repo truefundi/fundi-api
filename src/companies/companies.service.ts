@@ -74,6 +74,8 @@ export class CompaniesService {
         where: { id: current.id },
         data: this.companyUpdateData(dto, {
           verificationStatus: VerificationStatus.PENDING,
+          // Corrected details go back to review; the old reason no longer applies.
+          rejectionReason: null,
           verifiedAt: null,
           verifiedBy: { disconnect: true },
         }),
@@ -171,6 +173,11 @@ export class CompaniesService {
         where: { id },
         data: {
           verificationStatus: dto.verificationStatus,
+          // Only a rejection carries a reason; any other decision clears it.
+          rejectionReason:
+            dto.verificationStatus === VerificationStatus.REJECTED
+              ? dto.reason ?? null
+              : null,
           verifiedAt: approved ? new Date() : null,
           verifiedBy: approved
             ? { connect: { id: actorId } }
@@ -186,6 +193,9 @@ export class CompaniesService {
           actorId,
           fromStatus: current.verificationStatus,
           toStatus: company.verificationStatus,
+          ...(company.rejectionReason
+            ? { metadata: { reason: company.rejectionReason } }
+            : {}),
         },
         tx,
       );

@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { EventsGateway } from '../websockets/events.gateway';
+import { PushService } from './push.service';
 import { PermissionsService } from '../staff/permissions.service';
 import { PERMISSION_KEYS, PermissionKey } from '../staff/permission-catalog';
 
@@ -23,6 +24,7 @@ export class NotificationsService {
     private readonly events: EventsGateway,
     private readonly audit: AuditService,
     private readonly permissions: PermissionsService,
+    private readonly push?: PushService,
   ) {}
 
   /**
@@ -76,6 +78,16 @@ export class NotificationsService {
 
     const payload = this.toResponse(notification);
     this.events.notifyUser(input.userId, 'notification:new', payload);
+    // Mirror to the user's devices without holding up the caller.
+    void this.push?.sendToUser(input.userId, {
+      title: notification.title,
+      body: notification.body,
+      data: {
+        ...((notification.data as Record<string, unknown> | null) ?? {}),
+        notificationId: notification.id,
+        type: notification.type,
+      },
+    });
     return payload;
   }
 
@@ -139,8 +151,7 @@ export class NotificationsService {
     userId: string,
     query: { limit: number; offset: number; unreadOnly?: boolean },
   ) {
-    const where: Prisma.NotificationWhereInput =
-      await this.visibleWhere(userId);
+    const where: Prisma.NotificationWhereInput = { userId };
     if (query.unreadOnly) {
       where.readAt = null;
     }
@@ -209,6 +220,23 @@ export class NotificationsService {
         metadata: { count: result.count },
       });
     }
+    return { updated: result.count };
+  }
+
+  /**
+   * Marks every unread notification about one job as read. The app shows a
+   * job's updates as a single conversation-like entry, so opening it clears
+   * them together.
+   */
+  async markJobRead(userId: string, jobId: string) {
+    const result = await this.prisma.notification.updateMany({
+      where: {
+        userId,
+        readAt: null,
+        data: { path: ['jobId'], equals: jobId },
+      },
+      data: { readAt: new Date() },
+    });
     return { updated: result.count };
   }
 

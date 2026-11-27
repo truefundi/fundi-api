@@ -1,7 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -16,7 +18,9 @@ import {
   CurrentUser,
 } from '../common/decorators/auth.decorator';
 import { ListNotificationsQueryDto } from './dto/list-notifications.query.dto';
+import { RegisterPushTokenDto, RemovePushTokenDto } from './dto/push-token.dto';
 import { NotificationsService } from './notifications.service';
+import { PushService } from './push.service';
 import { RequirePermissions } from '../staff/permissions.guard';
 
 @ApiTags('Notifications')
@@ -24,7 +28,29 @@ import { RequirePermissions } from '../staff/permissions.guard';
 @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
 @RequirePermissions()
 export class NotificationsController {
-  constructor(private readonly notifications: NotificationsService) {}
+  constructor(
+    private readonly notifications: NotificationsService,
+    private readonly push: PushService,
+  ) {}
+
+  /** Registers this device's Expo push token so notifications reach it while the app is closed. */
+  @Post('push-tokens')
+  @HttpCode(200)
+  registerPushToken(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: RegisterPushTokenDto,
+  ) {
+    return this.push.register(user.id, dto.token, dto.platform);
+  }
+
+  /** Removes a device's push token, e.g. on sign-out. */
+  @Delete('push-tokens')
+  removePushToken(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: RemovePushTokenDto,
+  ) {
+    return this.push.unregister(user.id, dto.token);
+  }
 
   @Get()
   list(
@@ -46,6 +72,15 @@ export class NotificationsController {
   @Patch('read-all')
   markAllRead(@CurrentUser() user: AuthUser) {
     return this.notifications.markAllRead(user.id);
+  }
+
+  /** Marks all of the user's unread notifications about one job as read. */
+  @Patch('jobs/:jobId/read')
+  markJobRead(
+    @CurrentUser() user: AuthUser,
+    @Param('jobId', ParseUUIDPipe) jobId: string,
+  ) {
+    return this.notifications.markJobRead(user.id, jobId);
   }
 
   @Patch(':notificationId/read')

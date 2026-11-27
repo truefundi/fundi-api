@@ -21,6 +21,9 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
+import { UserRole } from '@prisma/client';
+import { Auth, AuthUser, CurrentUser } from '../common/decorators/auth.decorator';
 import {
   StaffAuth,
   AuthUser,
@@ -79,6 +82,7 @@ export class AdminAdsController {
 
   @Put(':id/image')
   @StaffAuth('ads.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(FileInterceptor('file', UPLOAD_LIMITS))
   @ApiConsumes('multipart/form-data')
   @ApiBody({

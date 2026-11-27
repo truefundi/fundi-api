@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { parseRedisOptions } from './redis-options';
 
 @Injectable()
 export class RedisService implements OnModuleDestroy {
@@ -8,12 +9,10 @@ export class RedisService implements OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
 
   constructor(private configService: ConfigService) {
-    const host = this.configService.get<string>('redis.host', 'localhost');
-    const port = this.configService.get<number>('redis.port', 6379);
+    const options = parseRedisOptions(this.configService);
 
     this.client = new Redis({
-      host,
-      port,
+      ...options,
       lazyConnect: true,
       maxRetriesPerRequest: 3,
     });
@@ -40,6 +39,10 @@ export class RedisService implements OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    if (this.client.status === 'end' || this.client.status === 'wait') {
+      this.client.disconnect();
+      return;
+    }
     await this.client.quit();
   }
 }

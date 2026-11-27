@@ -132,9 +132,15 @@ describe('AdminAuthService', () => {
         .mockResolvedValueOnce('refresh-token'),
     };
     const config = {
-      get: jest.fn((key: string, fallback: unknown) =>
-        key in overrides ? overrides[key] : fallback,
-      ),
+      get: jest.fn((key: string, fallback: unknown) => {
+        const defaults: Record<string, unknown> = {
+          'jwt.accessSecret': 'unit-test-access-secret-key-32ch',
+          'jwt.refreshSecret': 'unit-test-refresh-secret-key-32c',
+          'jwt.tokenHashSecret': 'unit-test-token-hash-secret-32ch',
+        };
+        if (key in overrides) return overrides[key];
+        return defaults[key] ?? fallback;
+      }),
     };
     // The dev-only sign-in borrows the phone OTP store, so only the reused surface is
     // mocked here; the code check itself is covered in auth.service.spec.ts.
@@ -725,6 +731,15 @@ describe('AdminAuthService', () => {
         "redis.call('HINCRBY', KEYS[1], 'verificationTries', 1)",
       );
       expect(claimScript).toContain("redis.call('INCR', KEYS[2])");
+    });
+
+    it('uses the configured wrong-code lockout window', async () => {
+      const { service, redisClient } = createService({
+        'adminAuth.twoFactorAttemptWindowSeconds': 60,
+      });
+      await captureError(service.verifyTwoFactor('challenge-1', rejectedCode()));
+
+      expect(redisClient.eval.mock.calls[0]).toContain('60');
     });
 
     // The account is re-checked at this point because a challenge outlives a demotion.

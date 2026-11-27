@@ -12,6 +12,10 @@ import { Namespace, Socket } from 'socket.io';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../database/prisma.service';
+import {
+  DEV_ACCESS_SECRET_FALLBACK,
+  getRequiredSecret,
+} from '../common/crypto/jwt-secrets';
 import { ADMIN_ACCESS_COOKIE } from '../auth/admin-cookies';
 import { isStaffRole } from '../staff/staff-roles';
 import { StaffAccessEventsService } from '../staff/staff-access-events.service';
@@ -54,9 +58,11 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         typ?: string;
         role?: string;
       }>(token, {
-        secret:
-          this.config.get<string>('jwt.accessSecret') ||
-          'default_dev_access_secret_32chars',
+        secret: getRequiredSecret(
+          this.config,
+          'jwt.accessSecret',
+          DEV_ACCESS_SECRET_FALLBACK,
+        ),
       });
       // Only access tokens are accepted here, never a refresh token presented as one.
       if (!payload.sub || !payload.sid || payload.typ !== 'access') return;

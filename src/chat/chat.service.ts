@@ -11,7 +11,6 @@ import {
   ChatMessageType,
   ChatRoomStatus,
   ChatSenderRole,
-  JobProgressStatus,
   JobStatus,
   Prisma,
   UserRole,
@@ -725,22 +724,6 @@ export class ChatService {
       member.role === UserRole.CUSTOMER
         ? await this.jobs.cancelJob(userId, room.jobId, 'customer', { reason })
         : await this.jobs.dropJob(userId, room.jobId, { reason });
-    this.realtime.publish(roomId, 'chat:job:updated', result);
-    return result;
-  }
-
-  async updateProgress(
-    userId: string,
-    roomId: string,
-    status: JobProgressStatus,
-  ) {
-    const { room, member } = await this.getCurrentMember(userId, roomId);
-    const result = await this.jobs.updateProgress(
-      userId,
-      room.jobId,
-      this.side(member.role),
-      { status },
-    );
     this.realtime.publish(roomId, 'chat:job:updated', result);
     return result;
   }

@@ -19,6 +19,7 @@ import {
   getSchemaPath,
 } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminLoginDto } from './dto/admin-login.dto';
@@ -76,6 +77,7 @@ interface SessionResult {
 }
 
 @ApiTags('admin-auth')
+@Throttle({ default: { limit: 10, ttl: 60_000 } })
 @Controller('api/v1/auth/admin')
 export class AdminAuthController {
   constructor(
@@ -87,6 +89,7 @@ export class AdminAuthController {
   // app. The answer has two shapes, because the first sign-in on an account also has
   // to set the factor up.
   @Post('login')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiExtraModels(AdminTwoFactorEnrollDto, AdminTwoFactorRequiredDto)
   @ApiOperation({
@@ -132,6 +135,7 @@ export class AdminAuthController {
   }
 
   @Post('password/reset/request')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Request an admin password reset code',
@@ -231,7 +235,7 @@ export class AdminAuthController {
   )
   @ApiUnauthorized('The code is incorrect, or the sign-in window has closed.')
   @ApiTooManyRequests(
-    'Too many incorrect codes were submitted for this account. Wait a few minutes.',
+    'Too many incorrect codes were submitted for this account. Wait for the lockout window to expire.',
   )
   @ApiServiceUnavailable()
   @ApiForbidden('The account is no longer an active administrator.')

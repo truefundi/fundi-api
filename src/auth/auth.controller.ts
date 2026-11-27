@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Patch,
   Get,
   Body,
   Delete,
@@ -19,6 +20,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { UsersService } from '../users/users.service';
 import { RegisterDto } from './dto/register.dto';
@@ -32,6 +34,7 @@ import { PasswordLoginDto } from './dto/password-login.dto';
 import { PinLoginDto } from './dto/pin-login.dto';
 import { PinRegisterDto } from './dto/pin-register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { ChangePinDto, ResetPinDto } from './dto/pin-reset.dto';
 import { PasskeyAuthenticationDto } from './dto/passkey-authentication.dto';
 import { PasskeyRegistrationDto } from './dto/passkey-registration.dto';
 import {
@@ -46,6 +49,7 @@ import {
 } from '../common/decorators/api-error-responses.decorator';
 
 @ApiTags('auth')
+@Throttle({ default: { limit: 10, ttl: 60_000 } })
 @Controller('api/v1/auth')
 export class AuthController {
   constructor(
@@ -55,6 +59,7 @@ export class AuthController {
 
   // Customer registration is immediate; technician registration requires OTP verification.
   @Post('register')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Register a customer or start technician phone verification',
@@ -71,6 +76,7 @@ export class AuthController {
   }
 
   @Post('register/pin')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Register a customer account with a phone number and PIN',
@@ -85,6 +91,7 @@ export class AuthController {
 
   // Starts login only for an existing active account.
   @Post('login')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Send a login OTP to a registered phone number',
@@ -101,6 +108,7 @@ export class AuthController {
 
   // Replaces the current OTP while enforcing the three-resend limit.
   @Post('resend-otp')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Resend the pending login OTP up to three times',
@@ -203,6 +211,54 @@ export class AuthController {
       body.phoneNumber,
       body.otp,
       body.newPassword,
+    );
+  }
+
+  @Post('pin/reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reset a forgotten PIN with an SMS OTP and sign in',
+    description:
+      'First request an OTP using `POST /api/v1/auth/login`; then submit that OTP with the new PIN. Returns a new session; any other session for the account ends.',
+  })
+  @ApiValidationFailed()
+  @ApiBadRequest('No OTP is pending.')
+  @ApiUnauthorized('The phone number or OTP is incorrect or expired.')
+  @ApiForbidden('The account is inactive.')
+  @ApiServiceUnavailable()
+  async resetPin(
+    @Body() body: ResetPinDto,
+    @Headers('x-device-id') deviceId?: string,
+  ) {
+    return this.authService.resetPin(
+      body.phoneNumber,
+      body.otp,
+      body.newPin,
+      deviceId,
+    );
+  }
+
+  @Patch('pin')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth('accessToken')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Change the PIN of the signed-in account',
+    description:
+      'Requires the current PIN when the account already has one. Accounts without a PIN can set one directly.',
+  })
+  @ApiValidationFailed()
+  @ApiTokenRequired()
+  @ApiUnauthorized('The current PIN is incorrect.')
+  @ApiForbidden('Too many incorrect PIN attempts.')
+  async changePin(
+    @Req() request: { user: { userId: string } },
+    @Body() body: ChangePinDto,
+  ) {
+    return this.authService.changePin(
+      request.user.userId,
+      body.currentPin,
+      body.newPin,
     );
   }
 

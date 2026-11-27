@@ -1,9 +1,16 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerModule } from '@nestjs/throttler';
 import configuration from './config/configuration';
 import { AppController } from './app.controller';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
+import { RedisService } from './redis/redis.service';
+import {
+  ProxyAwareThrottlerGuard,
+  RedisThrottlerStorage,
+} from './common/throttler/redis-throttler.storage';
 import { JobsModule } from './jobs/jobs.module';
 import { WebSocketsModule } from './websockets/websockets.module';
 import { AuthModule } from './auth/auth.module';
@@ -30,6 +37,20 @@ import { StaffModule } from './staff/staff.module';
       isGlobal: true,
       load: [configuration],
     }),
+    ThrottlerModule.forRootAsync({
+      imports: [RedisModule],
+      inject: [RedisService],
+      useFactory: (redis: RedisService) => ({
+        throttlers: [
+          {
+            name: 'default',
+            ttl: 60_000,
+            limit: 120,
+          },
+        ],
+        storage: new RedisThrottlerStorage(redis),
+      }),
+    }),
     DatabaseModule,
     StaffModule,
     RedisModule,
@@ -53,5 +74,11 @@ import { StaffModule } from './staff/staff.module';
     HealthModule,
   ],
   controllers: [AppController],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ProxyAwareThrottlerGuard,
+    },
+  ],
 })
 export class AppModule {}

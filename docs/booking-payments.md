@@ -410,8 +410,9 @@ technician cancellation resumes it if cooperation has not been mutually
 confirmed. Once both job participants confirm cooperation, the payment
 immediately becomes `EXPIRED` and `validUntil` is set to the confirmation
 time, regardless of its remaining seven-day window. The job remains assigned;
-work progress is tracked independently. If both participants later mark the
-job completed, the payment becomes `COMPLETED`. Cancelling after confirmation
+work progress is tracked by the job's `workStatus`. When the job completes
+(the customer confirms the technician's `COMPLETED`, or the confirmation window
+closes), the payment becomes `COMPLETED`. Cancelling after confirmation
 does not resume the payment or reopen the job for reassignment.
 
 When work is paused before mutual confirmation, the job remains assigned and

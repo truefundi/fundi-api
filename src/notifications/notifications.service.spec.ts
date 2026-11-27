@@ -292,4 +292,17 @@ describe('NotificationsService', () => {
       expect(audit.log).not.toHaveBeenCalled();
     });
   });
+
+  describe('markJobRead', () => {
+    it("marks only the user's unread notifications about that job", async () => {
+      (prisma.notification.updateMany as jest.Mock).mockResolvedValue({ count: 2 });
+
+      const result = await service.markJobRead('u1', 'job-1');
+      expect(result.updated).toBe(2);
+      expect(prisma.notification.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'u1', readAt: null, data: { path: ['jobId'], equals: 'job-1' } },
+        data: { readAt: expect.any(Date) },
+      });
+    });
+  });
 });

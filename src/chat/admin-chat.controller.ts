@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import {
   StaffAuth,
   AuthUser,
@@ -84,6 +85,7 @@ export class AdminChatController {
 
   @Post(':roomId/messages/media')
   @StaffAuth('chat.send')
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('file', {
       limits: {

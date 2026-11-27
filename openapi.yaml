@@ -234,8 +234,11 @@ paths:
                 - locationAddress
                 - latitude
                 - longitude
-                - offeredAmount
               properties:
+                phoneVerificationId:
+                  type: string
+                  format: uuid
+                  description: Optional when the account phone number is already verified.
                 serviceCategoryId:
                   type: string
                   format: uuid
@@ -260,7 +263,7 @@ paths:
                 offeredAmount:
                   type: integer
                   minimum: 1
-                  description: Amount in RWF
+                  description: Optional amount in RWF. The price is normally agreed later in the chat.
                 priority:
                   type: string
                   enum:
@@ -508,7 +511,7 @@ paths:
         - bearerAuth: []
       tags:
         - Jobs
-      summary: Retry matching after the offer list is exhausted
+      summary: Route an unanswered request to the next eligible technician who has not been asked yet
       x-fundi-status: implemented
   /jobs/mine/{jobId}/accept:
     post:
@@ -1354,6 +1357,60 @@ paths:
       tags:
         - Notifications
       summary: Count my unread notifications
+      x-fundi-status: implemented
+  /notifications/push-tokens:
+    post:
+      operationId: NotificationsController_registerPushToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  example: ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]
+                platform:
+                  type: string
+                  enum: [ios, android, web]
+      responses:
+        '200':
+          description: Token registered for this user.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  registered:
+                    type: boolean
+      security:
+        - bearerAuth: []
+      tags:
+        - Notifications
+      summary: Register this device for push notifications
+      x-fundi-status: implemented
+    delete:
+      operationId: NotificationsController_removePushToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: Number of tokens removed.
+      security:
+        - bearerAuth: []
+      tags:
+        - Notifications
+      summary: Remove this device's push token
       x-fundi-status: implemented
   /notifications/read-all:
     patch:
@@ -7528,6 +7585,15 @@ components:
           type:
             - string
             - 'null'
+        customer:
+          description: The customer who sent the request.
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            fullName:
+              type: string
         job:
           $ref: '#/components/schemas/Job'
     RatingItem:
@@ -7826,6 +7892,20 @@ components:
           format: date-time
         dispatchStatus:
           $ref: '#/components/schemas/DispatchStatus'
+        activeOffer:
+          description: >-
+            Customer view of an open job (all request types; also present on SOS
+            jobs for other viewers): the technician the request is waiting on.
+          oneOf:
+            - $ref: '#/components/schemas/RequestRouting'
+            - type: 'null'
+        lastOffer:
+          description: >-
+            Customer view of an open job with nothing pending: the technician who
+            most recently declined the request or let it expire.
+          oneOf:
+            - $ref: '#/components/schemas/RequestRouting'
+            - type: 'null'
         customerProgress:
           $ref: '#/components/schemas/ProgressStatus'
         technicianProgress:
@@ -8036,6 +8116,41 @@ components:
           type:
             - string
             - 'null'
+    RequestRouting:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - OFFERED
+            - REJECTED
+            - EXPIRED
+        technicianId:
+          type: string
+          format: uuid
+        technicianName:
+          type: string
+        technicianProfilePictureUrl:
+          type:
+            - string
+            - 'null'
+        matchAccuracy:
+          type: number
+        distanceMeters:
+          type: integer
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        respondedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
     PageOfOffer:
       type: object
       properties:

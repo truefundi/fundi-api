@@ -29,6 +29,9 @@ export class AdResponseDto {
   @ApiPropertyOptional({ example: 'Explore product', nullable: true })
   callToAction!: string | null;
 
+  @ApiPropertyOptional({ example: 'https://homeshub.rw', nullable: true })
+  targetUrl!: string | null;
+
   @ApiProperty({ enum: AdBadge, example: AdBadge.LIVE })
   badge!: AdBadge;
 

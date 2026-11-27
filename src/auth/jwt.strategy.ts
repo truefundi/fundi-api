@@ -7,6 +7,10 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../database/prisma.service';
+import {
+  DEV_ACCESS_SECRET_FALLBACK,
+  getRequiredSecret,
+} from '../common/crypto/jwt-secrets';
 import { ADMIN_ACCESS_COOKIE } from './admin-cookies';
 import { isStaffRole } from '../staff/staff-roles';
 
@@ -50,9 +54,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
         return fromHeader;
       },
       ignoreExpiration: false,
-      secretOrKey:
-        configService.get<string>('jwt.accessSecret') ||
-        'default_dev_access_secret_32chars',
+      secretOrKey: getRequiredSecret(
+        configService,
+        'jwt.accessSecret',
+        DEV_ACCESS_SECRET_FALLBACK,
+      ),
     });
   }
 

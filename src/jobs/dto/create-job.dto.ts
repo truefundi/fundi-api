@@ -34,7 +34,7 @@ export class CreateJobDto {
     required: false,
     format: 'uuid',
     description:
-      'Required until the account phone is verified. Once verified, omit this field on later jobs.',
+      'Verified phone code for this job. Optional when the account phone number is already verified.',
   })
   @IsOptional()
   @IsUUID('4')
@@ -133,11 +133,12 @@ export class CreateJobDto {
       'Amount the customer offers for the visit/repair, in the job currency (RWF).',
     example: 20000,
   })
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(2_000_000_000)
-  offeredAmount!: number;
+  offeredAmount?: number;
 
   @ApiProperty({
     required: false,

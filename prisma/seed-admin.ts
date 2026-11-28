@@ -3,6 +3,7 @@ import { hash } from 'bcrypt';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { AdminLoginDto } from '../src/auth/dto/admin-login.dto';
+import { isStaffRole } from '../src/staff/staff-roles';
 
 const prisma = new PrismaClient();
 
@@ -25,13 +26,17 @@ function required(name: string, hint: string): string {
 // an account nobody else can reach.
 async function assertSignInRules(email: string, password: string) {
   const dto = plainToInstance(AdminLoginDto, { email, password });
-  const errors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+  const errors = await validate(dto, {
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  });
   if (errors.length > 0) {
-    const messages = errors.flatMap((error) => Object.values(error.constraints ?? {}));
+    const messages = errors.flatMap((error) =>
+      Object.values(error.constraints ?? {}),
+    );
     throw new Error(
       `The password cannot be used to sign in:\n  - ${messages.join('\n  - ')}\n` +
-        'Fix it and run this again. There is no password reset route yet, so an admin ' +
-        'created with a rejected password could only be repaired from the database.',
+        'Fix it and run this again, or use the dashboard password-reset flow for an existing staff account.',
     );
   }
 }
@@ -48,8 +53,19 @@ function explainConflict(error: unknown): string {
 }
 
 async function main() {
-  const email = required('ADMIN_EMAIL', 'Example: ADMIN_EMAIL=admin@fundi.rw').toLowerCase();
-  const fullName = required('ADMIN_FULL_NAME', 'Example: ADMIN_FULL_NAME="Alice Mukamana"');
+  const email = required(
+    'ADMIN_EMAIL',
+    'Example: ADMIN_EMAIL=admin@fundi.rw',
+  ).toLowerCase();
+  const role = (process.env.ADMIN_ROLE ?? 'ADMIN') as UserRole;
+  if (!isStaffRole(role))
+    throw new Error(
+      'ADMIN_ROLE must be SUPER_ADMIN, ADMIN, ACCOUNTANT or SUPPORT.',
+    );
+  const fullName = required(
+    'ADMIN_FULL_NAME',
+    'Example: ADMIN_FULL_NAME="Alice Mukamana"',
+  );
   const phoneNumber = required(
     'ADMIN_PHONE_NUMBER',
     'The number the second-factor code is sent to. Example: ADMIN_PHONE_NUMBER=+250788123456',
@@ -63,7 +79,10 @@ async function main() {
     throw new Error('ADMIN_PASSWORD is not set.');
   }
 
-  const parsedRounds = Number.parseInt(process.env.ADMIN_BCRYPT_ROUNDS ?? '', 10);
+  const parsedRounds = Number.parseInt(
+    process.env.ADMIN_BCRYPT_ROUNDS ?? '',
+    10,
+  );
   const rounds = Number.isNaN(parsedRounds) ? DEFAULT_ROUNDS : parsedRounds;
   if (rounds < 4 || rounds > 15) {
     throw new Error('ADMIN_BCRYPT_ROUNDS must be between 4 and 15.');
@@ -82,7 +101,7 @@ async function main() {
       // Refuse rather than promote. An operator who reuses a customer's address here
       // would otherwise hand that account the administrator role by accident, and this
       // script has no way to tell that apart from a deliberate promotion.
-      if (existing.role !== UserRole.ADMIN) {
+      if (!isStaffRole(existing.role)) {
         throw new Error(
           `${email} already belongs to a ${existing.role} account. Refusing to change it ` +
             'to ADMIN, because that decision should be made deliberately. Promote it ' +
@@ -91,10 +110,17 @@ async function main() {
       }
       const updated = await prisma.user.update({
         where: { id: existing.id },
-        data: { passwordHash, fullName, phoneNumber, status: UserStatus.ACTIVE },
+        data: {
+          passwordHash,
+          fullName,
+          phoneNumber,
+          status: UserStatus.ACTIVE,
+        },
       });
       console.log(`Reset the password for admin ${email} (${updated.id}).`);
-      console.log('Sign in at /api/v1/auth/admin/login, then submit the SMS code.');
+      console.log(
+        'Sign in at /api/v1/auth/admin/login, then enroll or verify your authenticator app.',
+      );
       return;
     }
 
@@ -104,12 +130,14 @@ async function main() {
         fullName,
         phoneNumber,
         passwordHash,
-        role: UserRole.ADMIN,
+        role,
         status: UserStatus.ACTIVE,
       },
     });
     console.log(`Created admin ${email} (${created.id}).`);
-    console.log('Sign in at /api/v1/auth/admin/login, then submit the SMS code.');
+    console.log(
+      'Sign in at /api/v1/auth/admin/login, then enroll or verify your authenticator app.',
+    );
   } catch (error) {
     // Only Prisma's unique-constraint failure is translated. Anything else raised above,
     // such as the refusal to promote an existing account, is already a clear message.

@@ -9,6 +9,7 @@ import {
   TechnicianBusinessType,
   TechnicianGender,
   UserStatus,
+  UserRole,
   VerificationStatus,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
@@ -139,6 +140,7 @@ describe('TechniciansService', () => {
       hash: jest.fn((value: string) => `hash:${value}`),
       lastFour: jest.fn((value: string) => value.slice(-4)),
     };
+    const permissions = { require: jest.fn().mockResolvedValue({}) };
     return {
       service: new TechniciansService(
         prisma as unknown as PrismaService,
@@ -146,6 +148,7 @@ describe('TechniciansService', () => {
         storage as unknown as StorageService,
         documents as unknown as TechnicianDocumentsService,
         nationalIdCrypto as unknown as NationalIdCryptoService,
+        permissions as never,
       ),
       prisma,
       transaction,
@@ -153,6 +156,7 @@ describe('TechniciansService', () => {
       storage,
       documents,
       nationalIdCrypto,
+      permissions,
     };
   };
 
@@ -170,6 +174,48 @@ describe('TechniciansService', () => {
   });
 
   // ─── Read ──────────────────────────────────────────────────────────────
+
+  it('requires approval permission even when verification is submitted through the general edit route', async () => {
+    const { service, transaction, permissions } = createService();
+    permissions.require.mockRejectedValue(
+      new Error('Missing technicians.approve'),
+    );
+    await expect(
+      service.updateByAdmin(
+        profileId,
+        { verificationStatus: VerificationStatus.APPROVED },
+        'staff',
+      ),
+    ).rejects.toThrow('Missing technicians.approve');
+    expect(permissions.require).toHaveBeenCalledWith(
+      'staff',
+      ['technicians.approve'],
+      transaction,
+    );
+    expect(transaction.technicianProfile.update).not.toHaveBeenCalled();
+  });
+
+  it('blocks staff account editing, suspension and deletion through a linked technician profile', async () => {
+    const { service, transaction } = createService();
+    transaction.user.findUnique.mockResolvedValue({
+      role: UserRole.SUPER_ADMIN,
+    } as never);
+    await expect(
+      service.updateByAdmin(
+        profileId,
+        { verificationStatus: VerificationStatus.APPROVED },
+        'admin',
+      ),
+    ).rejects.toThrow('Manage staff accounts');
+    await expect(
+      service.setAccountStatusByAdmin(profileId, UserStatus.SUSPENDED, 'admin'),
+    ).rejects.toThrow('Manage staff accounts');
+    await expect(service.deleteByAdmin(profileId, 'admin')).rejects.toThrow(
+      'Manage staff accounts',
+    );
+    expect(transaction.user.update).not.toHaveBeenCalled();
+    expect(transaction.user.delete).not.toHaveBeenCalled();
+  });
 
   it('returns an existing technician profile to its owner', async () => {
     const { service, prisma } = createService();

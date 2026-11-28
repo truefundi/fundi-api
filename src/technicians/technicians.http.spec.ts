@@ -14,6 +14,7 @@ import { TechniciansController } from './technicians.controller';
 import { TechniciansPublicController } from './technicians-public.controller';
 import { TechniciansService } from './technicians.service';
 import { AuthService } from '../auth/auth.service';
+import { PermissionsService } from '../staff/permissions.service';
 
 // Exercises the full request pipeline used in main.ts (ValidationPipe +
 // HttpExceptionFilter) with a stand-in JWT guard, so query conversion,
@@ -107,6 +108,10 @@ describe('Technician list endpoints (HTTP)', () => {
         TechniciansPublicController,
       ],
       providers: [
+        {
+          provide: PermissionsService,
+          useValue: { require: jest.fn().mockResolvedValue({}) },
+        },
         { provide: TechniciansService, useValue: techniciansService },
         { provide: AuthService, useValue: authService },
       ],

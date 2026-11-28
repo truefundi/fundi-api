@@ -3,6 +3,8 @@ import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { PermissionsGuard } from '../staff/permissions.guard';
+import { STAFF_ROLES } from '../staff/staff-roles';
 import { AdminJobsController } from './admin-jobs.controller';
 import { JobPipelineStage } from './job-pipeline';
 import { JobsService } from './jobs.service';
@@ -32,8 +34,8 @@ describe('AdminJobsController', () => {
     const guards =
       Reflect.getMetadata(GUARDS_METADATA, AdminJobsController) ?? [];
 
-    expect(guards).toEqual([AuthGuard('jwt'), RolesGuard]);
-    expect(reflector.get(ROLES_KEY, AdminJobsController)).toEqual(['ADMIN']);
+    expect(guards).toEqual([AuthGuard('jwt'), RolesGuard, PermissionsGuard]);
+    expect(reflector.get(ROLES_KEY, AdminJobsController)).toEqual(STAFF_ROLES);
   });
 
   it('forwards the summary request to the jobs service', async () => {

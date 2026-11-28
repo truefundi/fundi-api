@@ -9,6 +9,7 @@ import { Test } from '@nestjs/testing';
 import * as request from 'supertest';
 import { AuthService } from '../../auth/auth.service';
 import { HttpExceptionFilter } from '../../common/filters/http-exception.filter';
+import { PermissionsService } from '../../staff/permissions.service';
 import { TechniciansController } from '../technicians.controller';
 import { TechniciansService } from '../technicians.service';
 import { TechnicianServicesController } from './technician-services.controller';
@@ -55,6 +56,10 @@ describe('POST /api/v1/technicians/profile/services (HTTP)', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [TechniciansController, TechnicianServicesController],
       providers: [
+        {
+          provide: PermissionsService,
+          useValue: { require: jest.fn().mockResolvedValue({}) },
+        },
         { provide: TechniciansService, useValue: technicians },
         { provide: AuthService, useValue: {} },
         { provide: TechnicianServicesService, useValue: reviewFlow },

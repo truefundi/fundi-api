@@ -10,9 +10,8 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
 import {
-  Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -30,12 +29,13 @@ import { SearchTechniciansByUserDto } from './dto/search-technicians-by-user.dto
 // Protects all technician management operations with the administrator role.
 @ApiTags('Admin technicians')
 @Controller('api/v1/admin/technicians')
-@Auth(UserRole.ADMIN)
+@StaffAuth('technicians.view')
 export class TechniciansAdminController {
   constructor(private readonly technicians: TechniciansService) {}
 
   // Creates a technician account and its associated profile.
   @Post()
+  @StaffAuth('technicians.manage')
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateTechnicianDto) {
     return this.technicians.createByAdmin(dto, user.id);
   }
@@ -84,6 +84,7 @@ export class TechniciansAdminController {
 
   // Changes verification state; non-approved technicians are forced offline.
   @Patch(':id/verification-status')
+  @StaffAuth('technicians.approve')
   updateVerificationStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
@@ -99,6 +100,7 @@ export class TechniciansAdminController {
 
   // Changes technician availability subject to its approved verification state.
   @Patch(':id/availability-status')
+  @StaffAuth('technicians.manage')
   updateAvailability(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
@@ -115,6 +117,7 @@ export class TechniciansAdminController {
   // or SUSPENDED). A non-active status blocks logins and forces the technician
   // offline; the account keeps its verification and profile data.
   @Patch(':id/status')
+  @StaffAuth('technicians.manage', 'users.manage')
   updateStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
@@ -131,6 +134,7 @@ export class TechniciansAdminController {
 
   // Updates user identity, profile, categories, photo, or verification state.
   @Patch(':id')
+  @StaffAuth('technicians.manage')
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
@@ -141,6 +145,7 @@ export class TechniciansAdminController {
 
   // Deletes the technician account and cascades its related records.
   @Delete(':id')
+  @StaffAuth('technicians.manage', 'users.manage')
   delete(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,

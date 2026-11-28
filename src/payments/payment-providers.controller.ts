@@ -11,6 +11,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import {
   Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -39,14 +40,14 @@ export class PaymentProvidersController {
   }
 
   @Get('admin/payment-providers')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.configure')
   @ApiOperation({ summary: 'Read independent mobile money provider toggles' })
   listAdminProviders() {
     return this.providers.list();
   }
 
   @Patch('admin/payment-providers/:provider')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth('payments.configure')
   @ApiOperation({
     summary: 'Enable API mode or switch a provider to manual approval',
   })

@@ -17,6 +17,8 @@ import {
 } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
+import { PermissionsService } from '../staff/permissions.service';
+import { isStaffRole } from '../staff/staff-roles';
 import { PrismaService } from '../database/prisma.service';
 import { JobsService } from '../jobs/jobs.service';
 import { JobWorkStatusDto } from '../jobs/dto/job-action.dto';
@@ -93,6 +95,7 @@ export class ChatService {
     private readonly audit: AuditService,
     private readonly jobs: JobsService,
     private readonly realtime: ChatRealtimeService,
+    private readonly permissions: PermissionsService,
   ) {}
 
   async listForMember(userId: string) {
@@ -108,7 +111,7 @@ export class ChatService {
 
   async getForMember(userId: string, role: UserRole, roomId: string) {
     const room = await this.findRoom(roomId);
-    const member = this.assertCanRead(room, userId, role);
+    const member = await this.assertCanRead(room, userId, role);
     return this.roomResponse(room, member ?? undefined);
   }
 
@@ -132,7 +135,7 @@ export class ChatService {
     beforeMessageId?: string,
   ) {
     const room = await this.findRoom(roomId);
-    const member = this.assertCanRead(room, userId, role);
+    const member = await this.assertCanRead(room, userId, role);
     if (member?.archivedAt) throw new NotFoundException('Chat room not found.');
 
     let cursor: { id: string } | undefined;
@@ -154,7 +157,7 @@ export class ChatService {
     return {
       items: await Promise.all(
         messages.map((message) =>
-          this.messageResponse(message, userId, role === UserRole.ADMIN),
+          this.messageResponse(message, userId, isStaffRole(role)),
         ),
       ),
       nextCursor:
@@ -172,16 +175,15 @@ export class ChatService {
     const message = await this.prisma.$transaction(async (tx) => {
       await this.lockRoomJob(tx, roomId);
       const room = await this.findRoomWith(tx, roomId);
-      this.assertCanWrite(room, userId, role);
+      await this.assertCanWrite(room, userId, role);
       const created = await tx.chatMessage.create({
         data: {
           roomId,
           senderId: userId,
           senderRole: this.senderRole(role),
-          type:
-            role === UserRole.ADMIN
-              ? ChatMessageType.SYSTEM
-              : ChatMessageType.TEXT,
+          type: isStaffRole(role)
+            ? ChatMessageType.SYSTEM
+            : ChatMessageType.TEXT,
           text: body,
         },
         include: CHAT_MESSAGE_INCLUDE,
@@ -194,10 +196,9 @@ export class ChatService {
         {
           entityType: 'ChatMessage',
           entityId: created.id,
-          action:
-            role === UserRole.ADMIN
-              ? 'ADMIN_CHAT_MESSAGE_SENT'
-              : 'CHAT_MESSAGE_SENT',
+          action: isStaffRole(role)
+            ? 'ADMIN_CHAT_MESSAGE_SENT'
+            : 'CHAT_MESSAGE_SENT',
           actorId: userId,
           metadata: { roomId, messageType: created.type },
         },
@@ -208,7 +209,7 @@ export class ChatService {
     const response = await this.messageResponse(
       message,
       userId,
-      role === UserRole.ADMIN,
+      isStaffRole(role),
     );
     this.realtime.publish(roomId, 'chat:message:new', response);
     return response;
@@ -223,7 +224,7 @@ export class ChatService {
     durationSeconds?: number,
   ) {
     const room = await this.findRoom(roomId);
-    this.assertCanWrite(room, userId, role);
+    await this.assertCanWrite(room, userId, role);
     const validated = validateChatUpload(upload, type, durationSeconds);
     const objectKey = `chat/${roomId}/${randomUUID()}.${validated.extension}`;
     await this.storage.put(objectKey, upload.buffer, validated.mimeType);
@@ -232,7 +233,7 @@ export class ChatService {
       message = await this.prisma.$transaction(async (tx) => {
         await this.lockRoomJob(tx, roomId);
         const current = await this.findRoomWith(tx, roomId);
-        this.assertCanWrite(current, userId, role);
+        await this.assertCanWrite(current, userId, role);
         const created = await tx.chatMessage.create({
           data: {
             roomId,
@@ -281,7 +282,7 @@ export class ChatService {
     const response = await this.messageResponse(
       message,
       userId,
-      role === UserRole.ADMIN,
+      isStaffRole(role),
     );
     this.realtime.publish(roomId, 'chat:message:new', response);
     return response;
@@ -294,7 +295,7 @@ export class ChatService {
     messageId: string,
   ) {
     const room = await this.findRoom(roomId);
-    const member = this.assertCanRead(room, userId, role);
+    const member = await this.assertCanRead(room, userId, role);
     if (member?.archivedAt)
       throw new NotFoundException('Chat message not found.');
     const message = await this.prisma.chatMessage.findFirst({
@@ -303,7 +304,7 @@ export class ChatService {
     if (
       !message?.objectKey ||
       message.isTombstone ||
-      (message.blockedAt && role !== UserRole.ADMIN)
+      (message.blockedAt && !isStaffRole(role))
     ) {
       throw new NotFoundException('Chat attachment not found.');
     }
@@ -322,14 +323,14 @@ export class ChatService {
     roomId: string,
     messageId: string,
   ) {
-    if (role === UserRole.ADMIN) {
+    if (isStaffRole(role)) {
       throw new ForbiddenException(
         'Administrators cannot create member read receipts.',
       );
     }
     const marked = await this.prisma.$transaction(async (tx) => {
       const room = await this.findRoomWith(tx, roomId);
-      this.assertCanRead(room, userId, role);
+      await this.assertCanRead(room, userId, role);
       const target = await tx.chatMessage.findFirst({
         where: { id: messageId, roomId },
         select: { id: true, createdAt: true },
@@ -384,7 +385,7 @@ export class ChatService {
       if (!current) throw new NotFoundException('Chat message not found.');
       await this.lockRoomJob(tx, roomId);
       const room = await this.findRoomWith(tx, roomId);
-      this.assertCanWrite(room, userId, role);
+      await this.assertCanWrite(room, userId, role);
       if (
         current.senderId !== userId ||
         current.type !== ChatMessageType.TEXT ||
@@ -437,7 +438,7 @@ export class ChatService {
       if (!current) throw new NotFoundException('Chat message not found.');
       await this.lockRoomJob(tx, roomId);
       const room = await this.findRoomWith(tx, roomId);
-      this.assertCanWrite(room, userId, role);
+      await this.assertCanWrite(room, userId, role);
       if (current.senderId !== userId || current.isTombstone) {
         throw new ConflictException(
           'Only your visible messages can be deleted.',
@@ -831,8 +832,15 @@ export class ChatService {
     return member;
   }
 
-  private assertCanRead(room: ChatRoomDetails, userId: string, role: UserRole) {
-    if (role === UserRole.ADMIN) return null;
+  private async assertCanRead(
+    room: ChatRoomDetails,
+    userId: string,
+    role: UserRole,
+  ) {
+    if (isStaffRole(role)) {
+      await this.permissions.require(userId, ['chat.view']);
+      return null;
+    }
     const member = this.assertMember(room, userId);
     if (member.blockedAt) {
       throw new ForbiddenException('You are blocked from this chat room.');
@@ -840,13 +848,16 @@ export class ChatService {
     return member;
   }
 
-  private assertCanWrite(
+  private async assertCanWrite(
     room: ChatRoomDetails,
     userId: string,
     role: UserRole,
   ) {
-    if (role === UserRole.ADMIN) return null;
-    const member = this.assertCanRead(room, userId, role);
+    if (isStaffRole(role)) {
+      await this.permissions.require(userId, ['chat.send']);
+      return null;
+    }
+    const member = await this.assertCanRead(room, userId, role);
     if (room.status !== ChatRoomStatus.ACTIVE) {
       throw new ConflictException('This chat room is disabled.');
     }
@@ -964,7 +975,7 @@ export class ChatService {
   }
 
   private senderRole(role: UserRole): ChatSenderRole {
-    if (role === UserRole.ADMIN) return ChatSenderRole.ADMIN;
+    if (isStaffRole(role)) return ChatSenderRole.ADMIN;
     if (role === UserRole.TECHNICIAN) return ChatSenderRole.TECHNICIAN;
     return ChatSenderRole.CUSTOMER;
   }

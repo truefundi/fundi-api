@@ -3,6 +3,8 @@ import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { PermissionsGuard } from '../staff/permissions.guard';
+import { STAFF_ROLES } from '../staff/staff-roles';
 import { AdminDisputesController } from './admin-disputes.controller';
 import { DisputesService } from './disputes.service';
 
@@ -24,8 +26,10 @@ describe('AdminDisputesController', () => {
     const guards =
       Reflect.getMetadata(GUARDS_METADATA, AdminDisputesController) ?? [];
 
-    expect(guards).toEqual([AuthGuard('jwt'), RolesGuard]);
-    expect(reflector.get(ROLES_KEY, AdminDisputesController)).toEqual(['ADMIN']);
+    expect(guards).toEqual([AuthGuard('jwt'), RolesGuard, PermissionsGuard]);
+    expect(reflector.get(ROLES_KEY, AdminDisputesController)).toEqual(
+      STAFF_ROLES,
+    );
   });
 
   it('forwards the state filter', async () => {
@@ -45,7 +49,10 @@ describe('AdminDisputesController', () => {
   });
 
   it('forwards the detail lookup', async () => {
-    disputes.getForAdmin.mockResolvedValue({ job: { id: 'job-1' }, chat: null });
+    disputes.getForAdmin.mockResolvedValue({
+      job: { id: 'job-1' },
+      chat: null,
+    });
 
     await expect(controller.get('job-1')).resolves.toEqual({
       job: { id: 'job-1' },

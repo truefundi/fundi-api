@@ -21,10 +21,12 @@ import { ListNotificationsQueryDto } from './dto/list-notifications.query.dto';
 import { RegisterPushTokenDto, RemovePushTokenDto } from './dto/push-token.dto';
 import { NotificationsService } from './notifications.service';
 import { PushService } from './push.service';
+import { RequirePermissions } from '../staff/permissions.guard';
 
 @ApiTags('Notifications')
 @Controller('api/v1/notifications')
 @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN, UserRole.ADMIN)
+@RequirePermissions()
 export class NotificationsController {
   constructor(
     private readonly notifications: NotificationsService,

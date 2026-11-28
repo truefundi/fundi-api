@@ -1,9 +1,26 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiCookieAuth } from '@nestjs/swagger';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiCookieAuth,
+} from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { UsersService } from './users.service';
-import { RolesGuard } from '../auth/roles.guard';
-import { Roles } from '../auth/roles.decorator';
 import { BearerOnly } from '../auth/bearer-only.guard';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -15,6 +32,7 @@ import { UserResponseDto } from './dto/user-response.dto';
 import { SwitchRoleDto } from './dto/switch-role.dto';
 import {
   Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -41,10 +59,7 @@ export class UsersController {
 
   @Patch('me/role')
   @Auth(UserRole.CUSTOMER, UserRole.TECHNICIAN)
-  switchRole(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: SwitchRoleDto,
-  ) {
+  switchRole(@CurrentUser() user: AuthUser, @Body() dto: SwitchRoleDto) {
     return this.usersService.switchRole(user.id, dto.role);
   }
 
@@ -54,12 +69,21 @@ export class UsersController {
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth('accessToken')
   @ApiOperation({ summary: 'Update the current account profile' })
-  @ApiResponse({ status: 200, description: 'The updated user record', type: UserResponseDto })
+  @ApiResponse({
+    status: 200,
+    description: 'The updated user record',
+    type: UserResponseDto,
+  })
   @ApiTokenRequired()
   @ApiForbidden('The account is no longer active.')
-  @ApiConflict('The new phone number or email already belongs to another account.')
+  @ApiConflict(
+    'The new phone number or email already belongs to another account.',
+  )
   @ApiValidationFailed()
-  async updateAccount(@Req() request: { user: { userId: string } }, @Body() body: UpdateAccountDto) {
+  async updateAccount(
+    @Req() request: { user: { userId: string } },
+    @Body() body: UpdateAccountDto,
+  ) {
     return this.usersService.updateAccount(request.user.userId, body);
   }
 
@@ -82,23 +106,25 @@ export class UsersController {
 
   // Creates a user account with administrative role and status controls.
   @Post()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN')
+  @StaffAuth('users.manage')
   @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Create a user (admin only)' })
-  @ApiResponse({ status: 201, description: 'The created user record', type: UserResponseDto })
+  @ApiResponse({
+    status: 201,
+    description: 'The created user record',
+    type: UserResponseDto,
+  })
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
   @ApiConflict('A user with this phone number or email already exists.')
   @ApiValidationFailed()
-  async create(@Body() body: CreateUserDto) {
-    return this.usersService.create(body);
+  async create(@Body() body: CreateUserDto, @CurrentUser() user: AuthUser) {
+    return this.usersService.create(body, user.id);
   }
 
   // Lists accounts for administrator review with paging, filters, and search.
   @Get()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN')
+  @StaffAuth('users.view')
   @ApiCookieAuth('adminAccessToken')
   @ApiOperation({
     summary: 'List users with pagination, filters, and search (admin only)',
@@ -114,107 +140,142 @@ export class UsersController {
   @ApiValidationFailed()
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
-  async findAll(@Query() query: ListUsersQueryDto) {
-    return this.usersService.findAll(query);
+  async findAll(
+    @Query() query: ListUsersQueryDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.usersService.findAll(query, user.id);
   }
 
   // Finds all accounts matching a phone, full-name, or email fragment.
   @Get('search')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN')
+  @StaffAuth('users.view')
   @ApiCookieAuth('adminAccessToken')
   @ApiOperation({
     summary: 'Search users by phone number, full name, or email (admin only)',
     description:
       'Matches a substring of any of the three fields. Full-name and email matching are case-insensitive.',
   })
-  @ApiResponse({ status: 200, description: 'Matching user records', type: [UserResponseDto] })
+  @ApiResponse({
+    status: 200,
+    description: 'Matching user records',
+    type: [UserResponseDto],
+  })
   @ApiBadRequest('The `query` parameter is required and must not be empty.')
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
-  async search(@Query('query') query: string) {
-    return this.usersService.search(query);
+  async search(@Query('query') query: string, @CurrentUser() user: AuthUser) {
+    return this.usersService.search(query, user.id);
   }
 
   // Finds one account by its unique email address.
   @Get('by-email')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN')
+  @StaffAuth('users.view')
   @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Get a user by email (admin only)' })
-  @ApiResponse({ status: 200, description: 'One full user record', type: UserResponseDto })
+  @ApiResponse({
+    status: 200,
+    description: 'One full user record',
+    type: UserResponseDto,
+  })
   @ApiBadRequest('The `email` query parameter is required.')
   @ApiNotFound('No user was found with that email address.')
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
-  async findByEmail(@Query('email') email: string) {
-    if (!email?.trim()) throw new BadRequestException('The email query parameter is required.');
-    return this.usersService.getByEmail(email);
+  async findByEmail(
+    @Query('email') email: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    if (!email?.trim())
+      throw new BadRequestException('The email query parameter is required.');
+    return this.usersService.getByEmail(email, user.id);
   }
 
   // Gets a single account by its database identifier.
   @Get(':id')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN')
+  @StaffAuth('users.view')
   @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Get a user by ID (admin only)' })
-  @ApiResponse({ status: 200, description: 'One full user record', type: UserResponseDto })
+  @ApiResponse({
+    status: 200,
+    description: 'One full user record',
+    type: UserResponseDto,
+  })
   @ApiBadRequest('The `id` path parameter must be a valid UUID.')
   @ApiNotFound('No user was found with that ID.')
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
-  async findById(@Param('id', ParseUUIDPipe) id: string) {
-    return this.usersService.getById(id);
+  async findById(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.usersService.getById(id, user.id);
   }
 
   // Updates an account's administrator-managed fields.
   @Patch(':id')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN')
+  @StaffAuth('users.manage')
   @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Update a user (admin only)' })
-  @ApiResponse({ status: 200, description: 'The updated user record', type: UserResponseDto })
+  @ApiResponse({
+    status: 200,
+    description: 'The updated user record',
+    type: UserResponseDto,
+  })
   @ApiNotFound('No user was found with that ID.')
-  @ApiConflict('The new phone number or email already belongs to another account.')
+  @ApiConflict(
+    'The new phone number or email already belongs to another account.',
+  )
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
   @ApiValidationFailed()
-  async update(@Param('id') id: string, @Body() body: UpdateUserDto) {
-    return this.usersService.update(id, body);
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateUserDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.usersService.update(id, body, user.id);
   }
 
   // Changes a user's active status without exposing this action to customers.
   @Patch(':id/status')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN')
+  @StaffAuth('users.manage')
   @ApiCookieAuth('adminAccessToken')
   @ApiOperation({
     summary: 'Change a user status (admin only)',
-    description: 'Setting `INACTIVE` blocks that account from logging in and from using existing sessions.',
+    description:
+      'Setting `INACTIVE` blocks that account from logging in and from using existing sessions.',
   })
-  @ApiResponse({ status: 200, description: 'The updated user record', type: UserResponseDto })
+  @ApiResponse({
+    status: 200,
+    description: 'The updated user record',
+    type: UserResponseDto,
+  })
   @ApiNotFound('No user was found with that ID.')
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
   @ApiValidationFailed()
   async updateStatus(
+    @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: UpdateStatusDto,
   ) {
-    return this.usersService.updateStatus(id, body.status);
+    return this.usersService.updateStatus(id, body.status, user.id);
   }
 
   // Permanently deletes an account selected by an administrator.
   @Delete(':id')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('ADMIN')
+  @StaffAuth('users.manage')
   @ApiCookieAuth('adminAccessToken')
   @ApiOperation({ summary: 'Delete a user (admin only)' })
   @ApiResponse({ status: 200, description: 'The account was deleted' })
   @ApiNotFound('No user was found with that ID.')
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an admin.')
-  async delete(@Param('id') id: string) {
-    return this.usersService.delete(id);
+  async delete(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.usersService.delete(id, user.id);
   }
 }

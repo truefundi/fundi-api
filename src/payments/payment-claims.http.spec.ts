@@ -13,6 +13,7 @@ import * as request from 'supertest';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
+import { PermissionsService } from '../staff/permissions.service';
 
 describe('Payment claim endpoints (HTTP)', () => {
   let app: INestApplication;
@@ -84,7 +85,13 @@ describe('Payment claim endpoints (HTTP)', () => {
 
     const moduleRef = await Test.createTestingModule({
       controllers: [PaymentsController],
-      providers: [{ provide: PaymentsService, useValue: claimsService }],
+      providers: [
+        { provide: PaymentsService, useValue: claimsService },
+        {
+          provide: PermissionsService,
+          useValue: { require: jest.fn().mockResolvedValue({}) },
+        },
+      ],
     })
       .overrideGuard(AuthGuard('jwt'))
       .useValue(testAuthGuard)

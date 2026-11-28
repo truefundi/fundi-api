@@ -35,6 +35,7 @@ import { RedisService } from '../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { PinRegisterDto } from './dto/pin-register.dto';
 import { Prisma, UserRole, type User } from '@prisma/client';
+import { isStaffRole } from '../staff/staff-roles';
 import {
   normalizeRwandaPhoneNumber,
   RWANDA_PHONE_NUMBER_PATTERN,
@@ -901,7 +902,7 @@ export class AuthService {
         status: true,
       },
     });
-    if (!user || user.role === UserRole.ADMIN) {
+    if (!user || isStaffRole(user.role)) {
       throw new NotFoundException('Account not found.');
     }
     this.ensureActive(user.status);
@@ -1350,7 +1351,7 @@ export class AuthService {
   // account through the phone-OTP flow would mint a token that admin routes accept,
   // turning a texted code into full dashboard access.
   private rejectAdminPhoneLogin(role: string) {
-    if (role === UserRole.ADMIN) {
+    if (isStaffRole(role)) {
       throw new ForbiddenException(
         'Administrators must sign in through the admin portal.',
       );

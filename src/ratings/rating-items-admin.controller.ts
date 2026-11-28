@@ -9,9 +9,8 @@ import {
   Post,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
 import {
-  Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -23,7 +22,7 @@ import { RatingsService } from './ratings.service';
 
 @ApiTags('Admin rating items')
 @Controller('api/v1/admin/rating-items')
-@Auth(UserRole.ADMIN)
+@StaffAuth('ratings.view')
 export class RatingItemsAdminController {
   constructor(private readonly ratings: RatingsService) {}
 
@@ -40,12 +39,14 @@ export class RatingItemsAdminController {
   }
 
   @Post()
+  @StaffAuth('ratings.manage')
   @ApiOperation({ summary: 'Create a rating item' })
   create(@Body() dto: CreateRatingItemDto, @CurrentUser() user: AuthUser) {
     return this.ratings.createRatingItem(dto, user.id);
   }
 
   @Patch(':itemId')
+  @StaffAuth('ratings.manage')
   @ApiOperation({ summary: 'Update or reactivate a rating item' })
   update(
     @Param('itemId', ParseUUIDPipe) itemId: string,
@@ -56,6 +57,7 @@ export class RatingItemsAdminController {
   }
 
   @Delete(':itemId')
+  @StaffAuth('ratings.manage')
   @ApiOperation({ summary: 'Archive a rating item without deleting history' })
   archive(
     @Param('itemId', ParseUUIDPipe) itemId: string,

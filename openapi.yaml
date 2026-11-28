@@ -11,13 +11,23 @@ info:
 
     **Two authentication modes:**
     - Customers and technicians: `Authorization: Bearer <accessToken>` from `POST /auth/verify-otp`.
-    - Administrators: httpOnly session cookies set by `POST /auth/admin/2fa/verify`. Browser clients must send `credentials: include`.
+    - Staff (SUPER_ADMIN, ADMIN, ACCOUNTANT, SUPPORT): httpOnly session cookies set by `POST /auth/admin/2fa/verify`. Browser clients must send `credentials: include`.
+
+    **Staff privileges:** ordinary staff roles grant no access automatically. Each administrative
+    operation requires its explicit permission(s), read from the database on every request.
+    Active SUPER_ADMIN accounts have implicit full access; only SUPER_ADMIN can manage staff.
+    Read the grouped catalog at `/admin/permissions` and current access at `/admin/staff/me/access`.
+    Generated Swagger at `/api/docs` includes `x-required-permissions` on all staff operations.
+    Missing grants return 403. Permission changes are atomic, audited and take effect without logout.
+    See `docs/staff-privileges.md` for the permission model, dashboard domain requirements and realtime behavior.
 
     Every path in this document is implemented and mounted by the running backend. Endpoints that are only proposed are not listed.
 servers:
   - url: /api/v1
     description: Versioned API path.
 tags:
+  - name: Staff privileges
+    description: Live staff permissions and SUPER_ADMIN-only privilege management.
   - name: Admin conversations
     description: Read-only administrator conversation oversight.
   - name: Admin disputes
@@ -46,6 +56,170 @@ tags:
   - name: Users
 security: []
 paths:
+  /admin/permissions:
+    get:
+      operationId: StaffController_catalog
+      tags: [Staff privileges]
+      summary: List the permission catalog grouped by module
+      security: [{adminAccessToken: []}]
+      x-required-permissions: []
+      responses:
+        '200':
+          description: Grouped catalog. staff.manage is reserved for SUPER_ADMIN.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/PermissionModule'}
+        '401': {description: A dashboard cookie session is required.}
+        '403': {description: An active staff account is required.}
+  /admin/staff:
+    get:
+      operationId: StaffController_list
+      tags: [Staff privileges]
+      summary: List staff with assigned and effective permissions
+      security: [{adminAccessToken: []}]
+      x-required-permissions: [staff.view]
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - name: role
+          in: query
+          schema: {$ref: '#/components/schemas/StaffRole'}
+        - {name: search, in: query, schema: {type: string, maxLength: 120}}
+      responses:
+        '200':
+          description: Staff page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/StaffSummary'}
+                  pagination:
+                    type: object
+                    properties:
+                      page: {type: integer}
+                      limit: {type: integer}
+                      total: {type: integer}
+                      totalPages: {type: integer}
+        '400': {description: Invalid query parameters.}
+        '401': {description: A dashboard cookie session is required.}
+        '403': {description: Missing staff.view permission.}
+  /admin/staff/me/access:
+    get:
+      operationId: StaffController_mine
+      tags: [Staff privileges]
+      summary: Get your live access and grouped toggle states
+      security: [{adminAccessToken: []}]
+      x-required-permissions: []
+      responses:
+        '200':
+          description: Current staff access
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StaffAccess'}
+        '401': {description: A dashboard cookie session is required.}
+        '403': {description: An active staff account is required.}
+  /admin/staff/{staffId}/access:
+    get:
+      operationId: StaffController_access
+      tags: [Staff privileges]
+      summary: Get another staff member's access
+      security: [{adminAccessToken: []}]
+      x-required-permissions: [staff.view]
+      parameters:
+        - {name: staffId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Configured toggles and effective access
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StaffAccess'}
+        '400': {description: Invalid staff UUID.}
+        '401': {description: A dashboard cookie session is required.}
+        '403': {description: Missing staff.view permission.}
+        '404': {description: Staff member not found.}
+  /admin/staff/{staffId}/permissions:
+    patch:
+      operationId: StaffController_updatePermissions
+      tags: [Staff privileges]
+      summary: Atomically toggle one or more permissions (SUPER_ADMIN only)
+      description: Omitted permissions remain unchanged. Missing assignments mean OFF. Changes and the audit entry commit together. SUPER_ADMIN permissions are immutable.
+      security: [{adminAccessToken: []}]
+      x-required-permissions: [staff.manage]
+      parameters:
+        - {name: staffId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [permissions]
+              properties:
+                permissions:
+                  type: array
+                  minItems: 1
+                  maxItems: 34
+                  description: Permission keys must be unique within the batch. staff.manage is not assignable.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [key, enabled]
+                    properties:
+                      key: {$ref: '#/components/schemas/PermissionKey'}
+                      enabled: {type: boolean}
+            example:
+              permissions:
+                - {key: payments.view, enabled: true}
+                - {key: payments.approve, enabled: false}
+      responses:
+        '200':
+          description: Updated access
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StaffAccess'}
+        '400': {description: Invalid, duplicate, unknown or reserved toggle.}
+        '401': {description: A dashboard cookie session is required.}
+        '403': {description: Only SUPER_ADMIN can manage privileges.}
+        '404': {description: Staff member not found.}
+        '409': {description: SUPER_ADMIN permissions are immutable or the catalog migration is missing.}
+  /admin/staff/{staffId}/role:
+    patch:
+      operationId: StaffController_updateRole
+      tags: [Staff privileges]
+      summary: Change a staff role (SUPER_ADMIN only)
+      description: Ordinary role changes preserve grants. Entering or leaving SUPER_ADMIN clears stored assignments. Self-lockout and removal of the last active SUPER_ADMIN are rejected.
+      security: [{adminAccessToken: []}]
+      x-required-permissions: [staff.manage]
+      parameters:
+        - {name: staffId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role]
+              properties:
+                role: {$ref: '#/components/schemas/StaffRole'}
+      responses:
+        '200':
+          description: Updated access
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StaffAccess'}
+        '400': {description: Invalid staff role or UUID.}
+        '401': {description: A dashboard cookie session is required.}
+        '403': {description: Only SUPER_ADMIN can manage staff roles.}
+        '404': {description: Staff member not found.}
+        '409': {description: Self-lockout or removal of the last active SUPER_ADMIN is prohibited.}
   /jobs:
     post:
       operationId: JobsController_create
@@ -589,20 +763,42 @@ paths:
   /admin/jobs:
     get:
       operationId: AdminJobsController_list
+      x-required-permissions: [jobs.view]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/AdminListSearch'
+        - $ref: '#/components/parameters/AdminListSortOrder'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/JobStatus' } }
+        - { name: group, in: query, schema: { type: string, enum: [matching, in_progress, completed, cancelled, disputed] } }
+        - { name: priority, in: query, schema: { type: string, enum: [LOW, NORMAL, HIGH, URGENT] } }
+        - { name: requestType, in: query, schema: { type: string, enum: [NORMAL, SOS] } }
+        - { name: serviceCategoryId, in: query, schema: { type: string, format: uuid } }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: technicianId, in: query, schema: { type: string, format: uuid } }
+        - { name: sortBy, in: query, schema: { type: string, enum: [createdAt, updatedAt, priority, offeredAmount], default: createdAt } }
       responses:
         '200':
-          description: One page of jobs.
+          description: Lightweight page when a supported query parameter is supplied; legacy detail array otherwise.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PageOfJob'
+                oneOf:
+                  - $ref: '#/components/schemas/AdminJobPageDto'
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
       security:
         - adminAccessToken: []
       tags:
         - AdminJobs
-      summary: List all jobs
+      summary: List jobs with optional server-side pagination
       description: |
-        `needs-decision`: the live backend returns a bare array. The dashboard expects `{ items, total, page, pageSize }`. Align on `PageOfJob`.
+        Send page=1 for { data, pagination: { page, limit, total, totalPages } }.
+        No query parameters preserves the legacy array. Filters combine with AND;
+        sorting uses id ASC as a tie-breaker. List rows omit histories, offers,
+        media and full ratings. Use the detail endpoint for those fields.
+        See docs/admin-performance.md for group definitions and frontend migration.
       x-fundi-status: implemented
     post:
       description: 'Creates the request on an active customer’s behalf. The job is dispatched like a customer request: matching technicians receive offers immediately.'
@@ -626,6 +822,59 @@ paths:
       tags:
         - AdminJobs
       x-fundi-status: implemented
+  /admin/payments:
+    get:
+      operationId: PaymentsController_listAll
+      tags: [Payments]
+      summary: List booking payments with optional server-side pagination
+      security:
+        - adminAccessToken: []
+      x-required-permissions: [payments.view]
+      description: |
+        Any supported query parameter selects a read-only lightweight page;
+        no query parameters preserves the legacy array and expiration writes.
+        VALID/RESUMED payments past validUntil are presented as EXPIRED.
+        Rows omit pricing details and contain at most the latest job assignment.
+        Dates filter paidAt using inclusive from and exclusive to; from must precede to.
+      parameters: &adminPaymentListParameters
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/AdminListSearch'
+        - $ref: '#/components/parameters/AdminListSortOrder'
+        - { name: status, in: query, schema: { type: string, enum: [VALID, PAUSED, RESUMED, EXPIRED, COMPLETED] } }
+        - { name: requestType, in: query, schema: { type: string, enum: [NORMAL, SOS] } }
+        - { name: serviceCategoryId, in: query, schema: { type: string, format: uuid } }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: sortBy, in: query, schema: { type: string, enum: [paidAt, createdAt, amount, validUntil], default: paidAt } }
+      responses:
+        '200':
+          description: Lightweight page, or legacy array without query parameters.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AdminPaymentPageDto'
+                  - type: array
+                    items: { type: object }
+  /admin/payments/summary:
+    get:
+      operationId: PaymentsController_summary
+      tags: [Payments]
+      summary: Filtered booking-payment counts and amounts by effective status
+      security:
+        - adminAccessToken: []
+      x-required-permissions: [payments.view]
+      description: Uses the same filters as the list; page, limit and sorting are ignored. Read-only, with consistent aggregates and effective expiration.
+      parameters: *adminPaymentListParameters
+      responses:
+        '200':
+          description: Totals for all matching payments in RWF, including zero-valued statuses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPaymentSummaryDto'
   /admin/jobs/summary:
     get:
       description: Counts active (OPEN or ASSIGNED) and COMPLETED jobs, plus disputes that have no resolution yet.
@@ -2128,6 +2377,9 @@ paths:
               - CUSTOMER
               - TECHNICIAN
               - ADMIN
+              - SUPER_ADMIN
+              - ACCOUNTANT
+              - SUPPORT
         - name: status
           required: false
           in: query
@@ -5256,6 +5508,15 @@ components:
       name: fundi_admin_2fa_challenge
       description: 'Opaque pending-challenge cookie set by `POST /auth/admin/login` and consumed by `POST /auth/admin/2fa/verify`. Grants nothing on its own.'
   parameters:
+    AdminListSearch:
+      name: search
+      in: query
+      description: Trimmed case-insensitive substring search.
+      schema: { type: string, minLength: 1, maxLength: 200 }
+    AdminListSortOrder:
+      name: sortOrder
+      in: query
+      schema: { type: string, enum: [asc, desc], default: desc }
     Page:
       name: page
       in: query
@@ -5422,6 +5683,130 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
+    AdminJobPageDto:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          description: Job summary fields, customer, currentTechnician, serviceCategory, location, bookingPayment (amount/status), and dispute (id/resolvedAt). Not a complete Job detail record.
+          items: { type: object }
+        pagination:
+          $ref: '#/components/schemas/PaginationMetaDto'
+    AdminPaymentPageDto:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          description: Payment summary fields, currency, customer, serviceCategory and linked job with at most one assignment. Omits pricing details, signatures and keys.
+          items: { type: object }
+        pagination:
+          $ref: '#/components/schemas/PaginationMetaDto'
+    AdminPaymentSummaryDto:
+      type: object
+      required: [total, amount, currency, byStatus, generatedAt]
+      properties:
+        total: { type: integer }
+        amount: { type: number }
+        currency: { type: string, enum: [RWF] }
+        generatedAt: { type: string, format: date-time }
+        byStatus:
+          type: array
+          items:
+            type: object
+            required: [status, count, amount]
+            properties:
+              status: { type: string, enum: [VALID, PAUSED, RESUMED, EXPIRED, COMPLETED] }
+              count: { type: integer }
+              amount: { type: number }
+    StaffRole:
+      type: string
+      enum: [SUPER_ADMIN, ADMIN, ACCOUNTANT, SUPPORT]
+    PermissionKey:
+      type: string
+      enum:
+        - users.view
+        - users.manage
+        - technicians.view
+        - technicians.manage
+        - technicians.approve
+        - documents.view
+        - documents.review
+        - companies.view
+        - companies.manage
+        - companies.approve
+        - jobs.view
+        - jobs.manage
+        - payments.view
+        - payments.manage
+        - payments.approve
+        - payments.configure
+        - disputes.view
+        - disputes.manage
+        - catalog.view
+        - catalog.manage
+        - conversations.view
+        - chat.view
+        - chat.send
+        - chat.moderate
+        - ratings.view
+        - ratings.manage
+        - ads.view
+        - ads.manage
+        - broadcasts.view
+        - broadcasts.send
+        - dashboard.view
+        - audit.view
+        - staff.view
+        - staff.manage
+    PermissionModule:
+      type: object
+      required: [module, permissions]
+      properties:
+        module: {type: string, example: payments}
+        permissions:
+          type: array
+          items:
+            type: object
+            required: [id, key, module, name, description, sortOrder, reserved]
+            properties:
+              id: {type: string, format: uuid}
+              key: {$ref: '#/components/schemas/PermissionKey'}
+              module: {type: string}
+              name: {type: string}
+              description: {type: string}
+              sortOrder: {type: integer}
+              reserved: {type: boolean}
+              enabled: {type: boolean, description: Present in access responses. Configured toggle independent of account status.}
+              locked: {type: boolean, description: Present in access responses. SUPER_ADMIN permissions and reserved keys cannot be toggled.}
+    StaffSummary:
+      type: object
+      required: [id, fullName, email, phoneNumber, role, status, superAdmin, assignedPermissions, effectivePermissions]
+      properties:
+        id: {type: string, format: uuid}
+        fullName: {type: string}
+        email: {type: [string, 'null']}
+        phoneNumber: {type: string}
+        role: {$ref: '#/components/schemas/StaffRole'}
+        status: {$ref: '#/components/schemas/AccountStatus'}
+        superAdmin: {type: boolean}
+        assignedPermissions:
+          type: array
+          items: {$ref: '#/components/schemas/PermissionKey'}
+        effectivePermissions:
+          type: array
+          description: Current effective access; empty for inactive or suspended accounts.
+          items: {$ref: '#/components/schemas/PermissionKey'}
+    StaffAccess:
+      allOf:
+        - {$ref: '#/components/schemas/StaffSummary'}
+        - type: object
+          required: [modules]
+          properties:
+            modules:
+              type: array
+              items: {$ref: '#/components/schemas/PermissionModule'}
     PaymentProviderSetting:
       type: object
       required: [provider, apiEnabled, mode, apiAvailable, executionMode, updatedAt]
@@ -6101,6 +6486,9 @@ components:
         - CUSTOMER
         - TECHNICIAN
         - ADMIN
+        - SUPER_ADMIN
+        - ACCOUNTANT
+        - SUPPORT
     AccountStatus:
       type: string
       enum:
@@ -6347,6 +6735,9 @@ components:
           type: string
           enum:
             - ADMIN
+            - SUPER_ADMIN
+            - ACCOUNTANT
+            - SUPPORT
     AdminSession:
       type: object
       properties:
@@ -8391,6 +8782,9 @@ components:
             - CUSTOMER
             - TECHNICIAN
             - ADMIN
+            - SUPER_ADMIN
+            - ACCOUNTANT
+            - SUPPORT
           example: CUSTOMER
         status:
           type: string
@@ -8581,9 +8975,10 @@ components:
         role:
           type: string
           enum:
-            - CUSTOMER
-            - TECHNICIAN
             - ADMIN
+            - SUPER_ADMIN
+            - ACCOUNTANT
+            - SUPPORT
           example: ADMIN
       required:
         - id
@@ -8682,6 +9077,9 @@ components:
             - CUSTOMER
             - TECHNICIAN
             - ADMIN
+            - SUPER_ADMIN
+            - ACCOUNTANT
+            - SUPPORT
         status:
           type: string
           example: ACTIVE
@@ -8762,6 +9160,9 @@ components:
             - CUSTOMER
             - TECHNICIAN
             - ADMIN
+            - SUPER_ADMIN
+            - ACCOUNTANT
+            - SUPPORT
         status:
           type: string
           example: ACTIVE

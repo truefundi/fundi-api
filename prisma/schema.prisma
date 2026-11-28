@@ -89,8 +89,38 @@ model User {
   paymentClaims       PaymentClaim[]              @relation("PaymentClaimCustomer")
   reviewedClaims      PaymentClaim[]              @relation("PaymentClaimReviewer")
   paymentTransactions PaymentTransaction[]
+  staffPermissions    StaffPermission[]           @relation("StaffPermissionOwner")
+  grantedPermissions  StaffPermission[]           @relation("StaffPermissionGrantor")
 
   @@map("users")
+}
+
+model Permission {
+  id          String            @id @default(uuid())
+  key         String            @unique
+  module      String
+  name        String
+  description String
+  sortOrder   Int               @default(0)
+  assignments StaffPermission[]
+
+  @@index([module, sortOrder])
+  @@map("permissions")
+}
+
+model StaffPermission {
+  userId      String
+  permissionId String
+  grantedById String?
+  createdAt   DateTime   @default(now())
+  user        User       @relation("StaffPermissionOwner", fields: [userId], references: [id], onDelete: Cascade)
+  permission  Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  grantedBy   User?      @relation("StaffPermissionGrantor", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@id([userId, permissionId])
+  @@index([permissionId])
+  @@index([grantedById])
+  @@map("staff_permissions")
 }
 
 model RefreshToken {
@@ -378,6 +408,9 @@ model Job {
   chatRooms                   ChatRoom[]
   customerRating              JobRating?
 
+  @@index([createdAt(sort: Desc), id])
+  @@index([status, createdAt(sort: Desc), id])
+  @@index([completedAt])
   @@index([customerId, createdAt])
   @@index([technicianId, status, updatedAt])
   @@index([status, dispatchStatus, priority, createdAt])
@@ -496,6 +529,7 @@ model BookingPayment {
   paymentTransaction       PaymentTransaction?
 
   @@index([customerId, paidAt])
+  @@index([paidAt(sort: Desc), id])
   @@index([status, validUntil])
   @@map("booking_payments")
 }
@@ -840,6 +874,7 @@ model AuditLog {
   createdAt  DateTime @default(now())
 
   @@index([entityType, entityId])
+  @@index([createdAt, id])
   @@map("audit_logs")
 }
 
@@ -921,6 +956,9 @@ enum UserRole {
   CUSTOMER
   TECHNICIAN
   ADMIN
+  SUPER_ADMIN
+  ACCOUNTANT
+  SUPPORT
 }
 
 enum UserStatus {

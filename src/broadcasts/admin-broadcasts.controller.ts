@@ -10,8 +10,11 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
-import { Auth, AuthUser, CurrentUser } from '../common/decorators/auth.decorator';
+import {
+  StaffAuth,
+  AuthUser,
+  CurrentUser,
+} from '../common/decorators/auth.decorator';
 import {
   ApiForbidden,
   ApiNotFound,
@@ -19,13 +22,17 @@ import {
   ApiValidationFailed,
 } from '../common/decorators/api-error-responses.decorator';
 import { BroadcastsService } from './broadcasts.service';
-import { BroadcastAudienceDto, ListBroadcastsQueryDto, SendBroadcastDto } from './dto/broadcast.dto';
+import {
+  BroadcastAudienceDto,
+  ListBroadcastsQueryDto,
+  SendBroadcastDto,
+} from './dto/broadcast.dto';
 import { BroadcastResponseDto } from './dto/broadcast-response.dto';
 
 // Dashboard broadcast compose screen and history.
 @ApiTags('Admin broadcasts')
 @Controller('api/v1/admin/broadcasts')
-@Auth(UserRole.ADMIN)
+@StaffAuth('broadcasts.view')
 export class AdminBroadcastsController {
   constructor(private readonly broadcasts: BroadcastsService) {}
 
@@ -42,7 +49,11 @@ export class AdminBroadcastsController {
     status: 200,
     description: 'Audience sizes',
     schema: {
-      example: { userCount: 842, smsRecipientCount: 842, inAppRecipientCount: 842 },
+      example: {
+        userCount: 842,
+        smsRecipientCount: 842,
+        inAppRecipientCount: 842,
+      },
     },
   })
   @ApiValidationFailed()
@@ -54,7 +65,10 @@ export class AdminBroadcastsController {
 
   @Get()
   @ApiOperation({ summary: 'List broadcast history (admin only)' })
-  @ApiResponse({ status: 200, description: 'A page of broadcasts, newest first' })
+  @ApiResponse({
+    status: 200,
+    description: 'A page of broadcasts, newest first',
+  })
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an administrator.')
   list(@Query() query: ListBroadcastsQueryDto) {
@@ -62,6 +76,7 @@ export class AdminBroadcastsController {
   }
 
   @Post()
+  @StaffAuth('broadcasts.send')
   @ApiOperation({
     summary: 'Send a broadcast now (admin only)',
     description:
@@ -70,7 +85,11 @@ export class AdminBroadcastsController {
       'recipient. The response reports per-channel delivery counts and a status of ' +
       'SENT, PARTIAL, or FAILED.',
   })
-  @ApiResponse({ status: 201, description: 'The sent broadcast', type: BroadcastResponseDto })
+  @ApiResponse({
+    status: 201,
+    description: 'The sent broadcast',
+    type: BroadcastResponseDto,
+  })
   @ApiValidationFailed()
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an administrator.')
@@ -79,9 +98,15 @@ export class AdminBroadcastsController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get one broadcast with its delivery counts (admin only)' })
+  @ApiOperation({
+    summary: 'Get one broadcast with its delivery counts (admin only)',
+  })
   @ApiParam({ name: 'id', format: 'uuid' })
-  @ApiResponse({ status: 200, description: 'The broadcast', type: BroadcastResponseDto })
+  @ApiResponse({
+    status: 200,
+    description: 'The broadcast',
+    type: BroadcastResponseDto,
+  })
   @ApiNotFound('No broadcast has this id.')
   @ApiTokenRequired()
   @ApiForbidden('The caller is not an administrator.')

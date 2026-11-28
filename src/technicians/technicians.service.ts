@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -14,6 +15,8 @@ import {
   VerificationStatus,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
+import { PermissionsService } from '../staff/permissions.service';
+import { isStaffRole } from '../staff/staff-roles';
 import {
   DEFAULT_PAGE,
   DEFAULT_PAGE_LIMIT,
@@ -145,6 +148,7 @@ export class TechniciansService {
     private readonly storage: StorageService,
     private readonly documents: TechnicianDocumentsService,
     private readonly nationalIdCrypto: NationalIdCryptoService,
+    private readonly permissions: PermissionsService,
   ) {}
 
   // ─── Technician self-service ────────────────────────────────────────────
@@ -742,6 +746,9 @@ export class TechniciansService {
           where: { id: profileId },
         });
         if (!found) throw new NotFoundException('Technician not found.');
+        await this.assertNonStaffAccount(tx, found.userId);
+        if (dto.verificationStatus !== undefined)
+          await this.permissions.require(actorId, ['technicians.approve'], tx);
         await this.lockProfile(tx, profileId);
         await this.saveProfileFields(tx, profileId, dto, actorId, 'admin');
         return tx.technicianProfile.findUniqueOrThrow({
@@ -797,6 +804,7 @@ export class TechniciansService {
         include: PROFILE_INCLUDE,
       });
       if (!current) throw new NotFoundException('Technician not found.');
+      await this.assertNonStaffAccount(tx, current.userId);
       await this.lockProfile(tx, profileId);
 
       if (current.user.status === status) {
@@ -840,6 +848,7 @@ export class TechniciansService {
         where: { id: profileId },
       });
       if (!profile) throw new NotFoundException('Technician not found.');
+      await this.assertNonStaffAccount(tx, profile.userId);
       await this.lockProfile(tx, profileId);
       await this.audit.log(
         {
@@ -857,6 +866,21 @@ export class TechniciansService {
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────
+
+  private async assertNonStaffAccount(
+    tx: Prisma.TransactionClient,
+    userId: string,
+  ) {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(734321)::text`;
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+    if (user && isStaffRole(user.role))
+      throw new ForbiddenException(
+        'Manage staff accounts through staff account management.',
+      );
+  }
 
   // Counts and fetches one page with the same where clause, so pagination
   // metadata stays accurate. Mirrors the users list implementation.

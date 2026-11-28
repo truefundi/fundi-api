@@ -23,6 +23,10 @@ import {
   getRequiredSecret,
 } from '../common/crypto/jwt-secrets';
 import { ChatService } from './chat.service';
+import { ADMIN_ACCESS_COOKIE } from '../auth/admin-cookies';
+import { isStaffRole } from '../staff/staff-roles';
+import { PermissionsService } from '../staff/permissions.service';
+import { StaffAccessEventsService } from '../staff/staff-access-events.service';
 import {
   ChatRealtimeService,
   chatSocketRoom,
@@ -32,6 +36,9 @@ import {
 interface ChatSocketIdentity {
   userId: string;
   role: UserRole;
+  sessionId: string;
+  cookie: boolean;
+  expiresAt: number;
 }
 
 @WebSocketGateway({
@@ -57,6 +64,8 @@ export class ChatGateway
     private readonly prisma: PrismaService,
     private readonly chat: ChatService,
     private readonly realtime: ChatRealtimeService,
+    private readonly permissions: PermissionsService,
+    private readonly accessEvents: StaffAccessEventsService,
   ) {}
 
   async afterInit(namespace: Namespace) {
@@ -68,6 +77,7 @@ export class ChatGateway
     ]);
     namespace.server.adapter(createAdapter(this.publisher, this.subscriber));
     this.realtime.bind(namespace);
+    this.accessEvents.bind(namespace, chatUserSocketRoom);
     this.logger.log(
       'Chat websocket namespace is ready with the Redis adapter.',
     );
@@ -75,7 +85,9 @@ export class ChatGateway
 
   async handleConnection(client: Socket) {
     try {
+      const cookieToken = this.adminCookie(client.handshake.headers.cookie);
       const token =
+        cookieToken ??
         client.handshake.auth?.accessToken ??
         this.bearerToken(client.handshake.headers.authorization);
       if (typeof token !== 'string' || !token) {
@@ -85,6 +97,9 @@ export class ChatGateway
       const payload = await this.jwt.verifyAsync<{
         sub: string;
         sid: string;
+        typ?: string;
+        role?: string;
+        exp?: number;
       }>(token, {
         secret: getRequiredSecret(
           this.config,
@@ -92,7 +107,12 @@ export class ChatGateway
           DEV_ACCESS_SECRET_FALLBACK,
         ),
       });
-      if (!payload.sub || !payload.sid) {
+      if (
+        !payload.sub ||
+        !payload.sid ||
+        payload.typ !== 'access' ||
+        !payload.exp
+      ) {
         client.disconnect(true);
         return;
       }
@@ -116,11 +136,29 @@ export class ChatGateway
         client.disconnect(true);
         return;
       }
+      if (
+        isStaffRole(user.role) !== !!cookieToken ||
+        isStaffRole(payload.role) !== !!cookieToken
+      )
+        throw new WsException('Use the correct account session.');
+      if (isStaffRole(user.role))
+        await this.permissions.require(user.id, ['chat.view']);
       client.data.identity = {
         userId: user.id,
         role: user.role,
+        sessionId: payload.sid,
+        cookie: !!cookieToken,
+        expiresAt: payload.exp * 1000,
       } satisfies ChatSocketIdentity;
       await client.join(chatUserSocketRoom(user.id));
+      // Recheck after joining the invalidation room to close the connect/revoke race.
+      await this.requireIdentity(client);
+      const timer = setTimeout(
+        () => client.disconnect(true),
+        Math.min(payload.exp * 1000 - Date.now(), 2_147_483_647),
+      );
+      timer.unref();
+      client.once('disconnect', () => clearTimeout(timer));
     } catch (error) {
       this.logger.debug(
         `Rejected unauthenticated chat socket: ${this.errorMessage(error)}`,
@@ -144,7 +182,7 @@ export class ChatGateway
     @MessageBody() body: { roomId?: string },
   ) {
     return this.withSocketErrors(async () => {
-      const identity = this.requireIdentity(client);
+      const identity = await this.requireIdentity(client);
       const roomId = this.requiredRoomId(body?.roomId);
       await this.chat.authorizeSocketRoom(
         identity.userId,
@@ -161,7 +199,7 @@ export class ChatGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { roomId?: string },
   ) {
-    const identity = this.requireIdentity(client);
+    const identity = await this.requireIdentity(client);
     const roomId = this.requiredRoomId(body?.roomId);
     await this.chat.authorizeSocketRoom(identity.userId, identity.role, roomId);
     await client.leave(chatSocketRoom(roomId));
@@ -174,7 +212,7 @@ export class ChatGateway
     @MessageBody() body: { roomId?: string; text?: string },
   ) {
     return this.withSocketErrors(async () => {
-      const identity = this.requireIdentity(client);
+      const identity = await this.requireIdentity(client);
       const roomId = this.requiredRoomId(body?.roomId);
       if (typeof body?.text !== 'string') {
         throw new WsException('A text message is required.');
@@ -194,7 +232,7 @@ export class ChatGateway
     @MessageBody() body: { roomId?: string; messageId?: string },
   ) {
     return this.withSocketErrors(async () => {
-      const identity = this.requireIdentity(client);
+      const identity = await this.requireIdentity(client);
       const roomId = this.requiredRoomId(body?.roomId);
       if (typeof body?.messageId !== 'string') {
         throw new WsException('A messageId is required.');
@@ -214,7 +252,7 @@ export class ChatGateway
     @MessageBody() body: { roomId?: string; active?: boolean },
   ) {
     return this.withSocketErrors(async () => {
-      const identity = this.requireIdentity(client);
+      const identity = await this.requireIdentity(client);
       const roomId = this.requiredRoomId(body?.roomId);
       await this.chat.authorizeSocketRoom(
         identity.userId,
@@ -255,10 +293,44 @@ export class ChatGateway
     return identity ?? null;
   }
 
-  private requireIdentity(client: Socket): ChatSocketIdentity {
+  private async requireIdentity(client: Socket): Promise<ChatSocketIdentity> {
     const identity = this.identity(client);
     if (!identity) throw new WsException('Authenticate before using chat.');
+    const [user, session] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: identity.userId },
+        select: { role: true, status: true },
+      }),
+      this.prisma.refreshToken.findUnique({
+        where: { sessionId: identity.sessionId },
+      }),
+    ]);
+    if (
+      !user ||
+      user.status !== 'ACTIVE' ||
+      !session ||
+      session.userId !== identity.userId ||
+      session.expiresAt.getTime() <= Date.now() ||
+      identity.expiresAt <= Date.now() ||
+      isStaffRole(user.role) !== identity.cookie
+    ) {
+      client.disconnect(true);
+      throw new WsException('Session expired or revoked.');
+    }
+    identity.role = user.role;
+    if (isStaffRole(user.role))
+      await this.permissions.require(identity.userId, ['chat.view']);
     return identity;
+  }
+
+  private adminCookie(header?: string) {
+    const value = header
+      ?.split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${ADMIN_ACCESS_COOKIE}=`));
+    return value
+      ? decodeURIComponent(value.slice(ADMIN_ACCESS_COOKIE.length + 1))
+      : undefined;
   }
 
   private requiredRoomId(roomId?: string): string {

@@ -18,6 +18,14 @@ import {
 import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
+import { paginationMeta, resolveAdminPaging } from '../common/pagination';
+import {
+  ADMIN_PAYMENT_LIST_SELECT,
+  adminPaymentWhere,
+  effectivePaymentStatus,
+  PaymentListAssignment,
+} from './admin-payment-list';
+import { ListAdminPaymentsQueryDto } from './dto/list-admin-payments-query.dto';
 import { CreateMockPaymentDto } from './dto/create-mock-payment.dto';
 import { ExtendPaymentDto } from './dto/extend-payment.dto';
 import { RecordProcessedPaymentDto } from './dto/record-processed-payment.dto';
@@ -682,6 +690,117 @@ export class PaymentsService {
     }));
   }
 
+  async listPageForAdmin(query: ListAdminPaymentsQueryDto) {
+    const { page, limit, skip } = resolveAdminPaging(query);
+    const now = new Date();
+    const where = adminPaymentWhere(query, now);
+    const [total, rows] = await Promise.all([
+      this.prisma.bookingPayment.count({ where }),
+      this.prisma.bookingPayment.findMany({
+        where,
+        select: ADMIN_PAYMENT_LIST_SELECT,
+        orderBy: [
+          { [query.sortBy ?? 'paidAt']: query.sortOrder ?? 'desc' },
+          { id: 'asc' },
+        ],
+        skip,
+        take: limit,
+      }),
+    ]);
+    const jobIds = [
+      ...new Set(rows.flatMap((row) => (row.job ? [row.job.id] : []))),
+    ];
+    // Prisma's nested take on a to-many relation can fetch all children and trim
+    // in the engine. A lateral LIMIT bounds each indexed lookup in PostgreSQL.
+    const assignments = jobIds.length
+      ? await this.prisma.$queryRaw<PaymentListAssignment[]>`
+          SELECT history.*
+          FROM (VALUES ${Prisma.join(jobIds.map((id) => Prisma.sql`(${id})`))}) AS requested("jobId")
+          JOIN LATERAL (
+            SELECT "jobId", "technicianId", "technicianName", "acceptedAt", "endedAt", "endReason", "reason"
+            FROM "job_assignment_history"
+            WHERE "jobId" = requested."jobId"
+            ORDER BY "acceptedAt" DESC, "id" ASC
+            LIMIT 1
+          ) history ON TRUE`
+      : [];
+    const latestAssignment = new Map(
+      assignments.map(({ jobId, ...assignment }) => [jobId, assignment]),
+    );
+    return {
+      data: rows.map((payment) => ({
+        ...payment,
+        status: effectivePaymentStatus(payment, now),
+        currency: 'RWF',
+        job: payment.job
+          ? {
+              ...payment.job,
+              assignmentHistory: latestAssignment.has(payment.job.id)
+                ? [latestAssignment.get(payment.job.id)!]
+                : [],
+            }
+          : null,
+      })),
+      pagination: paginationMeta(page, limit, total),
+    };
+  }
+
+  async summaryForAdmin(query: ListAdminPaymentsQueryDto = {}) {
+    const now = new Date();
+    const where = adminPaymentWhere(query, now);
+    // Two bounded aggregates instead of transferring every payment to sum it.
+    const groupsQuery = this.prisma.bookingPayment.groupBy({
+      by: ['status'],
+      where,
+      _count: { _all: true },
+      _sum: { amount: true },
+    });
+    const overdueQuery = this.prisma.bookingPayment.groupBy({
+      by: ['status'],
+      where: {
+        AND: [
+          where,
+          {
+            status: {
+              in: [BookingPaymentStatus.VALID, BookingPaymentStatus.RESUMED],
+            },
+            validUntil: { lte: now },
+          },
+        ],
+      },
+      _count: { _all: true },
+      _sum: { amount: true },
+    });
+    const [groups, overdue] = await this.prisma.$transaction(
+      [groupsQuery, overdueQuery],
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+    const byStatus = Object.values(BookingPaymentStatus).map((status) => {
+      const group = groups.find((row) => row.status === status);
+      const expired = overdue.find((row) => row.status === status);
+      return {
+        status,
+        count: (group?._count._all ?? 0) - (expired?._count._all ?? 0),
+        amount: (group?._sum.amount ?? 0) - (expired?._sum.amount ?? 0),
+      };
+    });
+    const expired = byStatus.find(
+      (row) => row.status === BookingPaymentStatus.EXPIRED,
+    )!;
+    for (const row of overdue) {
+      expired.count += row._count._all;
+      expired.amount += row._sum.amount ?? 0;
+    }
+    return {
+      total: byStatus.reduce((sum, row) => sum + row.count, 0),
+      amount: byStatus.reduce((sum, row) => sum + row.amount, 0),
+      currency: 'RWF',
+      byStatus,
+      generatedAt: now.toISOString(),
+    };
+  }
+
+  // Legacy array and persisted-expiry behavior for existing clients.
   async listAll() {
     const now = new Date();
     await this.prisma.bookingPayment.updateMany({

@@ -3,6 +3,7 @@ import { PrismaService } from '../database/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { EventsGateway } from '../websockets/events.gateway';
 import { PaymentEventsService } from './payment-events.service';
+import { PermissionsService } from '../staff/permissions.service';
 
 describe('Payment event delivery', () => {
   const claim = {
@@ -22,7 +23,7 @@ describe('Payment event delivery', () => {
           .mockResolvedValue([{ id: 'admin-1' }, { id: 'admin-2' }]),
       },
     };
-    const events = { notifyUser: jest.fn() };
+    const events = { notifyUser: jest.fn(), notifyStaff: jest.fn() };
     const notifications = {
       create: jest.fn().mockResolvedValue({}),
       createManyForUsers: jest.fn().mockResolvedValue(2),
@@ -31,6 +32,7 @@ describe('Payment event delivery', () => {
       prisma as unknown as PrismaService,
       events as unknown as EventsGateway,
       notifications as unknown as NotificationsService,
+      new PermissionsService(prisma as unknown as PrismaService),
     );
     return { service, prisma, events, notifications };
   }
@@ -39,14 +41,17 @@ describe('Payment event delivery', () => {
     const { service, prisma, events, notifications } = setup();
     await service.claimCreated(claim);
     expect(prisma.user.findMany).toHaveBeenCalledWith({
-      where: { role: 'ADMIN', status: 'ACTIVE' },
+      where: new PermissionsService(
+        prisma as unknown as PrismaService,
+      ).recipientsWhere(['payments.view']),
       select: { id: true },
     });
-    expect(events.notifyUser).toHaveBeenCalledTimes(2);
-    expect(events.notifyUser).toHaveBeenCalledWith(
+    expect(events.notifyStaff).toHaveBeenCalledTimes(2);
+    expect(events.notifyStaff).toHaveBeenCalledWith(
       'admin-1',
       'payment-claim:created',
       expect.objectContaining({ claimId: claim.id }),
+      ['payments.view'],
     );
     expect(notifications.createManyForUsers).toHaveBeenCalledWith(
       expect.objectContaining({ userIds: ['admin-1', 'admin-2'] }),

@@ -5,6 +5,8 @@ import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../database/prisma.service';
 import { EventsGateway } from '../websockets/events.gateway';
 import { PushService } from './push.service';
+import { PermissionsService } from '../staff/permissions.service';
+import { PERMISSION_KEYS, PermissionKey } from '../staff/permission-catalog';
 
 export interface CreateNotificationInput {
   userId: string;
@@ -21,6 +23,7 @@ export class NotificationsService {
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
     private readonly audit: AuditService,
+    private readonly permissions: PermissionsService,
     private readonly push?: PushService,
   ) {}
 
@@ -118,7 +121,7 @@ export class NotificationsService {
       const result = await this.prisma.notification.createMany({ data: rows });
       created += result.count;
       for (const row of rows) {
-        this.events.notifyUser(row.userId, 'notification:new', {
+        const payload = {
           id: row.id,
           userId: row.userId,
           type: row.type,
@@ -127,7 +130,18 @@ export class NotificationsService {
           data: row.data ?? null,
           readAt: null,
           createdAt: row.createdAt,
-        });
+        };
+        const required = (
+          row.data as { requiredPermission?: PermissionKey } | undefined
+        )?.requiredPermission;
+        if (required)
+          await this.events.notifyStaff(
+            row.userId,
+            'notification:new',
+            payload,
+            [required],
+          );
+        else this.events.notifyUser(row.userId, 'notification:new', payload);
       }
     }
     return created;
@@ -160,14 +174,14 @@ export class NotificationsService {
 
   async unreadCount(userId: string) {
     const count = await this.prisma.notification.count({
-      where: { userId, readAt: null },
+      where: { ...(await this.visibleWhere(userId)), readAt: null },
     });
     return { count };
   }
 
   async markRead(userId: string, notificationId: string) {
     const notification = await this.prisma.notification.findFirst({
-      where: { id: notificationId, userId },
+      where: { ...(await this.visibleWhere(userId)), id: notificationId },
     });
     if (!notification) {
       throw new (await import('@nestjs/common')).NotFoundException(
@@ -194,7 +208,7 @@ export class NotificationsService {
   async markAllRead(userId: string) {
     const now = new Date();
     const result = await this.prisma.notification.updateMany({
-      where: { userId, readAt: null },
+      where: { ...(await this.visibleWhere(userId)), readAt: null },
       data: { readAt: now },
     });
     if (result.count > 0) {
@@ -236,6 +250,22 @@ export class NotificationsService {
       data: notification.data,
       readAt: notification.readAt,
       createdAt: notification.createdAt,
+    };
+  }
+
+  private async visibleWhere(
+    userId: string,
+  ): Promise<Prisma.NotificationWhereInput> {
+    // The relation is evaluated in the same query as the inbox, including after demotion.
+    return {
+      userId,
+      AND: PERMISSION_KEYS.map((key) => ({
+        OR: [
+          { data: { path: ['requiredPermission'], not: key } },
+          { data: { path: ['requiredPermission'], equals: Prisma.AnyNull } },
+          { user: { is: this.permissions.recipientsWhere([key]) } },
+        ],
+      })),
     };
   }
 }

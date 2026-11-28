@@ -1,10 +1,18 @@
-import { ExecutionContext, INestApplication, Logger, NotFoundException, UnauthorizedException, ValidationPipe } from '@nestjs/common';
+import {
+  ExecutionContext,
+  INestApplication,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AuthGuard } from '@nestjs/passport';
 import * as request from 'supertest';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
+import { PermissionsService } from '../staff/permissions.service';
 
 // Exercises the full request pipeline used in main.ts (ValidationPipe +
 // HttpExceptionFilter) with a stand-in JWT guard, so real RolesGuard
@@ -40,7 +48,8 @@ describe('Users endpoints (HTTP)', () => {
       req.user = { userId: knownId, role };
       // Mirrors JwtStrategy: the way the credential arrived is recorded so
       // RolesGuard can refuse a bearer token carrying the ADMIN role.
-      req.authMethod = req.headers['x-test-auth-method'] === 'bearer' ? 'bearer' : 'cookie';
+      req.authMethod =
+        req.headers['x-test-auth-method'] === 'bearer' ? 'bearer' : 'cookie';
       return true;
     },
   };
@@ -61,11 +70,20 @@ describe('Users endpoints (HTTP)', () => {
       pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
     });
     usersService.getById.mockResolvedValue({ id: knownId });
-    usersService.updateStatus.mockResolvedValue({ id: knownId, status: 'INACTIVE' });
+    usersService.updateStatus.mockResolvedValue({
+      id: knownId,
+      status: 'INACTIVE',
+    });
 
     const moduleRef = await Test.createTestingModule({
       controllers: [UsersController],
-      providers: [{ provide: UsersService, useValue: usersService }],
+      providers: [
+        { provide: UsersService, useValue: usersService },
+        {
+          provide: PermissionsService,
+          useValue: { require: jest.fn().mockResolvedValue({}) },
+        },
+      ],
     })
       .overrideGuard(AuthGuard('jwt'))
       .useValue(testAuthGuard)
@@ -75,7 +93,11 @@ describe('Users endpoints (HTTP)', () => {
     // Mirrors the global configuration in main.ts.
     app.useGlobalFilters(new HttpExceptionFilter());
     app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
     );
     await app.init();
   });
@@ -144,17 +166,22 @@ describe('Users endpoints (HTTP)', () => {
 
     it('passes converted query values to the service', async () => {
       await request(app.getHttpServer())
-        .get('/api/v1/users?search=john&page=2&limit=5&role=TECHNICIAN&status=ACTIVE')
+        .get(
+          '/api/v1/users?search=john&page=2&limit=5&role=TECHNICIAN&status=ACTIVE',
+        )
         .set(asAdmin())
         .expect(200);
 
-      expect(usersService.findAll).toHaveBeenCalledWith({
-        page: 2,
-        limit: 5,
-        role: 'TECHNICIAN',
-        status: 'ACTIVE',
-        search: 'john',
-      });
+      expect(usersService.findAll).toHaveBeenCalledWith(
+        {
+          page: 2,
+          limit: 5,
+          role: 'TECHNICIAN',
+          status: 'ACTIVE',
+          search: 'john',
+        },
+        knownId,
+      );
     });
 
     it.each([
@@ -219,7 +246,11 @@ describe('Users endpoints (HTTP)', () => {
         .send({ status: 'INACTIVE' })
         .expect(200);
 
-      expect(usersService.updateStatus).toHaveBeenCalledWith(knownId, 'INACTIVE');
+      expect(usersService.updateStatus).toHaveBeenCalledWith(
+        knownId,
+        'INACTIVE',
+        knownId,
+      );
       expect(body).toEqual({ id: knownId, status: 'INACTIVE' });
     });
 

@@ -1,13 +1,12 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
-import { Auth } from '../common/decorators/auth.decorator';
+import { StaffAuth } from '../common/decorators/auth.decorator';
 import { AdminStatsService } from './admin-stats.service';
 import { AdminStatsResponseDto } from './dto/admin-stats-response.dto';
 
 @ApiTags('Admin dashboard')
 @Controller('api/v1/admin')
-@Auth(UserRole.ADMIN)
+@StaffAuth('dashboard.view', 'users.view', 'staff.view', 'technicians.view')
 export class AdminStatsController {
   constructor(private readonly stats: AdminStatsService) {}
 

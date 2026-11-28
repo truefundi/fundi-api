@@ -359,14 +359,17 @@ describe('AuthService phone OTP flow', () => {
 
   // Administrators sign in with a password and an authenticator, never a texted
   // code, so the phone flow must not even start for their number.
-  it('rejects OTP requests for administrator accounts', async () => {
-    const { service, prisma, sms } = createService();
-    prisma.user.findUnique.mockResolvedValue({ ...activeUser, role: 'ADMIN' });
-    await expect(
-      service.requestLoginOtp(activeUser.phoneNumber),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(sms.sendOtp).not.toHaveBeenCalled();
-  });
+  it.each(['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT', 'SUPPORT'])(
+    'rejects OTP requests for %s accounts',
+    async (role) => {
+      const { service, prisma, sms } = createService();
+      prisma.user.findUnique.mockResolvedValue({ ...activeUser, role });
+      await expect(
+        service.requestLoginOtp(activeUser.phoneNumber),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(sms.sendOtp).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects OTP resends for administrator accounts', async () => {
     const { service, prisma, sms } = createService();
@@ -379,16 +382,19 @@ describe('AuthService phone OTP flow', () => {
 
   // Even a code already in flight must not be exchangeable for a bearer token that
   // admin routes would accept.
-  it('rejects OTP verification for administrator accounts', async () => {
-    const { service, prisma, redisClient } = createService();
-    prisma.user.findUnique.mockResolvedValue({ ...activeUser, role: 'ADMIN' });
-    redisClient.eval.mockResolvedValue(1);
-    await expect(
-      service.verifyOtp(activeUser.phoneNumber, '123456'),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(prisma.refreshToken.create).not.toHaveBeenCalled();
-    expect(redisClient.eval).not.toHaveBeenCalled();
-  });
+  it.each(['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT', 'SUPPORT'])(
+    'rejects OTP verification for %s accounts',
+    async (role) => {
+      const { service, prisma, redisClient } = createService();
+      prisma.user.findUnique.mockResolvedValue({ ...activeUser, role });
+      redisClient.eval.mockResolvedValue(1);
+      await expect(
+        service.verifyOtp(activeUser.phoneNumber, '123456'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+      expect(redisClient.eval).not.toHaveBeenCalled();
+    },
+  );
 
   // Enforces no more than three resend operations for a pending OTP.
   it('rejects a fourth OTP resend', async () => {

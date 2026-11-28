@@ -15,9 +15,8 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { UserRole } from '@prisma/client';
 import {
-  Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -33,7 +32,7 @@ import { PostChatMediaDto } from './dto/post-chat-media.dto';
 
 @ApiTags('Admin chat moderation')
 @Controller('api/v1/admin/chat/rooms')
-@Auth(UserRole.ADMIN)
+@StaffAuth('chat.view')
 export class AdminChatController {
   constructor(private readonly chat: ChatService) {}
 
@@ -49,12 +48,13 @@ export class AdminChatController {
 
   @Get(':roomId/messages')
   listMessages(
+    @CurrentUser() user: AuthUser,
     @Param('roomId', ParseUUIDPipe) roomId: string,
     @Query() query: ListChatMessagesDto,
   ) {
     return this.chat.listMessages(
-      '',
-      UserRole.ADMIN,
+      user.id,
+      user.role,
       roomId,
       query.limit,
       query.beforeMessageId,
@@ -63,13 +63,15 @@ export class AdminChatController {
 
   @Get(':roomId/messages/:messageId/media')
   downloadMedia(
+    @CurrentUser() user: AuthUser,
     @Param('roomId', ParseUUIDPipe) roomId: string,
     @Param('messageId', ParseUUIDPipe) messageId: string,
   ) {
-    return this.chat.downloadMedia('', UserRole.ADMIN, roomId, messageId);
+    return this.chat.downloadMedia(user.id, user.role, roomId, messageId);
   }
 
   @Post(':roomId/messages')
+  @StaffAuth('chat.send')
   @ApiOperation({
     summary: 'Send an administrative message, including to a disabled room',
   })
@@ -78,10 +80,11 @@ export class AdminChatController {
     @Param('roomId', ParseUUIDPipe) roomId: string,
     @Body() dto: CreateChatTextMessageDto,
   ) {
-    return this.chat.postText(user.id, UserRole.ADMIN, roomId, dto.text);
+    return this.chat.postText(user.id, user.role, roomId, dto.text);
   }
 
   @Post(':roomId/messages/media')
+  @StaffAuth('chat.send')
   @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('file', {
@@ -119,7 +122,7 @@ export class AdminChatController {
     }
     return this.chat.postMedia(
       user.id,
-      UserRole.ADMIN,
+      user.role,
       roomId,
       dto.type,
       file,
@@ -128,6 +131,7 @@ export class AdminChatController {
   }
 
   @Patch(':roomId/status')
+  @StaffAuth('chat.moderate')
   setRoomDisabled(
     @CurrentUser() user: AuthUser,
     @Param('roomId', ParseUUIDPipe) roomId: string,
@@ -137,6 +141,7 @@ export class AdminChatController {
   }
 
   @Patch(':roomId/members/:userId')
+  @StaffAuth('chat.moderate')
   setMemberBlocked(
     @CurrentUser() user: AuthUser,
     @Param('roomId', ParseUUIDPipe) roomId: string,
@@ -153,6 +158,7 @@ export class AdminChatController {
   }
 
   @Patch(':roomId/messages/:messageId/block')
+  @StaffAuth('chat.moderate')
   setMessageBlocked(
     @CurrentUser() user: AuthUser,
     @Param('roomId', ParseUUIDPipe) roomId: string,
@@ -169,6 +175,7 @@ export class AdminChatController {
   }
 
   @Delete(':roomId/messages/:messageId')
+  @StaffAuth('chat.moderate')
   permanentlyDeleteMessage(
     @CurrentUser() user: AuthUser,
     @Param('roomId', ParseUUIDPipe) roomId: string,

@@ -9,16 +9,19 @@ describe('Authenticated event rooms', () => {
     const jwt = {
       verifyAsync: jest
         .fn()
-        .mockResolvedValue({ sub: 'user-1', sid: 'session-1', typ: 'access' }),
+        .mockResolvedValue({
+          sub: 'user-1',
+          sid: 'session-1',
+          typ: 'access',
+          role,
+        }),
     };
     const prisma = {
       refreshToken: {
-        findUnique: jest
-          .fn()
-          .mockResolvedValue({
-            userId: 'user-1',
-            expiresAt: new Date(Date.now() + 60000),
-          }),
+        findUnique: jest.fn().mockResolvedValue({
+          userId: 'user-1',
+          expiresAt: new Date(Date.now() + 60000),
+        }),
       },
       user: {
         findUnique: jest
@@ -32,6 +35,8 @@ describe('Authenticated event rooms', () => {
         get: jest.fn().mockReturnValue('test-secret'),
       } as unknown as ConfigService,
       prisma as unknown as PrismaService,
+      { bind: jest.fn(), invalidate: jest.fn() } as never,
+      { require: jest.fn().mockResolvedValue({}) } as never,
     );
     return { gateway, jwt, prisma };
   }
@@ -75,6 +80,7 @@ describe('Authenticated event rooms', () => {
       sub: 'user-1',
       sid: 'session-1',
       typ: 'refresh',
+      role: 'CUSTOMER',
     });
     client.join.mockClear();
     await gateway.handleConnection(client as unknown as Socket);

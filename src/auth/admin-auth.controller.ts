@@ -18,7 +18,6 @@ import {
   ApiTags,
   getSchemaPath,
 } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
@@ -52,7 +51,7 @@ import {
   clearAdminCookie,
 } from './admin-cookies';
 import {
-  Auth,
+  StaffAuth,
   CurrentUser,
   type AuthUser,
 } from '../common/decorators/auth.decorator';
@@ -376,7 +375,7 @@ export class AdminAuthController {
   // /2fa/verify has completed, which is what keeps the dashboard shut to a
   // half-finished sign-in.
   @Get('me')
-  @Auth(UserRole.ADMIN)
+  @StaffAuth()
   @ApiOperation({ summary: 'Get the authenticated administrator' })
   @ApiResponse({
     status: 200,
@@ -393,7 +392,7 @@ export class AdminAuthController {
   // Every refresh token is revoked, so other devices are signed out.
   @Post('change-password')
   @HttpCode(HttpStatus.OK)
-  @Auth(UserRole.ADMIN)
+  @StaffAuth()
   @ApiOperation({
     summary: 'Change the signed-in administrator password',
     description:

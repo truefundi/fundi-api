@@ -9,6 +9,7 @@ import { Test } from '@nestjs/testing';
 import * as request from 'supertest';
 import { PaymentProvidersController } from './payment-providers.controller';
 import { PaymentProvidersService } from './payment-providers.service';
+import { PermissionsService } from '../staff/permissions.service';
 import { MobilePaymentsService } from './mobile-payments.service';
 
 describe('Payment provider routes (HTTP)', () => {
@@ -40,6 +41,10 @@ describe('Payment provider routes (HTTP)', () => {
     const module = await Test.createTestingModule({
       controllers: [PaymentProvidersController],
       providers: [
+        {
+          provide: PermissionsService,
+          useValue: { require: jest.fn().mockResolvedValue({}) },
+        },
         { provide: PaymentProvidersService, useValue: providers },
         { provide: MobilePaymentsService, useValue: payments },
       ],

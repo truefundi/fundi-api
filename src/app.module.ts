@@ -29,6 +29,7 @@ import { AdsModule } from './ads/ads.module';
 import { BroadcastsModule } from './broadcasts/broadcasts.module';
 import { RatingsModule } from './ratings/ratings.module';
 import { CompaniesModule } from './companies/companies.module';
+import { StaffModule } from './staff/staff.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { CompaniesModule } from './companies/companies.module';
       }),
     }),
     DatabaseModule,
+    StaffModule,
     RedisModule,
     JobsModule,
     WebSocketsModule,

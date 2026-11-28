@@ -61,6 +61,7 @@ demo-files/
 uploads/
 
 # Local scripts that are not part of the product
-scripts/
+scripts/*
+!scripts/profile-admin-queries.cjs
 
 .github/agents

@@ -10,10 +10,17 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiExtraModels,
+  ApiOperation,
+  ApiParam,
+  ApiResponse,
+  ApiTags,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import {
-  Auth,
+  StaffAuth,
   AuthUser,
   CurrentUser,
 } from '../common/decorators/auth.decorator';
@@ -36,16 +43,40 @@ import { AdminRateJobDto } from './dto/admin-rate-job.dto';
 import { UpdateJobDto } from './dto/update-job.dto';
 import { JobsService } from './jobs.service';
 import { ReviewCancellationDto } from './dto/cancel-job.dto';
+import { ListAdminJobsQueryDto } from './dto/list-admin-jobs-query.dto';
+import { AdminJobPageDto } from './dto/admin-job-page.dto';
 
 @ApiTags('Admin jobs')
 @Controller('api/v1/admin/jobs')
-@Auth(UserRole.ADMIN)
+@StaffAuth('jobs.view')
 export class AdminJobsController {
   constructor(private readonly jobs: JobsService) {}
 
   @Get()
-  list() {
-    return this.jobs.listForAdmin();
+  @ApiExtraModels(AdminJobPageDto)
+  @ApiOperation({
+    summary: 'List jobs',
+    description:
+      'Send page=1 (or any supported query parameter) for bounded, lightweight rows with pagination metadata. No query parameters preserves the legacy full-detail array; migrate clients to the paginated form. Filters combine with AND; sorting uses id as a stable tie-breaker.',
+  })
+  @ApiResponse({
+    status: 200,
+    schema: {
+      oneOf: [
+        { $ref: getSchemaPath(AdminJobPageDto) },
+        {
+          type: 'array',
+          items: { type: 'object' },
+          description: 'Legacy response when no query parameters are sent.',
+        },
+      ],
+    },
+  })
+  @ApiValidationFailed()
+  list(@Query() query: ListAdminJobsQueryDto = {}) {
+    return Object.values(query).some((value) => value !== undefined)
+      ? this.jobs.listPageForAdmin(query)
+      : this.jobs.listForAdmin();
   }
 
   // Declared before ':jobId' so the literal segment is not parsed as a UUID.
@@ -115,6 +146,7 @@ export class AdminJobsController {
   }
 
   @Patch('cancellation-requests/:requestId')
+  @StaffAuth('jobs.manage')
   reviewCancellation(
     @Param('requestId', ParseUUIDPipe) requestId: string,
     @Body() dto: ReviewCancellationDto,
@@ -124,6 +156,7 @@ export class AdminJobsController {
   }
 
   @Post()
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Create a job for a customer (admin only)',
     description:
@@ -141,6 +174,7 @@ export class AdminJobsController {
   }
 
   @Patch(':jobId')
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Edit a job (admin only)',
     description:
@@ -157,6 +191,7 @@ export class AdminJobsController {
   }
 
   @Post(':jobId/cancel')
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Cancel a job (admin only)',
     description:
@@ -173,6 +208,7 @@ export class AdminJobsController {
   }
 
   @Post(':jobId/reassign')
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Reassign a job to another technician (admin only)',
     description:
@@ -189,6 +225,7 @@ export class AdminJobsController {
   }
 
   @Post(':jobId/rating')
+  @StaffAuth('ratings.manage')
   @ApiOperation({
     summary: 'Rate a job (admin only)',
     description:
@@ -205,6 +242,7 @@ export class AdminJobsController {
   }
 
   @Delete(':jobId')
+  @StaffAuth('jobs.manage')
   @ApiOperation({
     summary: 'Permanently delete a completed or cancelled job (admin only)',
     description:

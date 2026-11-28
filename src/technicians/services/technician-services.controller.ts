@@ -22,6 +22,7 @@ import {
   ReviewTechnicianServiceDto,
   UpdateTechnicianServiceDto,
 } from './dto/technician-service.dto';
+import { RequirePermissions } from '../../staff/permissions.guard';
 import { TechnicianServicesService } from './technician-services.service';
 
 @ApiTags('Technician services')
@@ -82,6 +83,7 @@ export class TechnicianServicesAdminController {
     summary:
       'Services to review (PENDING by default), oldest first, with their certificates',
   })
+  @RequirePermissions('technicians.view')
   list(@Query() query: ListTechnicianServicesQueryDto) {
     return this.services.listForReview(query);
   }
@@ -93,6 +95,7 @@ export class TechnicianServicesAdminController {
       'A reason is required when rejecting; the technician is notified either way.',
   })
   @ApiParam({ name: 'serviceId', format: 'uuid' })
+  @RequirePermissions('technicians.approve')
   review(
     @CurrentUser() user: AuthUser,
     @Param('serviceId', ParseUUIDPipe) serviceId: string,

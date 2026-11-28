@@ -80,6 +80,9 @@ describe('Administrative route permission coverage', () => {
           'AdminAuthController.changePassword',
           'NotificationsController.markRead',
           'NotificationsController.markAllRead',
+          'NotificationsController.registerPushToken',
+          'NotificationsController.removePushToken',
+          'NotificationsController.markJobRead',
         ].includes(route.label),
     ),
   )('$label cannot mutate with only a view grant', ({ permissions }) => {

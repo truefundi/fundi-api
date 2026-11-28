@@ -13,7 +13,7 @@ import { AuthService } from './auth.service';
 // scripts really executed.
 const HOST = process.env.REDIS_HOST ?? 'localhost';
 const PORT = Number(process.env.REDIS_PORT ?? 6379);
-const SECRET = 'development_token_hash_secret_change_before_production';
+const SECRET = 'test_only_token_hash_secret_change_before_production';
 
 // Whether a Redis is accepting connections.
 //
@@ -118,6 +118,8 @@ describe('AuthService OTP scripts against Redis', () => {
     const config = {
       get: jest.fn((name: string, fallback: unknown) => {
         if (name === 'jwt.tokenHashSecret') return SECRET;
+        if (name === 'jwt.accessSecret') return 'unit-test-access-secret-key-32ch';
+        if (name === 'jwt.refreshSecret') return 'unit-test-refresh-secret-key-32c';
         if (name === 'redis.host') return HOST;
         if (name === 'redis.port') return PORT;
         return fallback;
@@ -439,7 +441,9 @@ describe('AuthService OTP scripts against Redis', () => {
       const broken = new AuthService(
         { signAsync: jest.fn() } as unknown as JwtService,
         {
-          get: jest.fn((_name: string, fallback: unknown) => fallback),
+          get: jest.fn((name: string, fallback: unknown) =>
+            name === 'jwt.tokenHashSecret' ? SECRET : fallback,
+          ),
         } as unknown as ConfigService,
         {
           user: { findUnique: jest.fn().mockResolvedValue(activeUser) },

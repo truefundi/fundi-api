@@ -5,7 +5,10 @@ import { JobsService } from './jobs.service';
 describe('Admin job creation response', () => {
   it('runs payment validation and creation, then reads only the admin representation', async () => {
     const tx = {
-      job: { create: jest.fn().mockResolvedValue(undefined) },
+      job: {
+        create: jest.fn().mockResolvedValue(undefined),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
       user: {
         findUnique: jest
           .fn()
